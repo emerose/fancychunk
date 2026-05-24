@@ -303,7 +303,15 @@ The default chunklet (and chunk) size of `2048` characters is a
 rule-of-thumb rather than a derived value. It produces chunklets of
 roughly ~400-600 tokens for typical English prose, which fits
 comfortably inside the context window of every commonly-used
-embedding model (most allow ≥ 8k tokens). Implementors should tune
-this for their corpus and embedder: shorter chunklets (≈ 1024 chars)
-give finer-grained retrieval; longer chunklets (≈ 4096 chars) give
-more context per retrieved unit.
+embedding model (most allow ≥ 8k tokens).
+
+The *order of magnitude* — a few hundred tokens per retrievable unit —
+is well-supported by retrieval-benchmark literature (MTEB, BEIR, the
+public RAG evals): retrieval quality typically peaks somewhere in the
+~256–768 token range and degrades both for very short units (low
+recall, fragments) and very long units (low precision, mixed topics).
+`2048` characters sits comfortably in that range.
+
+Implementors should still tune for their corpus and embedder:
+shorter chunklets (≈ 1024 chars) give finer-grained retrieval; longer
+chunklets (≈ 4096 chars) give more context per retrieved unit.

@@ -206,11 +206,16 @@ The two named constants are:
 >   required by the covering constraint. This is not a tuning knob;
 >   any value `≥ 1.0` produces the same effect.
 >
-> - `HEADING_SPLIT_BEFORE_DIVISOR = 4` is **heuristic**: it makes
->   "split before a heading" roughly four times more attractive than
->   "split mid-paragraph." A value of 2 would still encourage the
->   split but less strongly; a value of 10 would treat every heading
->   as a near-forced split point. The choice of 4 is hand-tuned (see
+> - `HEADING_SPLIT_BEFORE_DIVISOR = 4` is **heuristic**, but with a
+>   meaningful lower bound. The goal is to make "split before a
+>   heading" at least as attractive as the strongest non-heading
+>   boundary the document is likely to produce. Cosine similarity
+>   between unrelated paragraphs typically maps (post-rescaling) to
+>   `sim` values in the `0.5`-`0.7` range; dividing by `2` already
+>   brings a heading boundary below that, and any divisor `≥ 2`
+>   produces qualitatively similar partitions. The reference value
+>   `4` provides extra margin so the heuristic survives noisier
+>   embeddings; the implementor may use any value `≥ 2` (see
 >   U-CHUNK-303).
 
 ## Determinism and tie-breaking
@@ -301,12 +306,18 @@ estimating the document's topic direction). The exact choice of
 within reason is unlikely to dramatically change behavior, but exact
 reproduction requires the documented values.
 
-### U-CHUNK-303 — Heading-split-before divisor (heuristic component only)
+### U-CHUNK-303 — Heading-split-before divisor (bounded heuristic)
 
 `HEADING_SPLIT_AFTER_FORBID = 1.0` is structural (it equals the
 similarity ceiling; see SPEC-CHUNK-322) and is not a tuning knob.
-`HEADING_SPLIT_BEFORE_DIVISOR = 4` is heuristic: it makes "split
-before a heading" approximately 4× more attractive than splitting
-mid-paragraph. The choice of `4` is hand-tuned; the implementor may
-expose it as a configuration parameter and should default to `4`
-for behavioral parity.
+
+`HEADING_SPLIT_BEFORE_DIVISOR = 4` is a bounded heuristic: any value
+`≥ 2` brings a heading boundary's `sim` below the value typically
+produced by adjacent unrelated paragraphs (~0.5-0.7 post-rescaling),
+so the optimizer will prefer the heading split. Larger values (the
+reference uses `4`) add safety margin for noisier embeddings without
+changing partitions much. Values much greater than `~8` start to
+treat headings as forced splits, which conflicts with cases where a
+heading and its first paragraph genuinely belong together. The
+implementor may expose this as a parameter and should default to `4`
+for behavioral parity; valid range is roughly `[2, 8]`.

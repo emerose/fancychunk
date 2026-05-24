@@ -1,7 +1,7 @@
 # Test Vectors — Sentence Splitting
 
-Concrete input/output pairs for stage 1. The reimplementor should pass
-each of these as a test case in their preferred test framework.
+Concrete input/output pairs for stage 1. Each should pass as a test
+case in the implementation's preferred test framework.
 
 Where a test depends on a particular sentence-segmentation model, the
 test name calls it out. Most tests are model-independent because they

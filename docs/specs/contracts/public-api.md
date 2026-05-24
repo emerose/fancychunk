@@ -1,22 +1,16 @@
 # Public API Contract
 
-External surface of fancychunk. These are the names, signatures, and
-defaults that callers depend on. Internals are unconstrained by this
-document; only the four contracts below cross the
-analysis/implementation boundary.
+External surface of fancychunk. These are the signatures and defaults
+that callers depend on. Internals are unconstrained by this document;
+only the four contracts below cross the API boundary.
 
 The signatures below are written in Python type-hint syntax for
-clarity. The reimplementor is free to use any language; the contract
-is the shape of the operation, not the syntax.
-
-> **Naming note.** The function names below
-> (`split_sentences`, `split_chunklets`, `split_chunks`,
-> `embed_with_late_chunking`) are *illustrative*, not normative. They
-> describe the operation that each function performs. The
-> reimplementor may use any reasonable names, expose the operations
-> as methods on a `Chunker` class, or wrap them in a pipeline object.
-> The acceptance checklist refers to operations by behavior
-> (SPEC-CHUNK-NNN), not by function name.
+clarity. Any language is fine; the contract is the shape of the
+operation, not the syntax. The function names below are illustrative
+and may be renamed, grouped under a `Chunker` class, or wrapped in a
+pipeline object — the
+[acceptance checklist](../acceptance/checklist.md) refers to
+operations by behavior (SPEC-CHUNK-NNN), not by function name.
 
 ## Function: split sentences
 
@@ -114,24 +108,23 @@ SPEC-CHUNK-400 through SPEC-CHUNK-402.
 ## Error contract
 
 All functions must signal errors via exceptions (in Python) or the
-language-native error mechanism. The implementor is free to define the
-exception type, but each error case in the specs (SPEC-CHUNK-131,
--263, -341, -342, -343, -451) must produce a distinguishable signal,
-not a silent failure or a returned sentinel.
+language-native error mechanism. Each error case in the specs
+(SPEC-CHUNK-131, -263, -341, -342, -343, -451) must produce a
+distinguishable signal, not a silent failure or a returned sentinel.
 
 Validation errors (caller-fixable) and computation errors
 (implementation-internal) should be distinguishable. A single shared
-`FancyChunkError` base type is recommended.
+error base type is recommended.
 
 ## What this contract does NOT specify
 
 - Module layout, file structure, class hierarchies.
 - Whether the four operations are free functions, methods on a
   `Chunker` class, or a pipeline object.
-- Async vs sync API style. (Implementations may offer both.)
+- Async vs sync API style.
 - Configuration loading (YAML, env vars, etc.).
 - Logging, tracing, metrics.
 - Caching of embedder calls, Markdown parses, etc.
 
-The reimplementor is free to choose these. Test vectors and the
-acceptance checklist verify behavior, not architecture.
+Test vectors and the acceptance checklist verify behavior, not
+architecture.

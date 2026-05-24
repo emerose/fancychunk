@@ -3,30 +3,13 @@
 An implementation conforms to fancychunk if it passes every check
 below. The checklist mirrors the SPEC-CHUNK IDs in the specs.
 
-## How to use this checklist
-
 For each numbered item:
 
 1. Write a test that exercises the behavior.
 2. Run it against the implementation.
 3. Mark it `[x]` when passing.
 
-A conforming implementation has every box checked. An implementation
-with unchecked boxes is incomplete or non-conforming, depending on
-which boxes are unchecked.
-
-## The reimplementor test
-
-Before writing any test, the implementor should confirm:
-
-- [ ] I built the implementation reading only the specs in
-  `docs/specs/`, not the upstream source those specs were extracted
-  from.
-- [ ] I can describe what each spec does without referring to the
-  raglite codebase by name.
-- [ ] My implementation's structure differs meaningfully from
-  raglite's (different module layout, different solver, different
-  array library, or different language).
+A conforming implementation has every box checked.
 
 ## Cross-cutting (SPEC-CHUNK-9xx)
 
@@ -61,10 +44,10 @@ Before writing any test, the implementor should confirm:
   sentences. Covered by TV-104, TV-105, TV-112.
 - [ ] **SPEC-CHUNK-114** — Whitespace is trailing, not leading. Covered
   by TV-106.
-- [ ] **SPEC-CHUNK-115** — Splitting maximizes Σ (probability − 0.25)
-  over chosen boundaries.
-- [ ] **SPEC-CHUNK-116** — Max-length handling produces sentences `≤
-  max_len`. (Two-pass vs one-pass is implementation-defined.)
+- [ ] **SPEC-CHUNK-115** — Splitting maximizes
+  `Σ (probability − BOUNDARY_SCORE_THRESHOLD)` over chosen boundaries.
+- [ ] **SPEC-CHUNK-116** — Max-length handling produces sentences
+  `≤ max_len`. (Two-pass vs one-pass is implementation-defined.)
 - [ ] **SPEC-CHUNK-120** — Deterministic.
 - [ ] **SPEC-CHUNK-121** — Ties broken consistently.
 - [ ] **SPEC-CHUNK-130** — Document shorter than `min_len` returns single
@@ -82,8 +65,8 @@ Before writing any test, the implementor should confirm:
   Covered by TV-203.
 - [ ] **SPEC-CHUNK-201** — Every chunklet `≤ max_size`. Covered by TV-204.
 - [ ] **SPEC-CHUNK-202** — Number of chunklets in `[1, len(sentences)]`.
-- [ ] **SPEC-CHUNK-210** — Optimization minimizes Σ (boundary_cost +
-  statement_cost).
+- [ ] **SPEC-CHUNK-210** — Optimization minimizes
+  `Σ (boundary_cost + statement_cost)`.
 - [ ] **SPEC-CHUNK-220** — Default boundary cost is
   `(1 - p[0]) + sum(p[1:])`.
 - [ ] **SPEC-CHUNK-221** — Default statement cost is
@@ -163,16 +146,3 @@ If late chunking is not implemented, mark the section N/A. Otherwise:
   `preamble_fraction=0.382`).
 - [ ] All error cases produce distinguishable exception types or
   language-native error signals.
-
-## Uncertainties acknowledged
-
-The following uncertainties from the specs are flagged for the
-implementor to be aware of but do not affect conformance:
-
-- [ ] Read and acknowledged U-CHUNK-201, U-CHUNK-202 (chunklet
-  grouping constants).
-- [ ] Read and acknowledged U-CHUNK-301, U-CHUNK-302, U-CHUNK-303
-  (semantic chunking constants).
-- [ ] Read and acknowledged U-CHUNK-401, U-CHUNK-402, U-CHUNK-403
-  (late chunking constants and the reason per-token output is
-  required).

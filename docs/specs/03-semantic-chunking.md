@@ -6,13 +6,20 @@ forms one semantic unit. Split points are chosen where adjacent
 chunklets are *least* similar, subject to a hard upper bound on chunk
 size and special handling of Markdown headings.
 
+This stage corresponds to "level 4" in Greg Kamradt's
+[5 Levels of Text Splitting](https://www.youtube.com/watch?v=8OJC21T2SL4&t=1930s)
+taxonomy: split where adjacent units are *least* semantically similar,
+rather than at fixed character/token counts (levels 1-3). The
+integer-programming framing below is one specific implementation of
+that idea.
+
 ## Inputs
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `chunklets` | list of strings | yes | — | An ordered sequence of chunklets, typically from stage 2. |
 | `chunklet_embeddings` | matrix `[N, D]` of floats | yes | — | One row per chunklet, in the same order. Each row must have nonzero L2 norm. |
-| `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunk length in characters. See U-CHUNK-203 (in spec 02). |
+| `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunk length in characters. (Same default as stage 2; see Spec 02 for the rationale.) |
 
 ## Outputs
 
@@ -34,14 +41,6 @@ Invariants:
 ## Behavior
 
 ### SPEC-CHUNK-310 — Optimization framing
-
-> **Conceptual origin.** This stage corresponds to "level 4" in Greg
-> Kamradt's
-> [5 Levels of Text Splitting](https://www.youtube.com/watch?v=8OJC21T2SL4&t=1930s)
-> taxonomy: split text where adjacent units are *least* semantically
-> similar, rather than at fixed character/token counts (levels 1-3).
-> The integer-programming framing below is one specific implementation
-> of that idea.
 
 Semantic chunking selects a subset of *partition points*. A partition
 point sits between adjacent chunklets `i` and `i+1`; there are `N-1`
@@ -68,10 +67,9 @@ output may exceed `max_size` characters.
 A practical encoding: for each chunklet `i`, find the smallest `j > i`
 such that `chunklets[i..j]` exceeds `max_size`. The constraint is that
 at least one partition point in `[i, j-1)` is selected. Generating one
-constraint per chunklet (or per *covering window*) is sufficient.
-
-The reimplementor is free to choose any constraint encoding that
-yields the same feasible region.
+constraint per chunklet (or per *covering window*) is sufficient. Any
+constraint encoding that yields the same feasible region is
+conforming.
 
 ### SPEC-CHUNK-320 — Partition similarity construction
 
@@ -100,34 +98,33 @@ machine epsilon of the embedding's float dtype. The rescaling maps
 cosine similarity from `[-1, 1]` to `[0, 1]`; the clamp ensures every
 partition point has strictly positive cost.
 
-> **Why the positive floor?** Without it, an antipodal pair of
-> embeddings (`dot_product = -1`) would yield `sim[i] = 0`, and the
-> optimizer would be indifferent to adding extra splits at zero-cost
-> points — producing nondeterministic over-splitting where two
-> partitions of different sizes have the same total cost. Floor at
-> `sqrt(epsilon)` (rather than `epsilon` directly) keeps the floor
-> safely above floating-point noise without distorting any real
-> similarity value.
+The positive floor matters: without it, an antipodal pair of
+embeddings (`dot_product = -1`) would yield `sim[i] = 0`, and the
+optimizer would be indifferent to adding extra splits at zero-cost
+points — producing nondeterministic over-splitting where two
+partitions of different sizes have the same total cost. Floor at
+`sqrt(epsilon)` (rather than `epsilon` directly) keeps the floor
+safely above floating-point noise without distorting any real
+similarity value.
 
 **Step 4 — Heading-aware modification (SPEC-CHUNK-322).** Adjust
 `sim[i]` for partition points adjacent to heading chunklets.
 
 ### SPEC-CHUNK-321 — Discourse-vector removal
 
-The *discourse vector* represents the document's overall topic; the
-intent is that subtracting it makes the remaining cosine similarity
-reflect *local* topic shifts rather than the document's central theme.
+The *discourse vector* represents the document's overall topic.
+Subtracting it makes the remaining cosine similarity reflect *local*
+topic shifts rather than the document's central theme. This step is
+on by default; an implementation may expose a flag to disable it for
+benchmarking, but the default must include the correction.
 
-> **Lineage.** The technique of subtracting a single dominant
-> direction from sentence embeddings to surface local semantic content
-> is structurally the same as the "common discourse vector" step in
-> Arora, Liang & Ma,
-> [*A Simple but Tough-to-Beat Baseline for Sentence Embeddings*](https://openreview.net/forum?id=SyK00v5xx)
-> (ICLR 2017). That paper subtracts the top principal component across
-> a *corpus* to remove a shared frequency direction; we apply the same
-> idea per-*document* to remove the document's central topic.
-> (The upstream source does not cite this work; the resemblance is
-> structural, not documented lineage.)
+The technique of subtracting a single dominant direction from
+sentence embeddings to surface local semantic content is structurally
+the same as the "common discourse vector" step in Arora, Liang & Ma,
+[*A Simple but Tough-to-Beat Baseline for Sentence Embeddings*](https://openreview.net/forum?id=SyK00v5xx)
+(ICLR 2017). That paper subtracts the top principal component across
+a *corpus* to remove a shared frequency direction; this spec applies
+the same idea per-*document* to remove the document's central topic.
 
 Compute it as follows:
 
@@ -151,18 +148,18 @@ Compute it as follows:
    the correction and use the un-corrected, unit-normalized embeddings
    instead.
 
-> **Why trim to the middle 70%?** Unusually-short chunklets (titles,
-> one-line code blocks, list-item fragments) and unusually-long
-> chunklets (large preformatted blocks, table dumps) are
-> systematically *off-topic* relative to the document's typical
-> prose. Including them in the topic estimate pulls the discourse
-> vector toward those outliers and weakens the correction for the
-> bulk of the document. Trimming to `[q15, q85]` keeps the estimate
-> robust to such tails. The exact `0.15`/`0.85` choice is a tuning
-> decision (see U-CHUNK-302).
-
 When fewer than two typical chunklets exist (a degenerate or
 very-short document), no correction is applied.
+
+The middle-70% trim exists because unusually-short chunklets (titles,
+one-line code blocks, list-item fragments) and unusually-long
+chunklets (large preformatted blocks, table dumps) are systematically
+*off-topic* relative to the document's typical prose. Including them
+in the topic estimate pulls the discourse vector toward those outliers
+and weakens the correction for the bulk of the document. The exact
+`0.15`/`0.85` choice is hand-tuned; reasonable values in
+`[0.10, 0.25]` and `[0.75, 0.90]` produce qualitatively similar
+discourse vectors.
 
 ### SPEC-CHUNK-322 — Heading-aware modification of partition similarity
 
@@ -190,33 +187,31 @@ from `0` to `N-2`:
 Update "previous was a heading" for the next iteration based on
 chunklet `i`.
 
-The two named constants are:
+The two constants play different roles:
 
 | Named constant | Value | Role |
 |---|---|---|
-| `HEADING_SPLIT_BEFORE_DIVISOR` | `4` | Hand-tuned attractiveness boost for "split before a heading." |
-| `HEADING_SPLIT_AFTER_FORBID` | `1.0` | The **maximum possible** post-rescaling similarity (see SPEC-CHUNK-320 step 3), so a split immediately after a heading carries maximum cost — effectively forbidden. |
+| `HEADING_SPLIT_BEFORE_DIVISOR` | `4` | Attractiveness boost for splitting before a heading. |
+| `HEADING_SPLIT_AFTER_FORBID` | `1.0` | The maximum possible post-rescaling similarity (see SPEC-CHUNK-320 step 3), so a split immediately after a heading carries maximum cost — effectively forbidden. |
 
-> **Why the asymmetry?** The two constants play different roles, not
-> mirror-image ones.
->
-> - `HEADING_SPLIT_AFTER_FORBID = 1.0` is **structural**: it equals
->   the ceiling of the partition-similarity range, so the
->   minimization will never choose to split there unless absolutely
->   required by the covering constraint. This is not a tuning knob;
->   any value `≥ 1.0` produces the same effect.
->
-> - `HEADING_SPLIT_BEFORE_DIVISOR = 4` is **heuristic**, but with a
->   meaningful lower bound. The goal is to make "split before a
->   heading" at least as attractive as the strongest non-heading
->   boundary the document is likely to produce. Cosine similarity
->   between unrelated paragraphs typically maps (post-rescaling) to
->   `sim` values in the `0.5`-`0.7` range; dividing by `2` already
->   brings a heading boundary below that, and any divisor `≥ 2`
->   produces qualitatively similar partitions. The reference value
->   `4` provides extra margin so the heuristic survives noisier
->   embeddings; the implementor may use any value `≥ 2` (see
->   U-CHUNK-303).
+`HEADING_SPLIT_AFTER_FORBID = 1.0` is structural: it equals the
+ceiling of the partition-similarity range, so the minimization will
+never choose to split there unless absolutely required by the
+covering constraint. This is not a tuning knob; any value `≥ 1.0`
+produces the same effect.
+
+`HEADING_SPLIT_BEFORE_DIVISOR = 4` is a bounded heuristic. The goal
+is to make "split before a heading" at least as attractive as the
+strongest non-heading boundary the document is likely to produce.
+Cosine similarity between unrelated paragraphs typically maps
+(post-rescaling) to `sim` values in the `0.5`-`0.7` range; dividing
+by `2` already brings a heading boundary below that, and any divisor
+`≥ 2` produces qualitatively similar partitions. The default value
+`4` provides extra margin so the heuristic survives noisier
+embeddings; values much greater than `~8` start to treat headings as
+forced splits, which conflicts with cases where a heading and its
+first paragraph genuinely belong together. Implementations may expose
+this as a parameter; default to `4`, valid range roughly `[2, 8]`.
 
 ## Determinism and tie-breaking
 
@@ -225,8 +220,8 @@ The two named constants are:
 The output is deterministic for the same inputs, the same Markdown
 parser, and a deterministic optimizer. Different integer-programming
 solvers may produce different but equally-optimal partitions when
-multiple partitions tie. Test vectors should not depend on
-tie-breaking choices.
+multiple partitions tie. Test vectors must not depend on tie-breaking
+choices.
 
 ## Edge cases
 
@@ -257,14 +252,14 @@ that partition optimization failed.
 
 ## Named constants
 
-| Name | Value | Spec ref | Type |
-|------|-------|----------|------|
-| `DEFAULT_MAX_SIZE_CHARS` | `2048` | input table | tunable (heuristic) |
-| `MIN_PARTITION_SIMILARITY` | `sqrt(epsilon)` | SPEC-CHUNK-320 step 3 | numerical safety (resolved) |
-| `TYPICAL_CHUNKLET_LOWER_QUANTILE` | `0.15` | SPEC-CHUNK-321 | tunable (heuristic; U-CHUNK-302) |
-| `TYPICAL_CHUNKLET_UPPER_QUANTILE` | `0.85` | SPEC-CHUNK-321 | tunable (heuristic; U-CHUNK-302) |
-| `HEADING_SPLIT_BEFORE_DIVISOR` | `4` | SPEC-CHUNK-322 | tunable (heuristic; U-CHUNK-303) |
-| `HEADING_SPLIT_AFTER_FORBID` | `1.0` | SPEC-CHUNK-322 | structural (= similarity ceiling; resolved) |
+| Name | Value | Defined in |
+|------|-------|------------|
+| `DEFAULT_MAX_SIZE_CHARS` | `2048` | inputs table (same as Spec 02) |
+| `MIN_PARTITION_SIMILARITY` | `sqrt(epsilon)` | SPEC-CHUNK-320 step 3 |
+| `TYPICAL_CHUNKLET_LOWER_QUANTILE` | `0.15` | SPEC-CHUNK-321 |
+| `TYPICAL_CHUNKLET_UPPER_QUANTILE` | `0.85` | SPEC-CHUNK-321 |
+| `HEADING_SPLIT_BEFORE_DIVISOR` | `4` | SPEC-CHUNK-322 |
+| `HEADING_SPLIT_AFTER_FORBID` | `1.0` | SPEC-CHUNK-322 |
 
 ## Implementation-defined behavior
 
@@ -280,44 +275,6 @@ that partition optimization failed.
 ## Unspecified behavior
 
 - Behavior when the embedding matrix has fewer or more rows than the
-  chunklets list. The implementor should validate and raise.
+  chunklets list. The implementation should validate and raise.
 - Behavior when `chunklets == []` (treat as the SPEC-CHUNK-340
   short-circuit, returning `([], [<empty matrix>])`).
-
-## Uncertainties
-
-### U-CHUNK-301 — Discourse vector necessity
-
-The discourse-vector correction is mathematically meaningful (it
-removes a shared topic direction; see the Arora et al. lineage note
-in SPEC-CHUNK-321) and the technique has published precedent for
-sentence embeddings. The *empirical benefit at this specific stage*
-is not measured in the upstream source. The reimplementor should
-preserve it; an optional flag to disable it for benchmarking is
-acceptable, but the default behavior must include the correction.
-
-### U-CHUNK-302 — Percentile choice for trimming (largely resolved)
-
-The *intent* of `TYPICAL_CHUNKLET_LOWER_QUANTILE = 0.15` /
-`TYPICAL_CHUNKLET_UPPER_QUANTILE = 0.85` is now explained under
-SPEC-CHUNK-321 (trim systematically off-topic outliers when
-estimating the document's topic direction). The exact choice of
-15/85 versus, say, 10/90 or 20/80 is still hand-tuned. Tweaking
-within reason is unlikely to dramatically change behavior, but exact
-reproduction requires the documented values.
-
-### U-CHUNK-303 — Heading-split-before divisor (bounded heuristic)
-
-`HEADING_SPLIT_AFTER_FORBID = 1.0` is structural (it equals the
-similarity ceiling; see SPEC-CHUNK-322) and is not a tuning knob.
-
-`HEADING_SPLIT_BEFORE_DIVISOR = 4` is a bounded heuristic: any value
-`≥ 2` brings a heading boundary's `sim` below the value typically
-produced by adjacent unrelated paragraphs (~0.5-0.7 post-rescaling),
-so the optimizer will prefer the heading split. Larger values (the
-reference uses `4`) add safety margin for noisier embeddings without
-changing partitions much. Values much greater than `~8` start to
-treat headings as forced splits, which conflicts with cases where a
-heading and its first paragraph genuinely belong together. The
-implementor may expose this as a parameter and should default to `4`
-for behavioral parity; valid range is roughly `[2, 8]`.

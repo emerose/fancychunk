@@ -80,7 +80,7 @@ determinism is conditional on that model being deterministic.
 ### SPEC-CHUNK-902 — Size monotonicity
 
 A unit produced by stage N is no larger than the size limit configured
-for stage N. Specifically:
+for stage N:
 - Sentences respect their configured `max_len` (when supplied).
 - Chunklets are no larger than `max_size` characters.
 - Chunks are no larger than `max_size` characters.
@@ -122,9 +122,9 @@ embeddings than paragraph-sized chunklets).
 ## Configuration surface
 
 All three stages share a single notion of "maximum unit size" in
-characters, defaulting to `2048`. This is the size limit applied at the
-chunklet and chunk stage, and is also used as `max_len` for sentence
-splitting in the upstream composition.
+characters, defaulting to `2048`. This is the size limit applied at
+the chunklet and chunk stage, and is also used as `max_len` for
+sentence splitting when stages are composed end-to-end.
 
 Implementations are free to expose stage-specific size limits if they
 have a use case requiring different limits per stage. The default

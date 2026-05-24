@@ -7,19 +7,19 @@ isolation" pattern; it is interchangeable with stage-2/stage-3 input
 provided the embedder supports per-token output.
 
 This spec describes a contract on the *embedding function*, not on
-fancychunk's pipeline directly. A late-chunking embed function can be
-plugged into stages 2 and 3 to produce more context-aware embeddings.
+the pipeline directly. A late-chunking embed function can be plugged
+into stages 2 and 3 to produce more context-aware embeddings.
 
-> **Origin and rationale.** The technique was introduced and named in
-> Weaviate's blog post
-> [*Late Chunking in Long-Context Embedding Models*](https://weaviate.io/blog/late-chunking),
-> and quantified in the Jina AI paper
-> [*Late Chunking: Contextual Chunk Embeddings Using Long-Context Embedding Models*](https://arxiv.org/abs/2409.04701)
-> (Günther et al., 2024). The core observation: when a chunk is
-> embedded in isolation, anaphoric references ("it", "this method",
-> "the algorithm") lose their referents because the surrounding
-> context is gone. Encoding the whole context first and pooling
-> *after* preserves those references in the per-chunk embedding.
+The technique was introduced and named in Weaviate's blog post
+[*Late Chunking in Long-Context Embedding Models*](https://weaviate.io/blog/late-chunking),
+and quantified in the Jina AI paper
+[*Late Chunking: Contextual Chunk Embeddings Using Long-Context
+Embedding Models*](https://arxiv.org/abs/2409.04701) (Günther et al.,
+2024). The core observation: when a chunk is embedded in isolation,
+anaphoric references ("it", "this method", "the algorithm") lose
+their referents because the surrounding context is gone. Encoding the
+whole context first and pooling *after* preserves those references in
+the per-chunk embedding.
 
 ## Inputs
 
@@ -28,7 +28,7 @@ plugged into stages 2 and 3 to produce more context-aware embeddings.
 | `sentences` | list of strings | yes | — | The sentences to embed, in document order. Typically the output of stage 1. |
 | `embedder` | object satisfying the embedder contract below | yes | — | A token-level embedding model. |
 | `max_tokens_per_segment` | positive integer | no | derived from the embedder's context window | The upper bound on tokens fed to the embedder in one call. |
-| `preamble_fraction` | float in `(0, 1)` | no | `DEFAULT_PREAMBLE_FRACTION` (`= 0.382`) | Fraction of `max_tokens_per_segment` reserved for the segment's preamble. See U-CHUNK-401. |
+| `preamble_fraction` | float in `(0, 1)` | no | `DEFAULT_PREAMBLE_FRACTION` (`= 0.382`) | Fraction of `max_tokens_per_segment` reserved for the segment's preamble. |
 
 ## Outputs
 
@@ -45,7 +45,7 @@ sentences.
 
 ## Embedder contract
 
-The embedder is a black box that satisfies three operations:
+The embedder is a black box that satisfies four operations:
 
 | Operation | Behavior |
 |-----------|----------|
@@ -54,11 +54,13 @@ The embedder is a black box that satisfies three operations:
 | `embed(text) → matrix[T, D]` | Returns one embedding vector per token in `text`, with `T` equal to the number of tokens. The embedder must NOT pool tokens internally for this call. |
 | `n_ctx → int` | The maximum number of input tokens per `embed` call. |
 
-
-The reimplementor may use any embedding model that exposes
-token-level outputs (a "no pooling" or "per-token output" mode).
-Cloud embedding APIs that return only one vector per input do not
-satisfy the contract.
+Any embedding model that exposes token-level outputs (a "no pooling"
+or "per-token output" mode) is acceptable. Cloud embedding APIs that
+return only one vector per input do not satisfy the contract — late
+chunking needs the per-token outputs to pool within sentence
+boundaries that the embedder doesn't know about. If a future
+embedder exposed a "pool over these token ranges" API, late chunking
+would not need the explicit per-token output and pooling step.
 
 ## Behavior
 
@@ -75,52 +77,51 @@ has two parts:
 Every sentence appears in exactly one segment's *content* range
 (though it may also appear as another segment's *preamble*).
 
-> **Why preambles exist.** Transformer embeddings are *contextual* —
-> every token's output vector is a function of the surrounding tokens
-> via attention. Consider:
->
-> > "The algorithm achieves O(n log n) by maintaining a balanced
-> > binary tree."
->
-> Encoded in isolation, "the algorithm" has no antecedent and the
-> embedder produces a generic "thing being discussed" direction for
-> it. Encoded with the preceding heading "## Quicksort with random
-> pivot selection" as preamble, the attention mechanism connects "the
-> algorithm" to "Quicksort" and the embedding for that token picks up
-> a meaningful direction. The preamble exists so that sentences near
-> the start of each new content range have prior context to attend to,
-> even when those sentences happen to fall near a segment boundary.
-> Without it, late chunking degrades to standard chunking around
-> segment edges.
->
-> **The trade-off the preamble fraction controls.**
-> `DEFAULT_PREAMBLE_FRACTION` (defined in SPEC-CHUNK-411) splits each
-> segment's token budget between preamble and content:
->
-> ```
-> ┌──────────── max_tokens_per_segment ────────────┐
-> │  ░░░ preamble (fraction × budget) ░░░ │ content │
-> │  ←── encoded for context, then       │ ←── kept │
-> │     embeddings DISCARDED ──→         │   in     │
-> │                                      │ output → │
-> └────────────────────────────────────────────────┘
->                                        ↑
->                            content_start
-> ```
->
-> - **Higher fraction →** more context behind each content sentence
->   → context-aware embeddings even near segment boundaries → BUT
->   the same sentences get encoded multiple times (once as content,
->   then again as preamble for the next segment's pass) → slower
->   wall-clock, more compute.
-> - **Lower fraction →** less redundant work → faster → BUT sentences
->   near each segment's `content_start` have weaker context and their
->   embeddings are noisier.
->
-> Defensible operating band: roughly `[0.25, 0.45]`. Below ≈ 25%, the
-> first paragraph of each segment dominates with insufficient
-> grounding; above ≈ 50%, more than half the compute is redundant
-> re-encoding of text whose embeddings are already kept.
+**Why preambles exist.** Transformer embeddings are *contextual* —
+every token's output vector is a function of the surrounding tokens
+via attention. Consider:
+
+> "The algorithm achieves O(n log n) by maintaining a balanced
+> binary tree."
+
+Encoded in isolation, "the algorithm" has no antecedent and the
+embedder produces a generic "thing being discussed" direction for it.
+Encoded with the preceding heading "## Quicksort with random pivot
+selection" as preamble, the attention mechanism connects "the
+algorithm" to "Quicksort" and the embedding for that token picks up a
+meaningful direction. The preamble exists so that sentences near the
+start of each new content range have prior context to attend to, even
+when those sentences happen to fall near a segment boundary. Without
+it, late chunking degrades to standard chunking around segment edges.
+
+**The trade-off the preamble fraction controls.**
+`DEFAULT_PREAMBLE_FRACTION` (defined in SPEC-CHUNK-411) splits each
+segment's token budget between preamble and content:
+
+```
+┌──────────── max_tokens_per_segment ────────────┐
+│  ░░░ preamble (fraction × budget) ░░░ │ content │
+│  ←── encoded for context, then       │ ←── kept │
+│     embeddings DISCARDED ──→         │   in     │
+│                                      │ output → │
+└────────────────────────────────────────────────┘
+                                       ↑
+                           content_start
+```
+
+- **Higher fraction →** more context behind each content sentence
+  → context-aware embeddings even near segment boundaries → BUT
+  the same sentences get encoded multiple times (once as content,
+  then again as preamble for the next segment's pass) → slower
+  wall-clock, more compute.
+- **Lower fraction →** less redundant work → faster → BUT sentences
+  near each segment's `content_start` have weaker context and their
+  embeddings are noisier.
+
+Defensible operating band: roughly `[0.25, 0.45]`. Below ≈ 25%, the
+first paragraph of each segment dominates with insufficient grounding;
+above ≈ 50%, more than half the compute is redundant re-encoding of
+text whose embeddings are already kept.
 
 ### SPEC-CHUNK-411 — Segment construction is greedy with backward preamble
 
@@ -148,10 +149,10 @@ follows:
 
 5. Repeat until `content_start >= len(sentences)`.
 
-The constant `DEFAULT_PREAMBLE_FRACTION = 0.382` (the inverse golden
-ratio, `1 - 1/φ`) and the addition-of-unused-budget behavior are
-preserved as defaults. The trade-off the fraction controls is
-explained under SPEC-CHUNK-410.
+The default `DEFAULT_PREAMBLE_FRACTION = 0.382` is the inverse golden
+ratio (`1 - 1/φ`); it sits in the middle of the defensible operating
+band (SPEC-CHUNK-410) and is aesthetically pleasing. Implementations
+may tune it as a configuration parameter.
 
 ### SPEC-CHUNK-412 — Per-segment encoding and pooling
 
@@ -185,9 +186,9 @@ For each segment `(segment_start, content_start, segment_end)`:
    (indices `[segment_start, content_start)`); keep those in the
    content range (indices `[content_start, segment_end)`).
 
-The largest-remainder allocation is preserved as part of the spec —
-it ensures the per-sentence token counts sum to exactly the segment's
-token count without leaving any embedding unallocated.
+The largest-remainder allocation ensures the per-sentence token
+counts sum to exactly the segment's token count without leaving any
+embedding unallocated.
 
 ### SPEC-CHUNK-420 — Per-sentence token counts must align with what the embedder saw
 
@@ -201,14 +202,15 @@ This is non-trivial because:
   sentence boundaries).
 - Many tokenizers drop or add tokens at the start/end of input.
 
-The reimplementor must use a method that recovers per-sentence counts
-*from the embedder's actual tokenization of the joined input*.
+The implementation must use a method that recovers per-sentence
+counts *from the embedder's actual tokenization of the joined input*.
 
-One valid implementation (used by the source under analysis) is the
-sentinel-token method:
+One valid implementation is the sentinel-token method:
 
 1. Pick a character that, when inserted between sentences, tokenizes
-   to a known sentinel token. The source uses `⊕` (CIRCLED PLUS, U+2295).
+   to a known sentinel token. A good default is `⊕` (CIRCLED PLUS,
+   U+2295) — most tokenizers handle it as a stable single token and
+   it is rare in natural language.
 2. Tokenize `sentinel.join(sentences)`.
 3. Locate the sentinel tokens in the resulting sequence.
 4. Per-sentence token counts are the differences between consecutive
@@ -218,9 +220,11 @@ sentinel-token method:
 Other valid implementations include: tokenizing the joined input and
 mapping byte offsets back to sentence boundaries (if the tokenizer
 exposes offset metadata), or any other mechanism that produces
-correct per-sentence counts. The sentinel method is not normative.
+correct per-sentence counts. The sentinel method is not normative;
+any character or method satisfying this section and SPEC-CHUNK-421 is
+acceptable.
 
-### SPEC-CHUNK-421 — Sentinel character requirements (if using SPEC-CHUNK-420's example method)
+### SPEC-CHUNK-421 — Sentinel character requirements (if using the sentinel method)
 
 If the sentinel-token method is used, the sentinel character must
 satisfy:
@@ -282,9 +286,9 @@ raise.
 
 ## Named constants
 
-| Name | Value | Spec ref | Type |
-|------|-------|----------|------|
-| `DEFAULT_PREAMBLE_FRACTION` | `0.382` | SPEC-CHUNK-411 | tunable (heuristic; U-CHUNK-401) |
+| Name | Value | Defined in |
+|------|-------|------------|
+| `DEFAULT_PREAMBLE_FRACTION` | `0.382` | SPEC-CHUNK-411 |
 
 ## Implementation-defined behavior
 
@@ -304,29 +308,3 @@ raise.
   validation errors).
 - Behavior when `max_tokens_per_segment` is smaller than any single
   sentence's token count (covered by SPEC-CHUNK-451).
-
-## Uncertainties
-
-### U-CHUNK-401 — Choice of `DEFAULT_PREAMBLE_FRACTION = 0.382`
-
-We use `0.382` because raglite uses it and the inverse golden ratio
-is aesthetically pleasing. It sits in the middle of the defensible
-operating band (see SPEC-CHUNK-410). Implementors may tune it but
-should default to `0.382` for behavioral parity with the reference.
-
-### U-CHUNK-402 — Sentinel choice
-
-The character `⊕` (U+2295) is used as the sentinel in the source. It
-is chosen because most tokenizers handle it as a stable single token
-and it is rare in natural language. The reimplementor may use any
-character or method satisfying SPEC-CHUNK-420 and SPEC-CHUNK-421.
-
-### U-CHUNK-403 — Why per-token outputs, why not pool inside the embedder
-
-The technique exists because most embedders pool tokens *before*
-returning, but late chunking needs the per-token outputs to pool
-within sentence boundaries that the embedder doesn't know about. If
-the embedder exposed a "pool over these token ranges" API, late
-chunking would not need the explicit per-token output and pooling. No
-such standard API exists in 2026, so the spec requires per-token
-output.

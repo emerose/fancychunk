@@ -1,46 +1,9 @@
 # fancychunk specs
 
-Behavioral specifications for fancychunk's text-splitting pipeline. An
-implementor reading only these specs (never the upstream source they
-were extracted from) must be able to produce a conforming
-implementation.
-
-## The reimplementor test
-
-Every sentence in these specs must pass this test:
-
-> Could someone implement this behavior from this sentence alone,
-> never having seen the source it was extracted from?
-
-When the answer is "no, they'd need to see the original code," the
-sentence is rewritten. Internal function names, variable names, library
-choices, and source-file structure are absent by design.
-
-## What is preserved verbatim
-
-- **Numeric constants** that define behavior: `threshold = 0.25`,
-  `max_size = 2048`, golden-ratio split `0.382`, target ≈ 3 statements,
-  heading boundary probability `1.0`, etc.
-- **External vocabulary**: Markdown token type names (`heading_open`,
-  `paragraph_open`, `bullet_list_open`, `blockquote_open`,
-  `ordered_list_open`) — these are CommonMark / markdown-it parser
-  output, not internal names.
-- **Patterns the system relies on**: the heading regex `^#+\s` matches
-  the Markdown heading syntax itself.
-- **Algorithm classes** described by their mathematical type: "dynamic
-  programming", "binary integer programming", "covering constraint" —
-  these are mathematical concepts, not implementation references.
-
-## What is abstracted
-
-- Function names, variable names, class names, module names from any
-  upstream source.
-- Specific solver libraries (`scipy.linprog`, `cvxpy`, CP-SAT), array
-  libraries (`numpy`, `jax`), or sentence segmentation libraries
-  (`wtpsplit`, `spacy`, `nltk`). The spec says *what* output is needed;
-  the implementor picks the tool.
-- File layout, module boundaries, and whether stages are classes,
-  functions, or pipelines.
+Behavioral specifications for fancychunk's text-splitting pipeline.
+These specs describe what each function must do, not how to do it.
+The implementation is free to choose tools, algorithms, libraries,
+and internal architecture.
 
 ## Glossary
 
@@ -49,7 +12,7 @@ choices, and source-file structure are absent by design.
 | **document** | Input Markdown string. UTF-8. |
 | **sentence** | A contiguous substring of the document, the smallest unit fancychunk operates on. Sentences exhaustively partition the document; their concatenation reconstructs it byte-for-byte. |
 | **chunklet** | A paragraph-sized contiguous group of sentences. Targets ≈ 3 statements of information content. The basic unit that gets embedded. |
-| **chunk** | A contiguous group of chunklets representing one semantic unit. The unit the caller indexes for retrieval. |
+| **chunk** | A contiguous group of chunklets representing one semantic unit. The unit a caller indexes for retrieval. |
 | **statement** | A soft, document-relative measure of a sentence's information content. A sentence with the document's median word count is defined as containing one statement. |
 | **boundary probability** | A real number in `[0, 1]` indicating how likely a position is to be a structural break. Comes from two sources: predicted (a sentence segmentation model) and known (Markdown structure). |
 | **discourse vector** | The mean embedding of "typical" chunklets in a document, used to subtract a document's overall topic from chunklet embeddings so similarity reflects *local* topic shifts. |
@@ -57,7 +20,11 @@ choices, and source-file structure are absent by design.
 | **late chunking** | An embedding strategy where each sentence's embedding is computed within the context of a longer surrounding document segment, then mean-pooled per sentence. Produces context-aware sentence embeddings. |
 | **preamble** | In late chunking, the leading portion of an encoded segment that provides context but whose output embeddings are discarded. |
 
-## Specification ID ranges
+## Specification IDs
+
+Each spec contains numbered behaviors of the form `SPEC-CHUNK-NNN`,
+each describing a single testable property. The
+[acceptance checklist](acceptance/checklist.md) tracks every ID.
 
 | Range | Stage |
 |-------|-------|
@@ -67,4 +34,20 @@ choices, and source-file structure are absent by design.
 | SPEC-CHUNK-4xx | Late chunking |
 | SPEC-CHUNK-9xx | Cross-cutting (concatenation, determinism) |
 
-Uncertainties carry `U-CHUNK-NNN` and are flagged inline.
+Concrete input/output test vectors are referenced as `TV-NNN`.
+
+## Reading order
+
+1. [`00-pipeline-overview.md`](00-pipeline-overview.md) — what the
+   three stages are and how they compose.
+2. The four stage specs in order:
+   [`01-sentence-splitting.md`](01-sentence-splitting.md),
+   [`02-chunklet-grouping.md`](02-chunklet-grouping.md),
+   [`03-semantic-chunking.md`](03-semantic-chunking.md),
+   [`04-late-chunking.md`](04-late-chunking.md) (optional component).
+3. [`contracts/public-api.md`](contracts/public-api.md) — the
+   external surface of the library.
+4. [`test-vectors/`](test-vectors/) — concrete input/expected-output
+   pairs for each stage.
+5. [`acceptance/checklist.md`](acceptance/checklist.md) — final
+   conformance check.

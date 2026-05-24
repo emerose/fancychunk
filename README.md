@@ -18,8 +18,6 @@ each chunk:
 - Begins at a structurally meaningful point (heading, paragraph start).
 - Groups together semantically related material, splitting where the
   topic shifts.
-- Carries a heading-path "preamble" describing where it sits in the
-  document outline.
 
 Optionally, when paired with a token-level embedding model, fancychunk
 can produce chunk embeddings that incorporate surrounding-document
@@ -37,24 +35,20 @@ context ("late chunking").
 ## How to read the specs
 
 The specs in [`docs/specs/`](docs/specs/) are behavioral, not
-prescriptive about implementation. A spec line says *what* the function
-must do, not *how* to do it. The implementor is free to choose tools,
-algorithms, libraries, and internal architecture.
+prescriptive about implementation. A spec line says *what* a function
+must do, not *how* to do it. Implementations are free to choose
+tools, algorithms, libraries, and internal architecture.
 
 Specs are numbered. SPEC-CHUNK-NNN identifiers within each spec
 correspond to a single testable behavior; the
 [acceptance checklist](docs/specs/acceptance/checklist.md) tracks every
 ID.
 
-The specs were extracted from an upstream codebase; see
-[provenance/sources.md](docs/specs/provenance/sources.md) for what
-was read.
-
 ## Spec layout
 
 ```
 docs/specs/
-├── README.md                     # Methodology, glossary
+├── README.md                     # Glossary and reading order
 ├── 00-pipeline-overview.md       # End-to-end data flow
 ├── 01-sentence-splitting.md      # Stage 1
 ├── 02-chunklet-grouping.md       # Stage 2
@@ -62,6 +56,5 @@ docs/specs/
 ├── 04-late-chunking.md           # Optional embed strategy
 ├── contracts/public-api.md       # Function signatures
 ├── test-vectors/                 # Concrete input → expected output pairs
-├── acceptance/checklist.md       # Pass/fail criteria for an implementation
-└── provenance/sources.md         # Upstream sources and licensing note
+└── acceptance/checklist.md       # Pass/fail criteria
 ```

@@ -12,7 +12,7 @@ configurable length range, and structurally meaningful boundaries
 | `document` | string (UTF-8) | yes | — | The Markdown document to split. |
 | `min_len` | non-negative integer | no | `4` | Minimum characters per sentence. |
 | `max_len` | positive integer or `None` | no | `None` | Maximum characters per sentence. `None` means no upper bound. |
-| `known_boundary_probas` | per-character probability vector or callable producing one | no | the Markdown-heading boundary function (SPEC-CHUNK-104) | An override mechanism: positions where the caller already knows the boundary probability. See SPEC-CHUNK-103. |
+| `known_boundary_probas` | per-character probability vector or callable producing one | no | the Markdown-heading boundary function (SPEC-CHUNK-113) | An override mechanism: positions where the caller already knows the boundary probability. See SPEC-CHUNK-112. |
 
 ## Outputs
 
@@ -52,11 +52,11 @@ The choice of model is implementation-defined; any model whose output
 is a length-N vector of values in `[0, 1]` (where N is the character
 count) is conforming.
 
-The reimplementor may use any segmenter (rule-based, statistical, or
-learned). Quality of sentence boundaries will track the quality of the
+Any segmenter — rule-based, statistical, or learned — is acceptable.
+Quality of sentence boundaries will track the quality of the
 segmenter, but the contract here is purely the vector shape.
 
-> **Reference implementation.** A natural choice is a model from the
+> **A natural choice** is a model from the
 > [SaT (Segment any Text)](https://arxiv.org/abs/2406.16678) family
 > (Frohmann et al., 2024), available via
 > [wtpsplit-lite](https://github.com/superlinear-ai/wtpsplit-lite).
@@ -90,7 +90,6 @@ Markdown structure and constructs a per-character override vector with:
   heading. (The heading ends a sentence.)
 - `NaN` at all other positions. (Defer to predicted probabilities.)
 
-
 A "heading" is determined by Markdown parsing: any token that opens a
 heading element (ATX-style `# Heading` or Setext-style underlined
 heading) and its corresponding content span.
@@ -115,24 +114,24 @@ non-whitespace characters:
 This biases the splitter to break *after* whitespace, so the next
 sentence starts at a non-whitespace character.
 
-> **Why trailing whitespace?** Two reasons.
->
-> 1. *Reader expectation.* A printed sentence starts with a word, not
->    with the space separating it from the previous sentence. Storing
->    sentences with leading whitespace would surprise downstream
->    consumers (display, search-result snippets, highlighting).
->
-> 2. *Unambiguous re-concatenation.* The boundary between two
->    sentences sits in a whitespace run. Without this rule, the
->    splitter could place the boundary anywhere inside the run, so
->    `"".join(sentences)` would round-trip but the *split points*
->    would be ambiguous. Pinning every internal whitespace position to
->    the run's minimum and the final position to the run's maximum
->    means whichever boundary the model preferred ends up at the same
->    place: just before the next non-whitespace character. Min/max
->    specifically (rather than, say, zero/one) preserves the model's
->    *relative* preferences across runs while making each run's
->    boundary location deterministic.
+Two reasons:
+
+1. **Reader expectation.** A printed sentence starts with a word, not
+   with the space separating it from the previous sentence. Storing
+   sentences with leading whitespace would surprise downstream
+   consumers (display, search-result snippets, highlighting).
+
+2. **Unambiguous re-concatenation.** The boundary between two
+   sentences sits in a whitespace run. Without this rule, the
+   splitter could place the boundary anywhere inside the run, so
+   `"".join(sentences)` would round-trip but the *split points*
+   would be ambiguous. Pinning every internal whitespace position to
+   the run's minimum and the final position to the run's maximum
+   means whichever boundary the model preferred ends up at the same
+   place: just before the next non-whitespace character. Min/max
+   specifically (rather than, say, zero/one) preserves the model's
+   *relative* preferences across runs while making each run's
+   boundary location deterministic.
 
 ### SPEC-CHUNK-115 — Splitting maximizes total score above threshold
 
@@ -141,18 +140,17 @@ are chosen to **maximize the sum of `(probability − BOUNDARY_SCORE_THRESHOLD)`
 over the selected boundary positions, subject to the length constraints
 (SPEC-CHUNK-105, SPEC-CHUNK-106).
 
-The threshold (`BOUNDARY_SCORE_THRESHOLD = 0.25`) is the recommended
-operating point published for SaT's `-sm` model family (see the
-reference implementation note in SPEC-CHUNK-111). Positions with
-probability above this value contribute positive score (the splitter
-is rewarded for placing a boundary there); positions below contribute
-negative score (the splitter is penalized).
+`BOUNDARY_SCORE_THRESHOLD` defaults to `0.25`, the recommended
+operating point published for SaT's `-sm` model family (see
+SPEC-CHUNK-111). Positions with probability above this value
+contribute positive score (the splitter is rewarded for placing a
+boundary there); positions below contribute negative score (the
+splitter is penalized).
 
-If the implementor substitutes a different sentence-segmentation
-model, the threshold should be recalibrated to that model's
-recommended operating point. The exact value is meaningful only
-relative to the model's calibration — it is not a universal
-"goodness" cutoff.
+If a different sentence-segmentation model is used, the threshold
+should be recalibrated to that model's recommended operating point.
+The exact value is meaningful only relative to the model's
+calibration — it is not a universal "goodness" cutoff.
 
 This is an optimization problem with `O(N)` candidate boundary
 positions and a length-range constraint coupling them. The standard
@@ -161,9 +159,9 @@ is conforming.
 
 ### SPEC-CHUNK-116 — Two-pass max-length handling
 
-When `max_len` is set, the implementation first solves the
+When `max_len` is set, the implementation may first solve the
 optimization with no max-length constraint, then for each resulting
-sentence that exceeds `max_len`, re-runs the optimization on that
+sentence that exceeds `max_len`, re-run the optimization on that
 sentence with the max-length constraint applied. This is a performance
 optimization: the unconstrained problem admits a faster solution than
 the constrained one.
@@ -185,8 +183,8 @@ When two partitions yield the same total score, the splitter selects
 the one found first in its enumeration. Implementations using DP with
 forward iteration produce the lexicographically-earliest set of
 boundary indices; implementations using backward iteration may produce
-the lexicographically-latest. Both are conforming. (Test vectors must
-not depend on this tie-breaker.)
+the lexicographically-latest. Both are conforming. Test vectors must
+not depend on this tie-breaker.
 
 ## Edge cases
 
@@ -214,21 +212,19 @@ returns `[document]`.
 ### SPEC-CHUNK-133 — Empty document
 
 The behavior for an empty document (`""`) is implementation-defined.
-Reasonable choices are returning `[""]` or `[]`. The reimplementor
-should document which is chosen.
+Reasonable choices are returning `[""]` or `[]`. Document the choice.
 
 ## Named constants
 
-| Name | Value | Spec ref |
-|------|-------|----------|
+| Name | Value | Defined in |
+|------|-------|------------|
 | `BOUNDARY_SCORE_THRESHOLD` | `0.25` | SPEC-CHUNK-115 |
 
 ## Implementation-defined behavior
 
 - Choice of sentence-segmentation model.
 - Whether to use one solve or two for max-length handling.
-- Memory representation of the probability vector (NumPy, list,
-  etc.).
+- Memory representation of the probability vector.
 - Whether to support per-call override of `BOUNDARY_SCORE_THRESHOLD`
   or hard-code it.
 
@@ -238,13 +234,9 @@ should document which is chosen.
   required to be a valid string).
 - Behavior when the override callable raises (caller's responsibility).
 
-## Dependencies the implementor must satisfy
+## Dependencies
 
 - A Markdown parser that exposes heading token positions (start and
-  end line of every heading). Any parser conforming to CommonMark is
-  sufficient. The choice of parser is implementation-defined.
+  end line of every heading). Any CommonMark-conforming parser is
+  sufficient.
 - A sentence-segmentation model satisfying SPEC-CHUNK-111.
-
-## Uncertainties
-
-None for stage 1. The behavior is fully constrained by the source.

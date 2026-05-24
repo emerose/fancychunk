@@ -10,9 +10,23 @@ chunklet is a contiguous group of sentences targeting roughly three
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `sentences` | list of strings | yes | — | An ordered sequence of sentences. Typically the output of stage 1. |
-| `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunklet length in characters. See U-CHUNK-203. |
+| `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunklet length in characters. |
 | `boundary_cost` | callable | no | the default in SPEC-CHUNK-220 | Cost contributed by a chunklet's boundary probabilities. |
 | `statement_cost` | callable | no | the default in SPEC-CHUNK-221 | Cost contributed by a chunklet's statement count. |
+
+> **About `DEFAULT_MAX_SIZE_CHARS = 2048`.** This is a rule-of-thumb
+> rather than a derived value. It produces chunklets of roughly
+> ~400-600 tokens for typical English prose, which fits comfortably
+> inside the context window of every commonly-used embedding model.
+> The *order of magnitude* — a few hundred tokens per retrievable
+> unit — is well-supported by retrieval-benchmark literature (MTEB,
+> BEIR): retrieval quality typically peaks somewhere in the
+> ~256–768 token range and degrades both for very short units (low
+> recall, fragments) and very long units (low precision, mixed
+> topics). Implementations should tune for their corpus and embedder:
+> shorter chunklets (≈ 1024 chars) give finer-grained retrieval;
+> longer chunklets (≈ 4096 chars) give more context per retrieved
+> unit.
 
 ## Outputs
 
@@ -61,9 +75,8 @@ Interpretation:
 - The chunklet is penalized for *swallowing* boundaries inside it
   (every internal `p[i]` adds to the cost).
 
-
-The reimplementor may expose a way to override this function. If they
-do, the default must match the formula above.
+A custom `boundary_cost` function may be exposed as a parameter; the
+default must match the formula above.
 
 ### SPEC-CHUNK-221 — Default statement cost
 
@@ -86,16 +99,20 @@ Interpretation:
   chunklet); for small `s` it would explode, hence the
   `STATEMENT_COST_FLOOR` clamp.
 
-The target value `3` and the divisor structure are preserved as part
-of the spec. See U-CHUNK-201 for the (heuristic) rationale behind
-the target.
+> **About `TARGET_STATEMENTS_PER_CHUNKLET = 3`.** This is a heuristic:
+> a chunklet of 3 statements roughly corresponds to a paragraph of
+> moderate-density prose — large enough to carry a complete thought
+> (so the embedding has enough content to be discriminative), small
+> enough to remain topically coherent (so the embedding's direction
+> is unambiguous). It may be exposed as a configuration parameter;
+> default to `3` because downstream stages are calibrated around it.
 
 ### SPEC-CHUNK-230 — "Statements" as a soft information-content measure
 
 A sentence's *statement count* is a real-valued, document-relative
 measure of its information content. It is computed from the sentence's
 word count via a piecewise-linear function anchored at the document's
-word-count quartiles:
+word-count quartiles.
 
 Let `wc(s)` be the word count of sentence `s` (whitespace-separated
 tokens). Let `q25` and `q75` be the 25th and 75th percentiles of
@@ -124,22 +141,15 @@ So:
 - A sentence with `n > q75` words contributes proportionally more,
   unbounded above.
 
-> **Why these two constants?** They encode a clean design intent
-> rather than arbitrary tuning: the *median* sentence contributes
-> ≈ 1 statement (since the median sits halfway between q25 and q75,
-> the formula gives `0.75 + 0.5 * 0.5 = 1.0`), and each quartile-gap
-> step changes the contribution by `±0.25`. So the function is "one
-> statement at the document's typical sentence, plus or minus a
-> quarter-statement per quartile of word-count deviation." This is
-> the resolution of U-CHUNK-202.
+The two constants encode a clean design intent: the *median* sentence
+contributes ≈ 1 statement (since the median sits halfway between
+q25 and q75, the formula gives `0.75 + 0.5 * 0.5 = 1.0`), and each
+quartile-gap step changes the contribution by `±0.25`. So the function
+reads as "one statement at the document's typical sentence, plus or
+minus a quarter-statement per quartile of word-count deviation."
 
-The shape: short sentences within the document's typical range
-contribute less than one statement; long sentences contribute more;
-the median sentence contributes ≈ 1 statement.
-
-The reimplementor is not free to substitute a different
-statement-counting function as the default. A custom function may be
-exposed as a parameter, but the default must match.
+A custom statement-counting function may be exposed as a parameter,
+but the default must match the formula above.
 
 ### SPEC-CHUNK-240 — Per-sentence boundary probabilities from Markdown
 
@@ -158,24 +168,23 @@ document according to the following ranked table:
 | Ordered list (`ordered_list_open`) | `BOUNDARY_STRENGTH_LIST` | `0.25` |
 | (none of the above) | — | `0.00` |
 
-> **Why these specific values?** Only the *ordering* matters:
-> `heading > blockquote > paragraph > list-item > nothing`. The
-> chunklet-grouping DP uses these as relative weights in its boundary
-> cost (SPEC-CHUNK-220), so any monotonically-ranked positive values
-> with the same order would produce the same partitions. The
-> particular choice of `1, 0.75, 0.5, 0.25` is the simplest
-> evenly-spaced ranking that fits in `[0, 1]` and matches the
-> probability convention used throughout the pipeline. Implementors
-> may adjust the values to tune the *gaps* between ranks but should
-> preserve the order.
+Only the *ordering* matters:
+`heading > blockquote > paragraph > list-item > nothing`. The
+chunklet-grouping DP uses these as relative weights in its boundary
+cost (SPEC-CHUNK-220), so any monotonically-ranked positive values
+with the same order would produce the same partitions. The choice of
+`1, 0.75, 0.5, 0.25` is the simplest evenly-spaced ranking that fits
+in `[0, 1]` and matches the probability convention used throughout the
+pipeline. Implementations may adjust the values to tune the *gaps*
+between ranks but should preserve the order.
 
 When multiple token openings would assign a probability to the same
 sentence, the *first* assignment wins (the iteration is in document
 order, and reassignment to a sentence already assigned is skipped).
 
 The token-type names above are the CommonMark / markdown-it token
-type names. The reimplementor must use a parser that produces
-equivalent token types (or map their parser's tokens to this table).
+type names. The Markdown parser must produce equivalent token types
+(or map its parser's tokens to this table).
 
 ### SPEC-CHUNK-241 — Suppress consecutive non-zero boundaries
 
@@ -204,9 +213,9 @@ deterministic for the same inputs.
 ### SPEC-CHUNK-251 — Tie-breaking prefers smaller chunklets
 
 When two partitions have equal total cost, prefer the one whose
-*earlier* splits use the *earlier* possible split point. (Equivalently,
-in DP terms: when extending the partition table, ties are broken in
-favor of the smaller predecessor index.)
+earlier splits use the earlier possible split point. Equivalently, in
+DP terms: when extending the partition table, ties are broken in
+favor of the smaller predecessor index.
 
 ## Edge cases
 
@@ -217,43 +226,43 @@ For `sentences == []`, return `[]`.
 ### SPEC-CHUNK-261 — Single sentence
 
 For `sentences == [s]`, return `[s]` regardless of `len(s)` relative
-to `max_size`. (Stage 1 owns the `max_size`/`max_len` constraint at
-the sentence level; stage 2 will not split a single sentence.)
+to `max_size`. Stage 1 owns the size constraint at the sentence
+level; stage 2 will not split a single sentence.
 
 ### SPEC-CHUNK-262 — Total length within `max_size`
 
-If the concatenated input fits in one chunklet (`sum(len(s) for s in
-sentences) <= max_size`), the DP may still produce a multi-chunklet
-partition if doing so reduces total cost. The size constraint is an
-upper bound, not a forcing function.
+If the concatenated input fits in one chunklet
+(`sum(len(s) for s in sentences) <= max_size`), the DP may still
+produce a multi-chunklet partition if doing so reduces total cost.
+The size constraint is an upper bound, not a forcing function.
 
 ### SPEC-CHUNK-263 — No valid partition (sentence exceeds max_size)
 
 If any single input sentence exceeds `max_size`, no partition can
-satisfy SPEC-CHUNK-201. The behavior is implementation-defined; the
-reimplementor should either raise an explicit error or fall back to
-placing the oversized sentence in its own chunklet (violating
-SPEC-CHUNK-201). Stage 1 is responsible for ensuring this does not
-happen by passing `max_len = max_size` when called upstream.
+satisfy SPEC-CHUNK-201. The behavior is implementation-defined: either
+raise an explicit error or place the oversized sentence in its own
+chunklet (violating SPEC-CHUNK-201). Stage 1 is responsible for
+ensuring this does not happen by passing `max_len = max_size` when
+called upstream.
 
 ## Named constants
 
-| Name | Value | Spec ref | Type |
-|------|-------|----------|------|
-| `DEFAULT_MAX_SIZE_CHARS` | `2048` | input table | tunable (heuristic; U-CHUNK-203) |
-| `TARGET_STATEMENTS_PER_CHUNKLET` | `3` | SPEC-CHUNK-221 | tunable (heuristic; U-CHUNK-201) |
-| `STATEMENT_COST_FLOOR` | `1e-6` | SPEC-CHUNK-221 | numerical safety |
-| `STATEMENTS_AT_Q25` | `0.75` | SPEC-CHUNK-230 | design anchor (resolved; see SPEC-CHUNK-230) |
-| `QUARTILE_GAP_STATEMENTS` | `0.50` | SPEC-CHUNK-230 | design anchor (resolved; see SPEC-CHUNK-230) |
-| `BOUNDARY_STRENGTH_HEADING` | `1.00` | SPEC-CHUNK-240 | structural-cue ranking |
-| `BOUNDARY_STRENGTH_BLOCKQUOTE` | `0.75` | SPEC-CHUNK-240 | structural-cue ranking |
-| `BOUNDARY_STRENGTH_PARAGRAPH` | `0.50` | SPEC-CHUNK-240 | structural-cue ranking |
-| `BOUNDARY_STRENGTH_LIST` | `0.25` | SPEC-CHUNK-240 | structural-cue ranking |
+| Name | Value | Defined in |
+|------|-------|------------|
+| `DEFAULT_MAX_SIZE_CHARS` | `2048` | inputs table |
+| `TARGET_STATEMENTS_PER_CHUNKLET` | `3` | SPEC-CHUNK-221 |
+| `STATEMENT_COST_FLOOR` | `1e-6` | SPEC-CHUNK-221 |
+| `STATEMENTS_AT_Q25` | `0.75` | SPEC-CHUNK-230 |
+| `QUARTILE_GAP_STATEMENTS` | `0.50` | SPEC-CHUNK-230 |
+| `BOUNDARY_STRENGTH_HEADING` | `1.00` | SPEC-CHUNK-240 |
+| `BOUNDARY_STRENGTH_BLOCKQUOTE` | `0.75` | SPEC-CHUNK-240 |
+| `BOUNDARY_STRENGTH_PARAGRAPH` | `0.50` | SPEC-CHUNK-240 |
+| `BOUNDARY_STRENGTH_LIST` | `0.25` | SPEC-CHUNK-240 |
 
 ## Implementation-defined behavior
 
-- Choice of DP implementation (forward vs. backward iteration; SciPy
-  / Cython / pure Python).
+- Choice of DP implementation (forward vs. backward iteration; pure
+  Python, NumPy, compiled).
 - Whether to expose `boundary_cost` and `statement_cost` as
   user-overridable parameters or to hard-code the defaults.
 - Whether to compute per-sentence boundary probabilities lazily or
@@ -261,57 +270,16 @@ happen by passing `max_len = max_size` when called upstream.
 
 ## Unspecified behavior
 
-- Behavior when `sentences` contains an empty string (`""`). The
-  reimplementor should either filter empty strings out or treat them
-  as zero-statement, zero-length contributions.
+- Behavior when `sentences` contains an empty string (`""`). Either
+  filter empty strings out or treat them as zero-statement,
+  zero-length contributions.
 - Behavior when sentences contain trailing whitespace such that the
-  Markdown parser sees a different structure than the caller
-  expects. Stage 1's SPEC-CHUNK-114 should make this rare.
+  Markdown parser sees a different structure than the caller expects.
+  Stage 1's SPEC-CHUNK-114 should make this rare.
 
-## Dependencies the implementor must satisfy
+## Dependencies
 
 - A Markdown parser exposing per-token start lines (any CommonMark
   parser).
 - A DP or equivalent optimization implementation over O(N²) candidate
   partitions.
-
-## Uncertainties
-
-### U-CHUNK-201 — Choice of target = 3 statements
-
-`TARGET_STATEMENTS_PER_CHUNKLET = 3` in SPEC-CHUNK-221 is a
-heuristic. The plausible intent: a chunklet of 3 statements roughly
-corresponds to a paragraph of moderate-density prose — large enough
-to carry a complete thought (so the embedding has enough content to
-be discriminative) but small enough to remain topically coherent (so
-the embedding's direction is unambiguous). This is a tuning choice,
-not a derived constant; the implementor is free to expose it as a
-configuration parameter and should default to `3` to match the
-calibration of downstream stages.
-
-### U-CHUNK-202 — Resolved
-
-The two constants in SPEC-CHUNK-230 (`STATEMENTS_AT_Q25 = 0.75`,
-`QUARTILE_GAP_STATEMENTS = 0.50`) encode a clean design intent: the
-median sentence contributes ≈ 1 statement; each quartile-gap step
-changes the contribution by ±0.25. See the "Why these two constants?"
-explanation under SPEC-CHUNK-230.
-
-### U-CHUNK-203 — Default `max_size = 2048` characters
-
-The default chunklet (and chunk) size of `2048` characters is a
-rule-of-thumb rather than a derived value. It produces chunklets of
-roughly ~400-600 tokens for typical English prose, which fits
-comfortably inside the context window of every commonly-used
-embedding model (most allow ≥ 8k tokens).
-
-The *order of magnitude* — a few hundred tokens per retrievable unit —
-is well-supported by retrieval-benchmark literature (MTEB, BEIR, the
-public RAG evals): retrieval quality typically peaks somewhere in the
-~256–768 token range and degrades both for very short units (low
-recall, fragments) and very long units (low precision, mixed topics).
-`2048` characters sits comfortably in that range.
-
-Implementors should still tune for their corpus and embedder:
-shorter chunklets (≈ 1024 chars) give finer-grained retrieval; longer
-chunklets (≈ 4096 chars) give more context per retrieved unit.

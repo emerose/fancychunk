@@ -10,7 +10,7 @@ chunklet is a contiguous group of sentences targeting roughly three
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `sentences` | list of strings | yes | — | An ordered sequence of sentences. Typically the output of stage 1. |
-| `max_size` | positive integer | no | `2048` | Hard upper bound on chunklet length in characters. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L75, confidence=confirmed, agent=human --> |
+| `max_size` | positive integer | no | `2048` | Hard upper bound on chunklet length in characters. |
 | `boundary_cost` | callable | no | the default in SPEC-CHUNK-220 | Cost contributed by a chunklet's boundary probabilities. |
 | `statement_cost` | callable | no | the default in SPEC-CHUNK-221 | Cost contributed by a chunklet's statement count. |
 
@@ -19,10 +19,10 @@ chunklet is a contiguous group of sentences targeting roughly three
 A list of strings (the chunklets). Each chunklet is the concatenation
 of one or more contiguous input sentences.
 
-- **SPEC-CHUNK-200** — `"".join(chunklets) == "".join(sentences)`. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L155-L160, confidence=confirmed, agent=human -->
+- **SPEC-CHUNK-200** — `"".join(chunklets) == "".join(sentences)`.
 - **SPEC-CHUNK-201** — Every chunklet is at most `max_size`
   characters. This is enforced as a hard constraint during
-  optimization, not as a post-filter. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L130-L133, confidence=confirmed, agent=human -->
+  optimization, not as a post-filter.
 - **SPEC-CHUNK-202** — The number of chunklets is between 1 and
   `len(sentences)`.
 
@@ -42,7 +42,6 @@ where `p[j..i]` is the slice of per-sentence boundary probabilities
 covering the chunklet, and `Σ statements[j..i]` is the chunklet's
 total statement count. The sum runs over every chunklet `s[j..i]` in
 the partition.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L130-L153, confidence=confirmed, agent=human -->
 
 This is solvable in `O(N²)` time by dynamic programming (the standard
 1-D segmentation DP). Any solver that finds the optimum is conforming.
@@ -62,7 +61,6 @@ Interpretation:
 - The chunklet is penalized for *swallowing* boundaries inside it
   (every internal `p[i]` adds to the cost).
 
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L140, confidence=confirmed, agent=human -->
 
 The reimplementor may expose a way to override this function. If they
 do, the default must match the formula above.
@@ -82,7 +80,6 @@ Interpretation:
 - `sqrt(s)` divisor flattens the cost slightly for large `s` (so a
   10-statement chunklet is not 49× worse than a 4-statement
   chunklet); for small `s` it would explode, hence the `1e-6` floor.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L141, confidence=confirmed, agent=human -->
 
 The target value `3` and the divisor structure are preserved as part
 of the spec.
@@ -114,7 +111,6 @@ So:
 - A sentence with `n > q75` words contributes proportionally more,
   unbounded above.
 
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L70-L84, confidence=confirmed, agent=human -->
 
 The shape: short sentences within the document's typical range
 contribute less than one statement; long sentences contribute more;
@@ -142,12 +138,10 @@ document:
 | Ordered list (`ordered_list_open`) | `0.25` |
 | (none of the above) | `0.0` |
 
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L29-L41, confidence=confirmed, agent=human -->
 
 When multiple token openings would assign a probability to the same
 sentence, the *first* assignment wins (the iteration is in document
 order, and reassignment to a sentence already assigned is skipped).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L42-L49, confidence=confirmed, agent=human -->
 
 The token-type names above are the CommonMark / markdown-it token
 type names. The reimplementor must use a parser that produces
@@ -162,7 +156,6 @@ zero.
 
 This encourages splitting at the *strongest* nearby structural
 boundary, not at multiple weaker ones in a row.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L50-L58, confidence=confirmed, agent=human -->
 
 Example:
 - Before: `[0.0, 0.5, 0.75, 0.25, 0.0, 0.5, 0.0]`
@@ -184,7 +177,6 @@ When two partitions have equal total cost, prefer the one whose
 *earlier* splits use the *earlier* possible split point. (Equivalently,
 in DP terms: when extending the partition table, ties are broken in
 favor of the smaller predecessor index.)
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L185-L191, confidence=confirmed, agent=human -->
 
 ## Edge cases
 
@@ -213,7 +205,6 @@ reimplementor should either raise an explicit error or fall back to
 placing the oversized sentence in its own chunklet (violating
 SPEC-CHUNK-201). Stage 1 is responsible for ensuring this does not
 happen by passing `max_len = max_size` when called upstream.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_insert.py:L87, confidence=inferred, agent=human -->
 
 ## Implementation-defined behavior
 

@@ -46,9 +46,9 @@ correspond to a single testable behavior; the
 [acceptance checklist](docs/specs/acceptance/checklist.md) tracks every
 ID.
 
-Every claim has an inline citation back to raglite source at a pinned
-SHA. See [provenance/sources.md](docs/specs/provenance/sources.md) for
-the citation format.
+The specs were extracted from an upstream codebase; see
+[provenance/sources.md](docs/specs/provenance/sources.md) for what
+was read.
 
 ## Spec layout
 
@@ -63,5 +63,5 @@ docs/specs/
 ├── contracts/public-api.md       # Function signatures
 ├── test-vectors/                 # Concrete input → expected output pairs
 ├── acceptance/checklist.md       # Pass/fail criteria for an implementation
-└── provenance/sources.md         # Pinned SHA + citation format
+└── provenance/sources.md         # Upstream sources and licensing note
 ```

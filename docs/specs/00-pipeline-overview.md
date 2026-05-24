@@ -47,7 +47,6 @@ chunklets answer "what are the paragraph-sized units?", and chunks
 answer "what semantic units do we index?". Each stage's output is the
 next stage's input, and the boundaries chosen at stage N constrain
 stage N+1.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_insert.py:L83-L93, confidence=confirmed, agent=human -->
 
 ## Optional: Late chunking
 
@@ -56,7 +55,6 @@ embeds each chunklet" with a token-level embedding pass over longer
 document segments. It produces sentence-level embeddings that
 incorporate surrounding-document context. Late-chunked sentence
 embeddings can be aggregated to chunklet level for use in stage 3.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L1-L156, confidence=confirmed, agent=human -->
 
 See [04-late-chunking.md](04-late-chunking.md).
 
@@ -67,9 +65,6 @@ See [04-late-chunking.md](04-late-chunking.md).
 For every stage, concatenating its outputs in order reproduces the
 stage's input exactly, byte for byte. No characters are added,
 removed, normalized, or re-ordered between stages.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L150-L153, confidence=confirmed, agent=human -->
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L156-L160, confidence=confirmed, agent=human -->
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L113-L117, confidence=confirmed, agent=human -->
 
 Therefore: `"".join(sentences) == document`,
 `"".join(chunklets) == "".join(sentences)`,
@@ -81,7 +76,6 @@ Given the same input and the same configuration, every stage produces
 the same output across runs. Where a stage depends on a learned model
 (stage 1's sentence segmenter; the caller's embedder for stage 3),
 determinism is conditional on that model being deterministic.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L57-L150, confidence=inferred, agent=human -->
 
 ### SPEC-CHUNK-902 — Size monotonicity
 
@@ -94,8 +88,6 @@ for stage N. Specifically:
 A unit at stage N is the concatenation of one or more units from stage
 N-1; the stage-N size limit is therefore an upper bound on the
 combined size of the stage-(N-1) units inside it.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L130-L133, confidence=confirmed, agent=human -->
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L42-L48, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-903 — Single-unit short-circuit
 
@@ -103,8 +95,6 @@ When a stage's input would produce only one unit (because the input
 fits inside the stage's size limit, or because there are too few
 upstream units to partition), the stage returns its input as a
 single-element list with no optimization performed.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L50-L52, confidence=confirmed, agent=human -->
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L161-L163, confidence=confirmed, agent=human -->
 
 ## Rationale for the three-stage structure
 
@@ -128,7 +118,6 @@ Conflating the stages — e.g., doing semantic similarity at sentence
 level — would be both more expensive (more embeddings, larger
 optimization problem) and lower quality (single sentences have noisier
 embeddings than paragraph-sized chunklets).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_insert.py:L83-L93, confidence=inferred, agent=human -->
 
 ## Configuration surface
 
@@ -136,7 +125,6 @@ All three stages share a single notion of "maximum unit size" in
 characters, defaulting to `2048`. This is the size limit applied at the
 chunklet and chunk stage, and is also used as `max_len` for sentence
 splitting in the upstream composition.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_insert.py:L87, confidence=confirmed, agent=human -->
 
 Implementations are free to expose stage-specific size limits if they
 have a use case requiring different limits per stage. The default

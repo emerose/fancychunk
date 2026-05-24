@@ -25,12 +25,12 @@ A matrix of shape `[len(sentences), embedding_dim]`. Row `i` is the
 embedding of `sentences[i]`, computed with context from surrounding
 sentences.
 
-- **SPEC-CHUNK-400** — One row per input sentence, in the same order. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L114-L116, confidence=confirmed, agent=human -->
+- **SPEC-CHUNK-400** — One row per input sentence, in the same order.
 - **SPEC-CHUNK-401** — Each row is a fixed-dimensional vector of
-  floats. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L114-L116, confidence=confirmed, agent=human -->
+  floats.
 - **SPEC-CHUNK-402** — Rows are L2-normalized when the embedder is
   configured to normalize; otherwise rows reflect the raw mean-pooled
-  token embeddings. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L117-L119, confidence=confirmed, agent=human -->
+  token embeddings.
 
 ## Embedder contract
 
@@ -43,13 +43,11 @@ The embedder is a black box that satisfies three operations:
 | `embed(text) → matrix[T, D]` | Returns one embedding vector per token in `text`, with `T` equal to the number of tokens. The embedder must NOT pool tokens internally for this call. |
 | `n_ctx → int` | The maximum number of input tokens per `embed` call. |
 
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L75-L80, confidence=confirmed, agent=human -->
 
 The reimplementor may use any embedding model that exposes
 token-level outputs (a "no pooling" or "per-token output" mode).
 Cloud embedding APIs that return only one vector per input do not
 satisfy the contract.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L73, confidence=confirmed, agent=human -->
 
 ## Behavior
 
@@ -65,7 +63,6 @@ has two parts:
 
 Every sentence appears in exactly one segment's *content* range
 (though it may also appear as another segment's *preamble*).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L96-L106, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-411 — Segment construction is greedy with backward preamble
 
@@ -92,11 +89,9 @@ follows:
    Set the next iteration's `content_start = segment_end`.
 
 5. Repeat until `content_start >= len(sentences)`.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L42-L62, confidence=confirmed, agent=human -->
 
 The constants `preamble_fraction = 0.382` (the inverse golden ratio)
 and the addition-of-unused-budget behavior are preserved as defaults.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L91-L93, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-412 — Per-segment encoding and pooling
 
@@ -126,7 +121,6 @@ For each segment `(segment_start, content_start, segment_end)`:
 5. Discard the pooled embeddings for sentences in the preamble range
    (indices `[segment_start, content_start)`); keep those in the
    content range (indices `[content_start, segment_end)`).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L107-L116, confidence=confirmed, agent=human -->
 
 The largest-remainder allocation is preserved as part of the spec —
 it ensures the per-sentence token counts sum to exactly the segment's
@@ -157,7 +151,6 @@ sentinel-token method:
 4. Per-sentence token counts are the differences between consecutive
    sentinel positions (with sentinel tokens themselves counted as
    part of the preceding sentence).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L82-L93, confidence=confirmed, agent=human -->
 
 Other valid implementations include: tokenizing the joined input and
 mapping byte offsets back to sentence boundaries (if the tokenizer
@@ -176,7 +169,6 @@ satisfy:
   the input it can occupy (start of string, mid-sequence, after
   whitespace, etc.). If the tokenizer produces token variants
   depending on context, all variants must be recognized as sentinels.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L76-L81, confidence=confirmed, agent=human -->
 
 ## Output normalization
 
@@ -185,14 +177,12 @@ satisfy:
 If the embedder configuration requests normalization, each output row
 is divided by its L2 norm before being returned. Otherwise rows are
 returned as raw mean-pooled vectors.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L117-L119, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-431 — Precision
 
 Output embeddings may be stored in `float16` precision to save space,
 provided downstream similarity computations cast to `float32` or
 higher before computing dot products.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L120, confidence=confirmed, agent=human -->
 
 ## Determinism
 
@@ -253,7 +243,6 @@ The value `0.382` is the inverse golden ratio. Its choice is not
 explained in the source beyond "Golden ratio." It is preserved as the
 default. The reimplementor may expose it as configuration but should
 default to `0.382`.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_embed.py:L92, confidence=confirmed, agent=human -->
 
 ### U-CHUNK-402 — Sentinel choice
 

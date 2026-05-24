@@ -10,9 +10,9 @@ configurable length range, and structurally meaningful boundaries
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `document` | string (UTF-8) | yes | — | The Markdown document to split. |
-| `min_len` | non-negative integer | no | `4` | Minimum characters per sentence. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L156, confidence=confirmed, agent=human --> |
-| `max_len` | positive integer or `None` | no | `None` | Maximum characters per sentence. `None` means no upper bound. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L157, confidence=confirmed, agent=human --> |
-| `known_boundary_probas` | per-character probability vector or callable producing one | no | the Markdown-heading boundary function (SPEC-CHUNK-104) | An override mechanism: positions where the caller already knows the boundary probability. See SPEC-CHUNK-103. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L158-L169, confidence=confirmed, agent=human --> |
+| `min_len` | non-negative integer | no | `4` | Minimum characters per sentence. |
+| `max_len` | positive integer or `None` | no | `None` | Maximum characters per sentence. `None` means no upper bound. |
+| `known_boundary_probas` | per-character probability vector or callable producing one | no | the Markdown-heading boundary function (SPEC-CHUNK-104) | An override mechanism: positions where the caller already knows the boundary probability. See SPEC-CHUNK-103. |
 
 ## Outputs
 
@@ -21,16 +21,16 @@ A list of strings (the sentences), satisfying:
 - **SPEC-CHUNK-100** — Concatenation reproduces the input exactly: the
   concatenation of all sentences, in order, equals `document`
   byte-for-byte. No normalization, escaping, or whitespace adjustment
-  is applied. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L150-L153, confidence=confirmed, agent=human -->
+  is applied.
 - **SPEC-CHUNK-101** — Every sentence contains at least one
-  non-whitespace character. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L175-L177, confidence=confirmed, agent=human -->
+  non-whitespace character.
 - **SPEC-CHUNK-102** — No sentence except the first begins with
   whitespace. The first sentence may begin with whitespace only if the
-  document itself does. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L175-L177, confidence=confirmed, agent=human -->
+  document itself does.
 - **SPEC-CHUNK-105** — Every sentence is at least `min_len` characters
-  long. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L62-L65, confidence=confirmed, agent=human -->
+  long.
 - **SPEC-CHUNK-106** — When `max_len` is set, every sentence is at most
-  `max_len` characters long. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L196-L215, confidence=confirmed, agent=human -->
+  `max_len` characters long.
 
 ## Behavior
 
@@ -40,7 +40,6 @@ Sentence splitting operates on a per-character vector of *boundary
 probabilities*. A boundary probability at index `k` represents the
 probability that the character at index `k` is the *last* character of
 a sentence (i.e. the next sentence begins at index `k+1`).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L62-L67, confidence=confirmed, agent=human -->
 
 The vector has length equal to the number of characters in the
 document.
@@ -52,7 +51,6 @@ that, given a document, returns a per-character probability vector.
 The choice of model is implementation-defined; any model whose output
 is a length-N vector of values in `[0, 1]` (where N is the character
 count) is conforming.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L182-L184, confidence=inferred, agent=human -->
 
 The reimplementor may use any segmenter (rule-based, statistical, or
 learned). Quality of sentence boundaries will track the quality of the
@@ -65,7 +63,6 @@ probabilities for some positions, those values override the predicted
 values at exactly those positions. A position is "known" when its
 value in the override vector is a finite number (not `NaN`). `NaN`
 means "no override; use the predicted value".
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L185-L188, confidence=confirmed, agent=human -->
 
 The override vector has the same length as the predicted vector.
 
@@ -83,7 +80,6 @@ Markdown structure and constructs a per-character override vector with:
   heading. (The heading ends a sentence.)
 - `NaN` at all other positions. (Defer to predicted probabilities.)
 
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L43-L52, confidence=confirmed, agent=human -->
 
 A "heading" is determined by Markdown parsing: any token that opens a
 heading element (ATX-style `# Heading` or Setext-style underlined
@@ -108,7 +104,6 @@ non-whitespace characters:
 
 This biases the splitter to break *after* whitespace, so the next
 sentence starts at a non-whitespace character.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L189-L195, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-115 — Splitting maximizes total score above threshold
 
@@ -116,7 +111,6 @@ Given the final per-character probability vector, sentence boundaries
 are chosen to **maximize the sum of (probability − 0.25)** over the
 selected boundary positions, subject to the length constraints
 (SPEC-CHUNK-105, SPEC-CHUNK-106).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L60-L61, confidence=confirmed, agent=human -->
 
 The threshold value `0.25` is preserved as part of the spec. Positions
 with probability above `0.25` contribute positive score (the splitter
@@ -140,7 +134,6 @@ the constrained one.
 The two-pass structure is implementation-defined behavior. A single
 constrained solve is conforming, provided the final output satisfies
 SPEC-CHUNK-105 and SPEC-CHUNK-106.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L196-L215, confidence=confirmed, agent=human -->
 
 ## Determinism and tie-breaking
 
@@ -157,7 +150,6 @@ forward iteration produce the lexicographically-earliest set of
 boundary indices; implementations using backward iteration may produce
 the lexicographically-latest. Both are conforming. (Test vectors must
 not depend on this tie-breaker.)
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunklets.py:L185-L191, confidence=inferred, agent=human -->
 
 ## Edge cases
 
@@ -165,7 +157,6 @@ not depend on this tie-breaker.)
 
 If `len(document) <= min_len`, return `[document]` as the single
 sentence. No splitting occurs.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L181-L182, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-131 — Document cannot be split to satisfy length constraints
 
@@ -175,7 +166,6 @@ positions that yield two sentences each `≥ min_len`), the
 implementation raises an error. The exact error type is
 implementation-defined; the error message should indicate that no
 valid partition exists.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L138-L141, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-132 — Document with no valid boundaries
 
@@ -183,7 +173,6 @@ If the predicted probabilities yield no positions above the threshold,
 but the no-boundary partition (single sentence equal to the full
 document) is itself valid under the length constraints, the splitter
 returns `[document]`.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L131-L137, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-133 — Empty document
 
@@ -211,7 +200,6 @@ should document which is chosen.
 - A Markdown parser that exposes heading token positions (start and
   end line of every heading). Any parser conforming to CommonMark is
   sufficient. The choice of parser is implementation-defined.
-  <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_sentences.py:L23-L41, confidence=confirmed, agent=human -->
 - A sentence-segmentation model satisfying SPEC-CHUNK-111.
 
 ## Uncertainties

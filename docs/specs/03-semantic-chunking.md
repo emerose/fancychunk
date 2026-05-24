@@ -12,7 +12,7 @@ size and special handling of Markdown headings.
 |------|------|----------|---------|-------------|
 | `chunklets` | list of strings | yes | — | An ordered sequence of chunklets, typically from stage 2. |
 | `chunklet_embeddings` | matrix `[N, D]` of floats | yes | — | One row per chunklet, in the same order. Each row must have nonzero L2 norm. |
-| `max_size` | positive integer | no | `2048` | Hard upper bound on chunk length in characters. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L15, confidence=confirmed, agent=human --> |
+| `max_size` | positive integer | no | `2048` | Hard upper bound on chunk length in characters. |
 
 ## Outputs
 
@@ -26,8 +26,8 @@ A tuple of two values:
 
 Invariants:
 
-- **SPEC-CHUNK-300** — `"".join(chunks) == "".join(chunklets)`. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L113-L117, confidence=confirmed, agent=human -->
-- **SPEC-CHUNK-301** — Every chunk is at most `max_size` characters. <!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L43-L46, confidence=confirmed, agent=human -->
+- **SPEC-CHUNK-300** — `"".join(chunks) == "".join(chunklets)`.
+- **SPEC-CHUNK-301** — Every chunk is at most `max_size` characters.
 - **SPEC-CHUNK-302** — The rows of `chunklet_embeddings`, concatenated
   across `chunk_embeddings` in order, equal `chunklet_embeddings`.
 
@@ -49,7 +49,6 @@ This is a *minimum-cost set cover* over candidate partition points
 with linear cost. It is solvable as a binary integer program; it can
 also be solved by other means (e.g., column generation, LP relaxation
 plus rounding) provided the result is optimal.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L96-L112, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-311 — Covering constraint
 
@@ -57,7 +56,6 @@ For every contiguous window of chunklets `[a, b)` whose total
 character length exceeds `max_size`, at least one partition point
 inside `[a, b-1)` must be selected. Equivalently: no chunk in the
 output may exceed `max_size` characters.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L86-L95, confidence=confirmed, agent=human -->
 
 A practical encoding: for each chunklet `i`, find the smallest `j > i`
 such that `chunklets[i..j]` exceeds `max_size`. The constraint is that
@@ -75,7 +73,6 @@ embeddings in four steps:
 
 **Step 1 — Unit-normalize all embeddings.**
 Each embedding row is divided by its L2 norm.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L54-L56, confidence=confirmed, agent=human -->
 
 **Step 2 — Remove the discourse vector (SPEC-CHUNK-321).** A
 document-wide "topic" direction is computed and projected out of
@@ -93,7 +90,6 @@ sim[i] = max( (dot_product + 1) / 2,  sqrt(epsilon) )
 where `epsilon` is the machine epsilon of the embedding's float dtype.
 This maps cosine similarity from `[-1, 1]` to `[0, 1]` (with a small
 positive floor).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L66-L72, confidence=confirmed, agent=human -->
 
 **Step 4 — Heading-aware modification (SPEC-CHUNK-322).** Adjust
 `sim[i]` for partition points adjacent to heading chunklets.
@@ -123,7 +119,6 @@ Compute it as follows:
    the correction and use the un-corrected, unit-normalized embeddings
    instead.
 
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L57-L65, confidence=confirmed, agent=human -->
 
 When fewer than two non-outlying chunklets exist (a degenerate or
 very-short document), no correction is applied.
@@ -136,7 +131,6 @@ which chunklets are Markdown headings.
 A chunklet is a *heading* if, after stripping newlines and surrounding
 whitespace, it begins with `^#+\s` (one or more `#` characters
 followed by whitespace — the Markdown heading syntax).
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L76, confidence=confirmed, agent=human -->
 
 Walk the chunklets in order (treating the position before the first
 chunklet as a virtual "previous was a heading"). For each chunklet `i`
@@ -154,7 +148,6 @@ from `0` to `N-2`:
 
 Update "previous was a heading" for the next iteration based on
 chunklet `i`.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L74-L85, confidence=confirmed, agent=human -->
 
 The factor `1/4` (the boost to "split before a heading") and the
 value `1.0` (the penalty to "split immediately after a heading") are
@@ -178,20 +171,17 @@ If `len(chunklets) <= 1` or `sum(len(c) for c in chunklets) <=
 max_size`, return the input unchanged: one chunk that is the
 concatenation of all chunklets, and one embedding matrix containing
 all the input rows.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L50-L52, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-341 — Chunklet exceeds `max_size`
 
 If any single input chunklet exceeds `max_size` characters, the
 covering constraint is infeasible. The implementation raises a
 validation error before optimization begins.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L43-L46, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-342 — Zero-norm embedding
 
 If any chunklet embedding has L2 norm `0`, the implementation raises a
 validation error before optimization begins.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L47-L49, confidence=confirmed, agent=human -->
 
 ### SPEC-CHUNK-343 — Optimization failure
 
@@ -199,7 +189,6 @@ If the underlying solver reports a failure (infeasible, numerical
 issue, time limit), the implementation raises an error. The exact
 error type is implementation-defined; the message should indicate
 that partition optimization failed.
-<!-- cite: source=source-code, ref=raglite@6a540e1:src/raglite/_split_chunks.py:L109-L111, confidence=confirmed, agent=human -->
 
 ## Implementation-defined behavior
 

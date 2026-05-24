@@ -75,6 +75,53 @@ has two parts:
 Every sentence appears in exactly one segment's *content* range
 (though it may also appear as another segment's *preamble*).
 
+> **Why preambles exist.** Transformer embeddings are *contextual* —
+> every token's output vector is a function of the surrounding tokens
+> via attention. Consider:
+>
+> > "The algorithm achieves O(n log n) by maintaining a balanced
+> > binary tree."
+>
+> Encoded in isolation, "the algorithm" has no antecedent and the
+> embedder produces a generic "thing being discussed" direction for
+> it. Encoded with the preceding heading "## Quicksort with random
+> pivot selection" as preamble, the attention mechanism connects "the
+> algorithm" to "Quicksort" and the embedding for that token picks up
+> a meaningful direction. The preamble exists so that sentences near
+> the start of each new content range have prior context to attend to,
+> even when those sentences happen to fall near a segment boundary.
+> Without it, late chunking degrades to standard chunking around
+> segment edges.
+>
+> **The trade-off the preamble fraction controls.**
+> `DEFAULT_PREAMBLE_FRACTION` (defined in SPEC-CHUNK-411) splits each
+> segment's token budget between preamble and content:
+>
+> ```
+> ┌──────────── max_tokens_per_segment ────────────┐
+> │  ░░░ preamble (fraction × budget) ░░░ │ content │
+> │  ←── encoded for context, then       │ ←── kept │
+> │     embeddings DISCARDED ──→         │   in     │
+> │                                      │ output → │
+> └────────────────────────────────────────────────┘
+>                                        ↑
+>                            content_start
+> ```
+>
+> - **Higher fraction →** more context behind each content sentence
+>   → context-aware embeddings even near segment boundaries → BUT
+>   the same sentences get encoded multiple times (once as content,
+>   then again as preamble for the next segment's pass) → slower
+>   wall-clock, more compute.
+> - **Lower fraction →** less redundant work → faster → BUT sentences
+>   near each segment's `content_start` have weaker context and their
+>   embeddings are noisier.
+>
+> Defensible operating band: roughly `[0.25, 0.45]`. Below ≈ 25%, the
+> first paragraph of each segment dominates with insufficient
+> grounding; above ≈ 50%, more than half the compute is redundant
+> re-encoding of text whose embeddings are already kept.
+
 ### SPEC-CHUNK-411 — Segment construction is greedy with backward preamble
 
 Starting from `content_start = 0`, each segment is constructed as
@@ -103,10 +150,8 @@ follows:
 
 The constant `DEFAULT_PREAMBLE_FRACTION = 0.382` (the inverse golden
 ratio, `1 - 1/φ`) and the addition-of-unused-budget behavior are
-preserved as defaults. The numeric value has no published
-justification — only the *intent* does: most of the segment should be
-content, but a non-trivial fraction (≈ 38%) is reserved as upstream
-context. See U-CHUNK-401 for the honest acknowledgment.
+preserved as defaults. The trade-off the fraction controls is
+explained under SPEC-CHUNK-410.
 
 ### SPEC-CHUNK-412 — Per-segment encoding and pooling
 
@@ -262,20 +307,12 @@ raise.
 
 ## Uncertainties
 
-### U-CHUNK-401 — Honest acknowledgment: `DEFAULT_PREAMBLE_FRACTION = 0.382`
+### U-CHUNK-401 — Choice of `DEFAULT_PREAMBLE_FRACTION = 0.382`
 
-The default value `0.382` is the inverse golden ratio (`1 - 1/φ`).
-There is no published or principled justification for using the
-golden ratio at this point in the pipeline; the upstream source
-comment simply reads "Golden ratio." It is preserved as the spec's
-default so reimplementations match the reference behavior.
-
-The intent is unambiguous: content dominates the segment, but a
-non-trivial fraction is reserved for upstream context. Any value
-roughly in `[0.25, 0.45]` would plausibly satisfy that intent. The
-implementor should expose `DEFAULT_PREAMBLE_FRACTION` as a tuning
-parameter and benchmark on their own corpus rather than treating
-`0.382` as sacred.
+We use `0.382` because raglite uses it and the inverse golden ratio
+is aesthetically pleasing. It sits in the middle of the defensible
+operating band (see SPEC-CHUNK-410). Implementors may tune it but
+should default to `0.382` for behavioral parity with the reference.
 
 ### U-CHUNK-402 — Sentinel choice
 

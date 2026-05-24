@@ -105,6 +105,33 @@ implementations may omit it if they do not support late chunking.
 Returns a `[len(sentences), embedding_dim]` matrix satisfying
 SPEC-CHUNK-400 through SPEC-CHUNK-402.
 
+## Function: heading paths (optional)
+
+```python
+def heading_paths(chunks: list[str]) -> list[str]
+```
+
+Implements [spec 05](../05-contextual-headings.md). Optional helper;
+implementations may omit it.
+
+| Parameter | Default | Contract |
+|-----------|---------|----------|
+| `chunks` | — | Ordered list of chunks (typically the first element of `split_chunks`'s output). |
+
+Returns a list of heading-path strings of length `len(chunks)`,
+satisfying SPEC-CHUNK-500 through SPEC-CHUNK-502.
+
+Common downstream use:
+
+```python
+chunks, _ = split_chunks(chunklets, embeddings)
+paths = heading_paths(chunks)
+texts_for_embedding = [
+    (p + "\n" + c) if p else c
+    for p, c in zip(paths, chunks)
+]
+```
+
 ## Error contract
 
 All functions must signal errors via exceptions (in Python) or the

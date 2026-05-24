@@ -137,11 +137,42 @@ If late chunking is not implemented, mark the section N/A. Otherwise:
 - [ ] **SPEC-CHUNK-451** — Over-context-size sentence rejected.
 - [ ] **SPEC-CHUNK-452** — Very short sentence handling documented.
 
+## Contextual headings (SPEC-CHUNK-5xx) — optional
+
+If the heading-paths helper is not implemented, mark the section N/A.
+Otherwise:
+
+- [ ] **SPEC-CHUNK-500** — `len(output) == len(chunks)`. Covered by
+  TV-501, TV-502, TV-503.
+- [ ] **SPEC-CHUNK-501** — Path is either `""` or heading lines
+  joined by `HEADING_PATH_SEPARATOR`. Covered by TV-503, TV-504.
+- [ ] **SPEC-CHUNK-502** — First chunk's path is `""`. Covered by
+  TV-505.
+- [ ] **SPEC-CHUNK-510** — Heading stack updates on heading
+  encounter; deeper slots clear. Covered by TV-504.
+- [ ] **SPEC-CHUNK-511** — Path snapshotted before scanning the
+  chunk's own headings. Covered by TV-505.
+- [ ] **SPEC-CHUNK-512** — ATX heading detection only; `^#+\s` at
+  line start. Covered by TV-507.
+- [ ] **SPEC-CHUNK-513** — Path-string formatting. Covered by TV-508.
+- [ ] **SPEC-CHUNK-520** — Stack reset semantics on level rise.
+  Covered by TV-504.
+- [ ] **SPEC-CHUNK-530** — Deterministic.
+- [ ] **SPEC-CHUNK-540** — Empty input. Covered by TV-501.
+- [ ] **SPEC-CHUNK-541** — Document without headings. Covered by
+  TV-502.
+- [ ] **SPEC-CHUNK-542** — First chunk introduces the first heading.
+  Covered by TV-505.
+- [ ] **SPEC-CHUNK-543** — Heading levels skipped. Covered by TV-506.
+- [ ] **SPEC-CHUNK-544** — More than 6 `#` characters → not a
+  heading. Covered by TV-507.
+
 ## Public API contract
 
-- [ ] All four functions (`split_sentences`, `split_chunklets`,
-  `split_chunks`, optionally `embed_with_late_chunking`) exist and
-  have the documented signatures (or language-equivalents).
+- [ ] The three required functions (`split_sentences`,
+  `split_chunklets`, `split_chunks`) and the two optional helpers
+  (`embed_with_late_chunking`, `heading_paths`) exist and have the
+  documented signatures (or language-equivalents).
 - [ ] Defaults match the spec (`min_len=4`, `max_size=2048`,
   `preamble_fraction=0.382`).
 - [ ] All error cases produce distinguishable exception types or

@@ -58,6 +58,16 @@ embeddings can be aggregated to chunklet level for use in stage 3.
 
 See [04-late-chunking.md](04-late-chunking.md).
 
+## Optional: Contextual chunk headings
+
+A small helper that consumes stage 3's output and produces, for each
+chunk, the Markdown heading path that was in scope at the chunk's
+start. Prepending this path to the chunk's text before embedding
+gives the embedder document-outline context that the chunk's own
+content doesn't carry.
+
+See [05-contextual-headings.md](05-contextual-headings.md).
+
 ## Cross-stage invariants
 
 ### SPEC-CHUNK-900 — Concatenation round-trip

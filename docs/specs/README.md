@@ -32,6 +32,7 @@ each describing a single testable property. The
 | SPEC-CHUNK-2xx | Chunklet grouping |
 | SPEC-CHUNK-3xx | Semantic chunking |
 | SPEC-CHUNK-4xx | Late chunking |
+| SPEC-CHUNK-5xx | Contextual chunk headings |
 | SPEC-CHUNK-9xx | Cross-cutting (concatenation, determinism) |
 
 Concrete input/output test vectors are referenced as `TV-NNN`.
@@ -44,7 +45,9 @@ Concrete input/output test vectors are referenced as `TV-NNN`.
    [`01-sentence-splitting.md`](01-sentence-splitting.md),
    [`02-chunklet-grouping.md`](02-chunklet-grouping.md),
    [`03-semantic-chunking.md`](03-semantic-chunking.md),
-   [`04-late-chunking.md`](04-late-chunking.md) (optional component).
+   [`04-late-chunking.md`](04-late-chunking.md) (optional component),
+   [`05-contextual-headings.md`](05-contextual-headings.md) (optional
+   helper).
 3. [`contracts/public-api.md`](contracts/public-api.md) — the
    external surface of the library.
 4. [`test-vectors/`](test-vectors/) — concrete input/expected-output

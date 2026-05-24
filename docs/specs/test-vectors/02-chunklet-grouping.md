@@ -74,46 +74,45 @@ Validates SPEC-CHUNK-240 and SPEC-CHUNK-241.
 | `sentences` | `["First paragraph sentence.\n\n", "## A new section\n\n", "Body sentence one.\n", "Body sentence two.\n"]` |
 | `max_size` | `2048` |
 
-**Expected output (property):** a chunklet boundary must occur such
-that the heading sentence `"## A new section\n\n"` starts a new
-chunklet. That is, the heading sentence's index (1) appears as a
-chunklet start in the partition.
+**Expected output (property):** sentence index 1 (the heading
+`"## A new section\n\n"`) appears as the start of some chunklet in
+the partition. Equivalently, the partition includes a split point
+between sentences 0 and 1.
 
-Conforming partition: `[sent[0], sent[1] + sent[2] + sent[3]]` or
-`[sent[0], sent[1] + sent[2], sent[3]]` — both put the heading at a
-chunklet boundary.
+The strength of the heading probability (`1.0`) versus the leading
+paragraph open (`0.5`) on sentence 0 makes splitting before the
+heading strictly cheaper than not splitting; with similar statement
+counts across the four sentences the optimum places the boundary
+there. Any partition satisfying the property — e.g.,
+`[sent[0], sent[1]+sent[2]+sent[3]]`,
+`[sent[0], sent[1]+sent[2], sent[3]]`, or even
+`[sent[0], sent[1], sent[2], sent[3]]` — is conforming.
 
-Non-conforming: `[sent[0] + sent[1] + sent[2] + sent[3]]` (heading
-swallowed into the same chunklet as preceding sentence).
+Non-conforming: `[sent[0]+sent[1]+sent[2]+sent[3]]` (heading
+swallowed into the same chunklet as the preceding sentence).
 
-The boundary may not be *required* depending on the statement cost
-balance, but the strength of the heading probability (`1.0`) versus
-non-headings makes the split heavily preferred. This test is robust
-when input sentence statement counts are similar.
-
-## TV-206 — Three-statement target (model-dependent on statement counting)
+## TV-206 — Three-statement target
 
 Validates SPEC-CHUNK-221 and SPEC-CHUNK-230.
 
 Construct a document where every sentence has the same word count
 (say 10 words each), and there are no Markdown structural cues
-beyond paragraph_open at the start.
+beyond a single `paragraph_open` at the start.
 
 | Input | Value |
 |-------|-------|
 | `sentences` | 12 sentences, each 10 words, all in the same paragraph |
 | `max_size` | `2048` |
 
-**Expected output (property):** since every sentence has the same
-word count, each is `1.0` statements (the median is itself). The
-chunklet partition should favor 3-sentence chunklets to minimize the
-statement-cost penalty `(s - 3)² / sqrt(s) / 2`.
+Every sentence has the same word count, so each contributes exactly
+`1.0` statements (the median is itself). Only one sentence boundary
+cue exists (the leading paragraph open), so the boundary cost is
+minimized by a single chunklet start; the statement cost is then the
+only force that drives further splitting and it strictly prefers
+3 statements per chunklet.
 
-Conforming partition (preferred): `[3, 3, 3, 3]` (four chunklets of
-3 sentences each).
-
-Acceptable alternatives if boundary costs intervene: `[3, 3, 2, 4]`,
-`[4, 4, 4]`, etc.
+**Expected output:** `[3, 3, 3, 3]` — four chunklets of three
+sentences each.
 
 ## TV-207 — Long sentences reach statement count of 3 quickly
 
@@ -207,3 +206,18 @@ unconstrained from below; the early-split-preference tie-breaker
 prefers the partition with the smallest number of chunklets when cost
 is constant. Implementations conforming to SPEC-CHUNK-251 produce
 `["".join(sentences)]`.)
+
+## TV-211 — Sentence longer than `max_size` rejected (model-independent)
+
+Validates SPEC-CHUNK-263.
+
+| Input | Value |
+|-------|-------|
+| `sentences` | `["a" * 3000, "short tail.\n"]` |
+| `max_size` | `2048` |
+
+**Expected output:** the implementation raises an error before
+optimization begins. (The 3000-character sentence cannot fit in any
+chunklet of `max_size = 2048`.) The exact error type is
+implementation-defined; the message should indicate that the input
+contains a sentence longer than `max_size`.

@@ -52,10 +52,13 @@ of partition points `P ⊆ {0, 1, ..., N-2}` that **minimizes**
 `Σ_{i ∈ P} sim[i]` (lower similarity = better split), subject to the
 covering constraint in SPEC-CHUNK-311.
 
-This is a *minimum-cost set cover* over candidate partition points
-with linear cost. It is solvable as a binary integer program; it can
-also be solved by other means (e.g., column generation, LP relaxation
-plus rounding) provided the result is optimal.
+Structurally this is an *interval-cover minimization* with linear
+partition cost: a one-dimensional segmentation problem solvable by
+`O(N²)` dynamic programming. Other solvers (binary integer
+programming, LP relaxation plus rounding) work too, as long as they
+return the optimum. A general "minimum-cost set cover" framing
+overstates the difficulty — the interval structure makes this
+polynomial.
 
 ### SPEC-CHUNK-311 — Covering constraint
 
@@ -151,9 +154,9 @@ step 1 of SPEC-CHUNK-320 in every skip case.
    ```
 
 6. **Second skip check.** If any row of `X_corrected` has L2 norm
-   below the machine epsilon (i.e., a chunklet was effectively
-   parallel to the discourse vector and got zeroed out), skip the
-   correction.
+   below the machine epsilon of the embedding's float dtype (i.e., a
+   chunklet was effectively parallel to the discourse vector and got
+   zeroed out), skip the correction.
 
 7. Otherwise, re-normalize `X_corrected` to unit norm and use it as
    the corrected embeddings.
@@ -173,25 +176,31 @@ discourse vectors.
 After computing the base partition similarities, modify them based on
 which chunklets are Markdown headings.
 
-A chunklet is a *heading* if, after stripping newlines and surrounding
-whitespace, it begins with `^#+\s` (one or more `#` characters
-followed by whitespace — the Markdown heading syntax).
+A chunklet is a *heading* if, after stripping leading and trailing
+whitespace, its entire stripped content is a single heading line
+(matching `^#+\s` and ending at the line's terminating newline or
+the chunklet's end, with no further non-whitespace content
+afterwards). A chunklet that *begins* with a heading line but also
+contains body text is not a heading for the purposes of this section.
 
-Apply the following procedure. (Pseudocode below; treat the position
-before the first chunklet as if the prior chunklet had been a heading
-— this suppresses the "encourage split before" boost for a heading
-that is the document's first chunklet, since there is no partition
-point at index `-1`.)
+Apply the following procedure. Treat the position before the first
+chunklet as if the prior chunklet had been a heading — this
+suppresses the "encourage split before" boost for a heading that is
+the document's first chunklet, since there is no partition point at
+index `-1`.
 
 ```
 previous_is_heading = True
-for i in 0 .. N - 1:
+for i in range(N):           # i = 0, 1, ..., N-1 inclusive
     if is_heading(chunklets[i]):
         # Encourage splitting before this heading
         # (only if there is a partition point at i-1, and the
         # previous chunklet was not itself a heading).
         if i >= 1 and not previous_is_heading:
-            sim[i - 1] = sim[i - 1] / HEADING_SPLIT_BEFORE_DIVISOR
+            sim[i - 1] = max(
+                sim[i - 1] / HEADING_SPLIT_BEFORE_DIVISOR,
+                MIN_PARTITION_SIMILARITY,
+            )
 
         # Discourage splitting immediately after this heading
         # (only if there is a partition point at i; the heading
@@ -205,10 +214,14 @@ for i in 0 .. N - 1:
         previous_is_heading = False
 ```
 
-The iteration runs the full length of the chunklet list so that a
-heading at the *end* of the document still triggers the "encourage
-split before" boost on `sim[N-2]`. The bounds guards prevent indexing
-into nonexistent partition points at either end.
+The iteration covers every chunklet (indices `0` through `N-1`
+inclusive) so that a heading at the *end* of the document still
+triggers the "encourage split before" boost on `sim[N-2]`. The
+bounds guards prevent indexing into nonexistent partition points at
+either end. The `max(..., MIN_PARTITION_SIMILARITY)` re-application
+on the boosted similarity preserves SPEC-CHUNK-320's strictly-positive
+cost invariant even when the divisor would push the value below the
+floor.
 
 The two constants play different roles:
 
@@ -219,9 +232,12 @@ The two constants play different roles:
 
 `HEADING_SPLIT_AFTER_FORBID = 1.0` is structural: it equals the
 ceiling of the partition-similarity range, so the minimization will
-never choose to split there unless absolutely required by the
-covering constraint. This is not a tuning knob; any value `≥ 1.0`
-produces the same effect.
+never *prefer* to split there. This is a strong cost penalty, not a
+hard exclusion: if the covering constraint requires a split at this
+exact partition point (no other partition point lies in the
+infeasible window), the optimizer chooses it despite the cost. The
+constant is not a tuning knob; any value `≥ 1.0` produces the same
+effect.
 
 `HEADING_SPLIT_BEFORE_DIVISOR = 4` is a bounded heuristic. The goal
 is to make "split before a heading" at least as attractive as the
@@ -251,13 +267,15 @@ choices.
 ### SPEC-CHUNK-340 — Short-circuit: trivial input
 
 - If `chunklets == []`, return `([], [])`.
-- Otherwise, if `len(chunklets) == 1` or
-  `sum(len(c) for c in chunklets) <= max_size`, return the input as a
-  single chunk: `(["".join(chunklets)], [chunklet_embeddings])` —
-  one string concatenating all chunklets, and one embedding matrix
-  containing all the input rows.
+- If `len(chunklets) == 1`, return
+  `([chunklets[0]], [chunklet_embeddings])` — one chunk equal to the
+  sole input chunklet, paired with the full input embedding matrix.
+- Otherwise, if `sum(len(c) for c in chunklets) <= max_size`, return
+  `(["".join(chunklets)], [chunklet_embeddings])` — one chunk that
+  concatenates all chunklets, paired with the full input embedding
+  matrix.
 
-In both cases no optimization is performed.
+In all three cases no optimization is performed.
 
 ### SPEC-CHUNK-341 — Chunklet exceeds `max_size`
 

@@ -49,12 +49,12 @@ sentences.
 
 The embedder is a black box that satisfies four operations:
 
-| Operation | Behavior |
-|-----------|----------|
-| `tokenize(text) → list[int]` | Returns the token IDs the model would receive for this text. Required to be deterministic. |
-| `detokenize(list[int]) → str` | Inverse of `tokenize`, used only for sentinel-token discovery (SPEC-CHUNK-420). |
-| `embed(text) → matrix[T, D]` | Returns one embedding vector per token in `text`, with `T` equal to the number of tokens. The embedder must NOT pool tokens internally for this call. |
-| `n_ctx → int` | The maximum number of input tokens per `embed` call. |
+| Operation | Kind | Behavior |
+|-----------|------|----------|
+| `tokenize(text)` | method, returns `list[int]` | Returns the token IDs the model would receive for this text. Required to be deterministic. |
+| `detokenize(list[int])` | method, returns `str` | Inverse of `tokenize`, used only for sentinel-token discovery (SPEC-CHUNK-420). |
+| `embed(text)` | method, returns matrix `[T, D]` | Returns one embedding vector per token in `text`, with `T` equal to the number of tokens. The embedder must NOT pool tokens internally for this call. |
+| `n_ctx` | integer attribute (property; not a method) | The maximum number of input tokens per `embed` call. |
 
 Any embedding model that exposes token-level outputs (a "no pooling"
 or "per-token output" mode) is acceptable. Cloud embedding APIs that
@@ -156,6 +156,18 @@ follows:
 
 5. Repeat until `content_start >= len(sentences)`.
 
+**Progress guarantee.** Step 3's forward walk must include at least
+one sentence in the content range — that is, `segment_end >
+content_start` — so that each iteration consumes at least one
+sentence and the loop terminates. If a sentence's token count
+exceeds the available content budget (preamble budget plus the
+augmented content budget from step 2, but still bounded by
+`max_tokens_per_segment`) yet fits inside `embedder.n_ctx`, include
+that single sentence as the segment's sole content sentence even
+though the segment slightly exceeds `max_tokens_per_segment`. If the
+sentence's token count exceeds `embedder.n_ctx`, raise per
+SPEC-CHUNK-451.
+
 The default `DEFAULT_PREAMBLE_FRACTION = 0.382` is the inverse golden
 ratio (`1 - 1/φ`); it sits in the middle of the defensible operating
 band (SPEC-CHUNK-410) and is aesthetically pleasing. Implementations
@@ -177,29 +189,29 @@ For each segment `(segment_start, content_start, segment_end)`:
 2. Compute the per-sentence token count *as the embedder would see
    it* for each sentence in the segment, using SPEC-CHUNK-420.
 
-3. Apportion the per-token embeddings to sentences using the
-   [largest remainder method](https://en.wikipedia.org/wiki/Largest_remainder_method)
-   (a standard apportionment algorithm from voting systems, applied
-   here so the per-sentence token counts sum to exactly the segment's
-   total):
+3. Allocate per-token embeddings to sentences using the
+   per-sentence token counts from step 2: sentence `s` receives
+   `tokens_in(s)` consecutive token-embedding rows from the
+   beginning of the segment forward. When SPEC-CHUNK-420 holds,
+   `sum(tokens_in(s)) == len(token_embeddings)` exactly and the
+   allocation is unambiguous.
 
-   - For each sentence `s` in the segment, the fractional share is
-     `len(token_embeddings) * (tokens_in(s) / total_tokens)`.
-   - Each sentence gets `floor(fractional_share)` token embeddings
-     to start.
-   - Any leftover token embeddings (the integer remainder) are
-     distributed one each to the sentences with the largest
-     fractional parts.
+   If an implementation derives `tokens_in(s)` through any
+   approximate method (e.g., re-tokenizing each sentence in
+   isolation), the integer counts may not sum to the segment's
+   actual token count. In that case use the
+   [largest-remainder method](https://en.wikipedia.org/wiki/Largest_remainder_method)
+   to apportion the leftover: each sentence gets
+   `floor(len(token_embeddings) * tokens_in(s) / total_tokens)`
+   rows, and any remaining rows go one each to the sentences with
+   the largest fractional parts. This is a safety net; with
+   SPEC-CHUNK-420 satisfied it reduces to the identity allocation.
 
 4. Mean-pool the token embeddings within each sentence.
 
 5. Discard the pooled embeddings for sentences in the preamble range
    (indices `[segment_start, content_start)`); keep those in the
    content range (indices `[content_start, segment_end)`).
-
-The largest-remainder allocation ensures the per-sentence token
-counts sum to exactly the segment's token count without leaving any
-embedding unallocated.
 
 ### SPEC-CHUNK-420 — Per-sentence token counts must align with what the embedder saw
 
@@ -222,11 +234,18 @@ One valid implementation is the sentinel-token method:
    to a known sentinel token. A good default is `⊕` (CIRCLED PLUS,
    U+2295) — most tokenizers handle it as a stable single token and
    it is rare in natural language.
-2. Tokenize `sentinel.join(sentences)`.
-3. Locate the sentinel tokens in the resulting sequence.
-4. Per-sentence token counts are the differences between consecutive
-   sentinel positions (with sentinel tokens themselves counted as
-   part of the preceding sentence).
+2. Tokenize `sentinel.join(sentences)`. Note that there is no
+   leading or trailing sentinel — sentinels appear only *between*
+   sentences.
+3. Locate the sentinel token positions in the resulting sequence:
+   call them `s_1, s_2, ..., s_{k-1}` for `k` sentences.
+4. Sentence 0 spans token positions `[0, s_1]` (from the start
+   through and including the first sentinel). Sentence `j` for
+   `1 ≤ j ≤ k-2` spans `(s_j, s_{j+1}]`. The last sentence
+   (`j = k-1`) spans `(s_{k-1}, end_of_sequence)`. In each case the
+   per-sentence token count is the number of token positions in the
+   span; sentinel tokens are counted as part of the preceding
+   sentence.
 
 Other valid implementations include: tokenizing the joined input and
 mapping byte offsets back to sentence boundaries (if the tokenizer

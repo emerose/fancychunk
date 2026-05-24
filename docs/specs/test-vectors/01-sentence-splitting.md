@@ -143,7 +143,7 @@ Validates SPEC-CHUNK-100 with non-ASCII content.
 **Expected output (property):** `"".join(out) == document` byte-for-byte.
 No re-encoding, no normalization (NFC/NFD), no whitespace collapsing.
 
-## TV-110 — Empty document (implementation-defined)
+## TV-110 — Empty document
 
 | Input | Value |
 |-------|-------|
@@ -151,8 +151,7 @@ No re-encoding, no normalization (NFC/NFD), no whitespace collapsing.
 | `min_len` | `4` |
 | `max_len` | `None` |
 
-**Expected output:** implementation-defined per SPEC-CHUNK-133.
-Acceptable: `[""]` or `[]`. The implementor must document the choice.
+**Expected output:** `[]` (per SPEC-CHUNK-133).
 
 ## TV-111 — Override forces split at specified position (model-independent)
 

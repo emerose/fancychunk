@@ -168,11 +168,13 @@ and including the newline is captured in the stack slot.
 (The trailing spaces are preserved verbatim; this spec does not
 normalize whitespace within heading lines.)
 
-## TV-509 — Round-trip composition with chunk text
+## TV-509 — Path format produces valid Markdown when prepended
+
+Validates SPEC-CHUNK-513 (path-string formatting).
 
 Property test: for any chunk `c[i]` and its computed path `p[i]`, the
-string `p[i] + "\n" + c[i]` is a valid Markdown fragment that, when
-parsed, would have `c[i]`'s content nested under exactly the heading
-hierarchy in `p[i]`. (This is a sanity check on the output format;
-implementations can verify by parsing the composed string with a
-Markdown parser.)
+string `p[i] + c[i]` (no extra separator — `p[i]` already ends in
+`\n` when non-empty) is a valid Markdown fragment that, when parsed,
+has `c[i]`'s content nested under exactly the heading hierarchy in
+`p[i]`. Verifiable by parsing the composed string with a Markdown
+parser and inspecting the resulting heading structure.

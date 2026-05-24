@@ -5,10 +5,6 @@ is a contiguous substring of the document, sentences respect a
 configurable length range, and structurally meaningful boundaries
 (notably Markdown headings) are honored.
 
-> SPEC-CHUNK IDs in this document are not contiguous; gaps reflect
-> only the current set of behaviors and are not reserved for future
-> use.
-
 ## Inputs
 
 | Name | Type | Required | Default | Description |
@@ -94,16 +90,27 @@ The override vector has the same length as the predicted vector.
 ### SPEC-CHUNK-113 — Markdown headings are forced to be standalone sentences
 
 The default `known_boundary_probas` function inspects the document's
-Markdown structure and constructs a per-character override vector with:
+Markdown structure and constructs a per-character override vector
+based on each heading's character span.
 
-- Probability `1` at the position **immediately before** the first
-  character of every heading. (The heading starts a new sentence.)
-- Probability `0` at every position **inside** the heading body
-  (between first and last heading characters). (No sentence can split
-  inside the heading.)
-- Probability `1` at the position **of the last character** of every
-  heading. (The heading ends a sentence.)
-- `NaN` at all other positions. (Defer to predicted probabilities.)
+A heading's character span runs from the **first character of the
+heading marker** (e.g., the `#` in `# Hello`) through the **final
+non-whitespace character of the heading text** (e.g., the `o` in
+`Hello`). Trailing whitespace within or after the heading line
+(newlines, blank lines that the Markdown parser includes in the
+heading token) is *not* part of the span; SPEC-CHUNK-114's
+whitespace-trailing rule handles those uniformly.
+
+For every heading's span at character positions `[first, last]`:
+
+- Set probability `1` at position `first - 1` (the character before
+  the heading marker). The heading starts a new sentence.
+- Set probability `0` at every position `[first, last - 1]` (inside
+  the heading body). No sentence can split inside the heading.
+- Set probability `1` at position `last` (the final non-whitespace
+  character of the heading text). The heading ends a sentence.
+
+All other positions are `NaN` (defer to predicted probabilities).
 
 A "heading" is determined by Markdown parsing: any token that opens a
 heading element (ATX-style `# Heading` or Setext-style underlined
@@ -227,12 +234,12 @@ returns `[document]`.
 
 ### SPEC-CHUNK-133 — Empty document
 
-For an empty document (`""`), returning `[]` is the recommended
-behavior — it matches stage 2's empty-input convention
-(SPEC-CHUNK-260) and stage 3's (SPEC-CHUNK-340), so an empty
-document flows through the whole pipeline as empty lists. Returning
-`[""]` is also conforming for callers that rely on a non-empty
-output, but implementations should document the choice.
+For an empty document (`""`), return `[]`. This matches stage 2's
+empty-input convention (SPEC-CHUNK-260) and stage 3's
+(SPEC-CHUNK-340), so an empty document flows through the whole
+pipeline as empty lists, and avoids producing a single-sentence
+output that would violate SPEC-CHUNK-101 (every sentence contains at
+least one non-whitespace character).
 
 ## Named constants
 

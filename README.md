@@ -66,24 +66,20 @@ fancychunk/
 │   ├── 03-semantic-chunking.md   # Stage 3
 │   ├── 04-late-chunking.md       # Optional embed strategy
 │   ├── 05-contextual-headings.md # Optional helper
-│   ├── contracts/public-api.md   # Function signatures
+│   ├── contracts/                # Public API signatures
 │   ├── test-vectors/             # Concrete input → expected output pairs
-│   └── acceptance/checklist.md   # Pass/fail criteria
+│   └── acceptance/               # Pass/fail criteria
 ├── src/fancychunk/               # (Empty stub — implementation TBD)
 └── tests/                        # (Placeholder)
 ```
 
 ## Acknowledgments
 
-fancychunk's three-stage pipeline (sentence → chunklet → chunk), the
+The three-stage pipeline (sentence → chunklet → chunk), the
 late-chunking strategy, and the contextual-headings helper are
 inspired by the chunking pipeline in
-[raglite](https://github.com/superlinear-ai/raglite).
-
-This repo is a **greenfield, clean-room rewrite**: the specs describe
-externally observable behavior, name their own constants, and cite
-the underlying ideas (the SaT segmenter, Greg Kamradt's "5 levels"
-taxonomy, Arora et al.'s discourse-vector technique, the Weaviate /
-Jina late-chunking work, Dan Stites's contextual-headings post) where
-those ideas were first published. No code is copied from raglite;
-the eventual implementation is released under the MIT license above.
+[raglite](https://github.com/superlinear-ai/raglite). Specific
+techniques cite their originators inline in the specs: the SaT
+segmenter, Greg Kamradt's "5 levels" taxonomy, Arora et al.'s
+discourse-vector technique, the Weaviate / Jina late-chunking work,
+and Dan Stites's contextual-headings post.

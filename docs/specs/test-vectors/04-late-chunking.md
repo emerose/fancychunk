@@ -107,7 +107,7 @@ Budget split: `max_tokens_preamble = round(0.382 * 256) = 98`,
 - Segment 2: `content_start = 5`. Preamble walks backward from
   sentence 5, accumulating ~98 tokens (~2 sentences) → `segment_start
   = 3`. Content walks forward from sentence 5 with budget 158 tokens
-  (~3 sentences) → `segment_end ≈ 8`. The first 3 output rows
+  (~3 sentences) → `segment_end ≈ 8`. The first 5 output rows
   (sentences 0–4 from segment 1) are already produced; segment 2
   produces rows 5–7.
 - Continue until `content_start >= 20`.

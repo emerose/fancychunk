@@ -136,12 +136,13 @@ Validates SPEC-CHUNK-322.
 Heading detection per SPEC-CHUNK-322: chunklet 0 matches `^#+\s`;
 chunklets 1, 2, 3 do not.
 
-Per SPEC-CHUNK-322 modification:
-- Iteration `i = 0` (chunklet 0 is heading): set `sim[0] = 1.0`.
-  Previous-is-heading is True (the virtual prior), so no
-  divide-by-4 for `sim[-1]`.
-- Iteration `i = 1, 2` (non-heading): no modification.
-- (`i` only runs to `N-2 = 2`.)
+Per SPEC-CHUNK-322 modification (iteration runs over all four
+chunklets, `i = 0, 1, 2, 3`):
+- `i = 0` (chunklet 0 is heading): `i = 0` and previous-is-heading is
+  True (the virtual prior), so the "encourage split before" branch
+  is skipped. The "discourage split after" branch sets
+  `sim[0] = HEADING_SPLIT_AFTER_FORBID`.
+- `i = 1, 2, 3` (non-heading): no modification.
 
 So `sim = [1.0, sim_base[1], sim_base[2]]`. Splitting between
 chunklet 0 and chunklet 1 is heavily penalized (the heading should

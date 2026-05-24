@@ -73,8 +73,8 @@ A conforming implementation has every box checked.
 - [ ] **SPEC-CHUNK-132** — No boundary above threshold + no-boundary
   case valid → single sentence. Verify by inspection (construct an
   input where the model predicts all-zero probabilities).
-- [ ] **SPEC-CHUNK-133** — Empty document behavior is documented (either
-  `[]` or `[""]`; `[]` recommended). Covered by TV-110.
+- [ ] **SPEC-CHUNK-133** — Empty document returns `[]`. Covered by
+  TV-110.
 
 ## Chunklet grouping (SPEC-CHUNK-2xx)
 
@@ -89,11 +89,11 @@ A conforming implementation has every box checked.
 - [ ] **SPEC-CHUNK-220** — Default boundary cost is
   `(1 - p[0]) + sum(p[1:])`. Verify by inspection.
 - [ ] **SPEC-CHUNK-221** — Default statement cost is
-  `STATEMENT_COST_SCALE * (s - 3)² / sqrt(max(s, 1e-6))`. Verify by
-  inspection.
+  `STATEMENT_COST_SCALE * (s - 3)² / sqrt(max(s, 1e-6))`. Covered by
+  TV-206.
 - [ ] **SPEC-CHUNK-230** — Statement count is the documented piecewise
   function over word count, anchored at document `q25`/`q75`.
-  Covered by TV-207.
+  Covered by TV-206, TV-207.
 - [ ] **SPEC-CHUNK-240** — Per-sentence boundary probabilities follow
   the Markdown token-type table. Covered by TV-205, TV-208, TV-209.
 - [ ] **SPEC-CHUNK-241** — Consecutive non-zero boundaries: only the max
@@ -109,8 +109,7 @@ A conforming implementation has every box checked.
   produce multi-chunklet partition. Verify by inspection (this is the
   *negation* of SPEC-CHUNK-903 for stage 2).
 - [ ] **SPEC-CHUNK-263** — Sentence exceeding `max_size` raises an
-  error. Verify by inspection (construct an input with one
-  oversized sentence).
+  error. Covered by TV-211.
 
 ## Semantic chunking (SPEC-CHUNK-3xx)
 

@@ -101,18 +101,20 @@ combined size of the stage-(N-1) units inside it.
 
 ### SPEC-CHUNK-903 — Trivial-input short-circuits
 
-Two stages short-circuit on trivial input:
+All three stages short-circuit on the trivial *size* cases (empty
+input and single-item input). Beyond that they differ:
 
-- **Stage 1 (SPEC-CHUNK-130):** when the document is no longer than
-  `min_len` characters, return `[document]` with no model call.
-- **Stage 3 (SPEC-CHUNK-340):** when there is at most one chunklet,
-  or when the total chunklet character length fits inside `max_size`,
-  return the input unchanged as a single chunk.
-
-Stage 2 does *not* short-circuit on a small input: it always runs its
-optimization, and may produce a multi-chunklet partition even when
-all sentences fit in one chunklet (see SPEC-CHUNK-262). The size
-constraint is an upper bound, not a forcing function.
+- **Stage 1:** empty document returns `[]` (SPEC-CHUNK-133); document
+  no longer than `min_len` returns `[document]` (SPEC-CHUNK-130).
+- **Stage 2:** empty input returns `[]` (SPEC-CHUNK-260); single
+  sentence returns `[s]` (SPEC-CHUNK-261). Beyond those, stage 2
+  does *not* short-circuit on the "fits in one chunklet" case — it
+  always runs its optimization and may produce a multi-chunklet
+  partition even when all sentences fit (SPEC-CHUNK-262). The size
+  constraint is an upper bound, not a forcing function.
+- **Stage 3:** empty input returns `([], [])`; at most one chunklet,
+  or total length fits inside `max_size`, returns the input as a
+  single chunk (SPEC-CHUNK-340).
 
 ## Rationale for the three-stage structure
 

@@ -104,7 +104,7 @@ implementations may omit it if they do not support late chunking.
 | Parameter | Default | Contract |
 |-----------|---------|----------|
 | `sentences` | — | Ordered list of sentences. |
-| `embedder` | — | An object satisfying the embedder contract in spec 04. |
+| `embedder` | — | An object satisfying the embedder contract in [spec 04 §Embedder contract](../04-late-chunking.md#embedder-contract). At minimum: methods `tokenize(text) → list[int]`, `detokenize(list[int]) → str`, `embed(text) → matrix[T, D]` (per-token, no internal pooling); and a property `n_ctx: int`. |
 | `max_tokens_per_segment` | derived from embedder | Optional override of the per-segment token budget. |
 | `preamble_fraction` | `0.382` | Fraction of the segment budget reserved for the preamble. |
 | `normalize` | `True` | Whether to L2-normalize each output row. |

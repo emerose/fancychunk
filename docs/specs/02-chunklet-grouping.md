@@ -96,8 +96,9 @@ Interpretation:
 - Quadratic penalty for deviation from the target.
 - `sqrt(s)` divisor flattens the cost slightly for large `s` (so a
   10-statement chunklet is not 49× worse than a 4-statement
-  chunklet); for small `s` it would explode, hence the
-  `STATEMENT_COST_FLOOR` clamp.
+  chunklet); for `s` near 0 the denominator approaches zero and the
+  quotient is undefined, so `STATEMENT_COST_FLOOR` clamps `s` from
+  below to keep the denominator strictly positive.
 - `STATEMENT_COST_SCALE = 0.5` is an overall scale factor that sets
   the magnitude of the statement cost relative to the boundary cost
   (SPEC-CHUNK-220), which competes with it additively in the DP. The
@@ -121,9 +122,16 @@ word-count quartiles.
 
 Let `wc(s)` be the word count of sentence `s` (whitespace-separated
 tokens). Let `q25` and `q75` be the 25th and 75th percentiles of
-`wc(·)` across the document's sentences, with `q25` clamped to a
-small positive value and `q75` clamped to be strictly greater than
-`q25`.
+`wc(·)` across the document's sentences, computed by **linear
+interpolation between the two nearest ranks** (NumPy's default
+percentile method; equivalent to R's type 7). Clamp the results:
+
+- `q25 = max(q25, MIN_Q25_WORDS)` with `MIN_Q25_WORDS = 1.0`. This
+  prevents division by zero in the piecewise function when the
+  document is dominated by zero- or one-word sentences.
+- `q75 = max(q75, q25 + MIN_Q25_WORDS)`. This guarantees a
+  strictly-positive denominator `(q75 - q25)` in the upper branch
+  of the piecewise function.
 
 The function is anchored at two design points:
 
@@ -163,11 +171,20 @@ how structurally strong its starting position is. The vector has
 length equal to the number of sentences.
 
 **Matching rule.** Sentence `i`'s boundary probability is determined
-by the Markdown token whose opening occurs on the same line as
-sentence `i`'s first non-whitespace character. If multiple openings
-fall on that line, the *first* one in document order wins (see "When
-multiple token openings..." below). If no listed token opens on that
-line, the probability is `0.00`.
+by the Markdown tokens that open on the line containing sentence
+`i`'s first non-whitespace character:
+
+1. **List-open precedence.** If *any* `bullet_list_open` or
+   `ordered_list_open` token opens on the line, sentence `i` gets
+   `BOUNDARY_STRENGTH_LIST` regardless of whether a `paragraph_open`
+   or `list_item_open` token also opens on the same line. This
+   prevents parser-implementation drift: different CommonMark
+   parsers emit the list-open / list-item-open / paragraph-open
+   triple in different orders for the first sentence of a list.
+2. Otherwise, the *first* listed token in the table below that opens
+   on the line wins (ranked from strongest: heading, blockquote,
+   paragraph).
+3. If no listed token opens on the line, the probability is `0.00`.
 
 The mapping from token type to probability:
 
@@ -180,15 +197,14 @@ The mapping from token type to probability:
 | Ordered list (`ordered_list_open`) | `BOUNDARY_STRENGTH_LIST` | `0.25` |
 | (none of the above) | — | `0.00` |
 
-Only the *ordering* matters:
-`heading > blockquote > paragraph > list-item > nothing`. The
-chunklet-grouping DP uses these as relative weights in its boundary
-cost (SPEC-CHUNK-220), so any monotonically-ranked positive values
-with the same order would produce the same partitions. The choice of
-`1, 0.75, 0.5, 0.25` is the simplest evenly-spaced ranking that fits
-in `[0, 1]` and matches the probability convention used throughout the
-pipeline. Implementations may adjust the values to tune the *gaps*
-between ranks but should preserve the order.
+The magnitudes (not just the order) directly enter the boundary cost
+in SPEC-CHUNK-220: a heading worth `1.00` and a paragraph worth
+`0.50` produce noticeably different costs from, say, `1.00` and
+`0.90`, so the gaps matter. The chosen values are evenly-spaced
+rule-of-thumb weights on the `[0, 1]` probability scale, with the
+ranking `heading > blockquote > paragraph > list-item > nothing`.
+Implementations may tune the values; tuning changes optimization
+outcomes.
 
 Blockquote outranks paragraph because a blockquote shift almost
 always marks a quotation boundary or an attribution change — a
@@ -209,7 +225,9 @@ After the per-sentence boundary probabilities are assigned, the vector
 is post-processed: within each maximal contiguous run of non-zero
 probabilities, only the maximum value is kept; the others are set to
 zero. A run of length 1 (a singleton) is its own maximum and survives
-unchanged.
+unchanged. If multiple positions in a run share the maximum value,
+the *earliest* such position survives (matching the deterministic
+tie-breaking rule of SPEC-CHUNK-251).
 
 This encourages splitting at the *strongest* nearby structural
 boundary, not at multiple weaker ones in a row.
@@ -276,6 +294,7 @@ stages end-to-end.
 | `TARGET_STATEMENTS_PER_CHUNKLET` | `3` | SPEC-CHUNK-221 |
 | `STATEMENT_COST_FLOOR` | `1e-6` | SPEC-CHUNK-221 |
 | `STATEMENT_COST_SCALE` | `0.5` | SPEC-CHUNK-221 |
+| `MIN_Q25_WORDS` | `1.0` | SPEC-CHUNK-230 |
 | `STATEMENTS_AT_Q25` | `0.75` | SPEC-CHUNK-230 |
 | `QUARTILE_GAP_STATEMENTS` | `0.50` | SPEC-CHUNK-230 |
 | `BOUNDARY_STRENGTH_HEADING` | `1.00` | SPEC-CHUNK-240 |

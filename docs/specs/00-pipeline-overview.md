@@ -99,12 +99,20 @@ A unit at stage N is the concatenation of one or more units from stage
 N-1; the stage-N size limit is therefore an upper bound on the
 combined size of the stage-(N-1) units inside it.
 
-### SPEC-CHUNK-903 — Single-unit short-circuit
+### SPEC-CHUNK-903 — Trivial-input short-circuits
 
-When a stage's input would produce only one unit (because the input
-fits inside the stage's size limit, or because there are too few
-upstream units to partition), the stage returns its input as a
-single-element list with no optimization performed.
+Two stages short-circuit on trivial input:
+
+- **Stage 1 (SPEC-CHUNK-130):** when the document is no longer than
+  `min_len` characters, return `[document]` with no model call.
+- **Stage 3 (SPEC-CHUNK-340):** when there is at most one chunklet,
+  or when the total chunklet character length fits inside `max_size`,
+  return the input unchanged as a single chunk.
+
+Stage 2 does *not* short-circuit on a small input: it always runs its
+optimization, and may produce a multi-chunklet partition even when
+all sentences fit in one chunklet (see SPEC-CHUNK-262). The size
+constraint is an upper bound, not a forcing function.
 
 ## Rationale for the three-stage structure
 
@@ -132,10 +140,16 @@ embeddings than paragraph-sized chunklets).
 ## Configuration surface
 
 All three stages share a single notion of "maximum unit size" in
-characters, defaulting to `2048`. This is the size limit applied at
-the chunklet and chunk stage, and is also used as `max_len` for
-sentence splitting when stages are composed end-to-end.
+characters, defaulting to `2048`. This is the `max_size` parameter
+on the chunklet and chunk stage.
+
+The pipeline has no top-level "do everything" function; callers wire
+the three stages themselves. When doing so, the caller should pass
+`max_len = max_size` to `split_sentences` so that no sentence exceeds
+the downstream size limit, satisfying stage 2's precondition
+(SPEC-CHUNK-263). `split_sentences`'s own default is `max_len = None`
+because the function is also useful standalone.
 
 Implementations are free to expose stage-specific size limits if they
-have a use case requiring different limits per stage. The default
-behavior must be that all three stages share the same limit.
+have a use case requiring different limits per stage. The recommended
+default is that all three stages share the same limit.

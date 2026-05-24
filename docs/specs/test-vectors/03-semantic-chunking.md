@@ -158,37 +158,28 @@ Validates SPEC-CHUNK-322 (divide-by-4 case).
 
 | Input | Value |
 |-------|-------|
-| `chunklets` | `["Para one.\n\n", "Para two.\n\n", "## Subhead\n\n", "Para after.\n\n"]` |
-| `embeddings` | all four chunklets get nearly-identical embeddings (e.g., all `[1, 0]` with tiny perturbations to satisfy nonzero norm) |
+| `chunklets` | `["a"*900, "b"*900, "## Subhead\n\n", "c"*900]` (total ~2700 chars) |
+| `embeddings` | all four with near-identical unit vectors (e.g., all `[1, 0]` with tiny perturbations to satisfy nonzero norm) |
 | `max_size` | `2048` |
 
 Heading detection: chunklet 2 is a heading; 0, 1, 3 are not.
 
 Per SPEC-CHUNK-322 modification (walking the iteration):
-- `i = 0` (non-heading): no modification. Previous-is-heading becomes False.
-- `i = 1` (non-heading): no modification. Previous-is-heading stays False.
+- `i = 0` (non-heading): no modification.
+- `i = 1` (non-heading): no modification.
 - `i = 2` (heading):
-  - Previous (chunklet 1) is non-heading: `sim[1] = sim_base[1] / 4`
-    (encourage split before the heading, i.e. between chunklets 1 and 2).
-  - `sim[2] = 1.0` (no split immediately after heading).
+  - Previous (chunklet 1) is non-heading:
+    `sim[1] = sim_base[1] / HEADING_SPLIT_BEFORE_DIVISOR`
+    (encourage split before the heading, between chunklets 1 and 2).
+  - `sim[2] = HEADING_SPLIT_AFTER_FORBID` (no split immediately after
+    heading).
 
 With near-identical embeddings, all `sim_base[i] ≈ 1.0`. After
 modification: `sim ≈ [1.0, 0.25, 1.0]`.
 
-Total length: the four chunklets are short, total well under 2048,
-so SPEC-CHUNK-340 short-circuit applies.
-
-**Replace the test with sized chunklets** to force optimization:
-
-| Input | Value |
-|-------|-------|
-| `chunklets` | `["a"*900, "b"*900, "## Subhead\n\n", "c"*900]` (total ~2718 chars) |
-| `embeddings` | all four with near-identical embeddings |
-| `max_size` | `2048` |
-
-The covering constraint requires at least one split. With
-`sim ≈ [1.0, 0.25, 1.0]`, the minimum-cost single split is between
-chunklets 1 and 2 (`sim = 0.25`).
+The covering constraint requires at least one split (total exceeds
+`max_size`). With `sim ≈ [1.0, 0.25, 1.0]`, the minimum-cost single
+split is between chunklets 1 and 2 (`sim = 0.25`).
 
 **Expected output (property):** partition starts a new chunk at
 chunklet 2. Conforming: `[chk[0] + chk[1], chk[2] + chk[3]]`.

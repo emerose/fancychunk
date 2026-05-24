@@ -27,7 +27,7 @@ the per-chunk embedding.
 |------|------|----------|---------|-------------|
 | `sentences` | list of strings | yes | — | The sentences to embed, in document order. Typically the output of stage 1. |
 | `embedder` | object satisfying the embedder contract below | yes | — | A token-level embedding model. |
-| `max_tokens_per_segment` | positive integer | no | derived from the embedder's context window | The upper bound on tokens fed to the embedder in one call. |
+| `max_tokens_per_segment` | positive integer | no | `embedder.n_ctx` | The upper bound on tokens fed to the embedder in one call. Defaults to the embedder's reported context-window size. |
 | `preamble_fraction` | float in `(0, 1)` | no | `DEFAULT_PREAMBLE_FRACTION` (`= 0.382`) | Fraction of `max_tokens_per_segment` reserved for the segment's preamble. |
 
 ## Outputs
@@ -38,10 +38,12 @@ sentences.
 
 - **SPEC-CHUNK-400** — One row per input sentence, in the same order.
 - **SPEC-CHUNK-401** — Each row is a fixed-dimensional vector of
-  floats.
-- **SPEC-CHUNK-402** — Rows are L2-normalized when the embedder is
-  configured to normalize; otherwise rows reflect the raw mean-pooled
-  token embeddings.
+  floats. The dimension `D` equals the per-token output dimension of
+  the embedder's `embed` operation (the embedder's hidden size).
+- **SPEC-CHUNK-402** — Rows are L2-normalized when the function's
+  `normalize` parameter is `True` (the default); otherwise rows
+  reflect the raw mean-pooled token embeddings. The embedder itself
+  does not control normalization.
 
 ## Embedder contract
 
@@ -135,6 +137,11 @@ follows:
    preamble token count above the budget. This gives
    `segment_start`.
 
+   **First segment edge case:** when `content_start == 0`, there are
+   no sentences before it. Set `segment_start = 0` and skip the
+   backward walk; the full preamble budget is then unused and rolls
+   into the content budget per step 2.
+
 2. The unused preamble budget (if any) is added to the content
    budget. So if the preamble used fewer tokens than allowed (e.g.,
    the document just started), content gets the remainder.
@@ -158,13 +165,17 @@ may tune it as a configuration parameter.
 
 For each segment `(segment_start, content_start, segment_end)`:
 
-1. Concatenate the segment's sentences (preamble + content) into one
-   string and call the embedder's `embed` operation. The result is a
-   matrix of per-token embeddings.
+1. Build a single joined string from the segment's sentences
+   (preamble + content) using whatever joiner the per-sentence
+   token-counting method of SPEC-CHUNK-420 requires (the empty
+   string for offset-based counting; the sentinel character for the
+   sentinel method). Call the embedder's `embed` operation on this
+   *same string*. The result is a matrix of per-token embeddings;
+   the per-sentence token counts derived in step 2 must add up to
+   exactly this matrix's row count.
 
 2. Compute the per-sentence token count *as the embedder would see
-   it* for each sentence in the segment (SPEC-CHUNK-420 gives one
-   implementation).
+   it* for each sentence in the segment, using SPEC-CHUNK-420.
 
 3. Apportion the per-token embeddings to sentences using the
    [largest remainder method](https://en.wikipedia.org/wiki/Largest_remainder_method)
@@ -241,15 +252,9 @@ satisfy:
 
 ### SPEC-CHUNK-430 — Optional L2 normalization
 
-If the embedder configuration requests normalization, each output row
-is divided by its L2 norm before being returned. Otherwise rows are
-returned as raw mean-pooled vectors.
-
-### SPEC-CHUNK-431 — Precision
-
-Output embeddings may be stored in `float16` precision to save space,
-provided downstream similarity computations cast to `float32` or
-higher before computing dot products.
+If the function's `normalize` parameter is `True` (the default), each
+output row is divided by its L2 norm before being returned. Otherwise
+rows are returned as raw mean-pooled vectors.
 
 ## Determinism
 
@@ -297,6 +302,8 @@ raise.
   offset-based, etc.) subject to SPEC-CHUNK-420.
 - Whether to batch segments across multiple embedder calls.
 - Storage precision (`float16` vs `float32`) of returned embeddings.
+  `float16` is acceptable if downstream similarity computations cast
+  to `float32` or higher before computing dot products.
 - Whether to expose `DEFAULT_PREAMBLE_FRACTION` and
   `max_tokens_per_segment` as configuration or to derive both from
   the embedder.

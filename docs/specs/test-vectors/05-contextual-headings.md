@@ -45,34 +45,21 @@ Validates SPEC-CHUNK-510, SPEC-CHUNK-511.
   "",
   "# Introduction\n",
   "# Introduction\n\n## Background\n",
-  "# Introduction\n",
+  "# Introduction\n\n## Background\n",
 ]
 ```
 
 Notes:
 - Chunk 0 starts before any heading is in scope → empty path.
 - Chunk 1 starts after `# Introduction` was set → path is just that
-  heading. (`# Introduction` is in the path because chunk 0
-  *introduced* it; chunk 1's `## Background` is in chunk 1's content,
-  not yet in its path.)
+  heading. Chunk 1's own `## Background` is in chunk 1's content, not
+  yet in its path.
 - Chunk 2 starts after `## Background` was set → path is both
   headings, joined by the separator.
-- Chunk 3 starts after `## Method` was set, which cleared deeper
-  levels but slot 2 just got overwritten by `## Method`... wait,
-  chunk 3's *path* is what was in scope at chunk 3's start, which is
-  after chunk 2 finished (no new heading in chunk 2). At that point
-  the stack was `["# Introduction\n", "## Background\n"]`. Chunk 3's
-  content then sets slot 2 to `## Method` and clears slot 3+ — but
-  that update happens *after* chunk 3's path is snapshotted.
-
-So the corrected expected output for chunk 3 is:
-
-```
-"# Introduction\n\n## Background\n"
-```
-
-(Same as chunk 2.) The path snapshot happens before scanning each
-chunk's content.
+- Chunk 3 starts after chunk 2 finished. Chunk 2 contained no new
+  headings, so the stack at chunk 3's start is unchanged from
+  chunk 2's start. Chunk 3's own `## Method` updates the stack *after*
+  the path snapshot, so it doesn't appear in chunk 3's path.
 
 ## TV-504 — Stack reset when heading level rises
 

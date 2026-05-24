@@ -5,14 +5,28 @@ is a contiguous substring of the document, sentences respect a
 configurable length range, and structurally meaningful boundaries
 (notably Markdown headings) are honored.
 
+> SPEC-CHUNK IDs in this document are not contiguous; gaps reflect
+> only the current set of behaviors and are not reserved for future
+> use.
+
 ## Inputs
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `document` | string (UTF-8) | yes | — | The Markdown document to split. |
-| `min_len` | non-negative integer | no | `4` | Minimum characters per sentence. |
+| `min_len` | non-negative integer | no | `4` | Minimum characters per sentence. See "About `min_len`" below. |
 | `max_len` | positive integer or `None` | no | `None` | Maximum characters per sentence. `None` means no upper bound. |
 | `known_boundary_probas` | per-character probability vector or callable producing one | no | the Markdown-heading boundary function (SPEC-CHUNK-113) | An override mechanism: positions where the caller already knows the boundary probability. See SPEC-CHUNK-112. |
+
+> **About `min_len = 4`.** Sentence segmenters sometimes emit
+> degenerate sentences when given noisy input: a stray punctuation
+> mark, an isolated letter, or a typesetting artifact. `min_len = 4`
+> excludes those cases without rejecting legitimately short sentences
+> like `"OK."` (3 chars — would round-trip as a single document but
+> rarely arises as a *result* of splitting a longer one) or `"Done."`
+> (5 chars — safely above the floor). Tune downward to allow more
+> aggressive splitting on terse content; tune upward if a particular
+> segmenter is noisy.
 
 ## Outputs
 
@@ -28,7 +42,8 @@ A list of strings (the sentences), satisfying:
   whitespace. The first sentence may begin with whitespace only if the
   document itself does.
 - **SPEC-CHUNK-105** — Every sentence is at least `min_len` characters
-  long.
+  long. (Exception: the short-circuit in SPEC-CHUNK-130 returns a
+  single sentence shorter than `min_len` when the entire document is.)
 - **SPEC-CHUNK-106** — When `max_len` is set, every sentence is at most
   `max_len` characters long.
 
@@ -177,14 +192,15 @@ SPEC-CHUNK-105 and SPEC-CHUNK-106.
 For a given document, configuration, and segmenter, the output is
 deterministic across runs.
 
-### SPEC-CHUNK-121 — Ties broken by first-found
+### SPEC-CHUNK-121 — Ties broken by smallest predecessor index
 
-When two partitions yield the same total score, the splitter selects
-the one found first in its enumeration. Implementations using DP with
-forward iteration produce the lexicographically-earliest set of
-boundary indices; implementations using backward iteration may produce
-the lexicographically-latest. Both are conforming. Test vectors must
-not depend on this tie-breaker.
+When two partitions yield the same total score, prefer the partition
+whose earliest boundary is at the smallest position. In a forward
+DP this is implemented by always extending from the smallest
+predecessor index when ties occur in the DP table — matching the
+deterministic tie-breaking used by stage 2 (SPEC-CHUNK-251) so the
+two stages share one rule. Test vectors do not depend on this
+tie-breaker, but determinism is required for cross-run reproducibility.
 
 ## Edge cases
 
@@ -211,8 +227,12 @@ returns `[document]`.
 
 ### SPEC-CHUNK-133 — Empty document
 
-The behavior for an empty document (`""`) is implementation-defined.
-Reasonable choices are returning `[""]` or `[]`. Document the choice.
+For an empty document (`""`), returning `[]` is the recommended
+behavior — it matches stage 2's empty-input convention
+(SPEC-CHUNK-260) and stage 3's (SPEC-CHUNK-340), so an empty
+document flows through the whole pipeline as empty lists. Returning
+`[""]` is also conforming for callers that rely on a non-empty
+output, but implementations should document the choice.
 
 ## Named constants
 

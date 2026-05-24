@@ -47,10 +47,8 @@ heading path that applies to `chunks[i]`.
 - **SPEC-CHUNK-501** — Each path is either the empty string `""` or a
   sequence of one to `MAX_HEADING_LEVELS` Markdown heading lines
   joined by `HEADING_PATH_SEPARATOR`, with the deepest level last.
-- **SPEC-CHUNK-502** — The first chunk's path is `""` if the document
-  begins with content before any heading; otherwise empty as well
-  (the first chunk's own headings are part of its content, not its
-  path).
+- **SPEC-CHUNK-502** — The first chunk's path is always `""`; no
+  headings precede the document's start.
 
 ## Behavior
 
@@ -121,13 +119,20 @@ The empty path is the empty string `""`, not `None` or a placeholder.
 
 Example: with the stack `[h1="# Sorting\n", h2="## Quicksort\n",
 h3="### Random pivots\n", h4=None, h5=None, h6=None]`, the heading
-path is:
+path is the literal string:
 
 ```
 # Sorting
+
 ## Quicksort
+
 ### Random pivots
+
 ```
+
+Each stored heading line already ends in `\n`; the `\n` separator
+then introduces the visible blank line between successive headings.
+The path ends with the trailing `\n` from the deepest heading line.
 
 ### SPEC-CHUNK-520 — Stack reset semantics
 

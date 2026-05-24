@@ -126,30 +126,37 @@ the same as the "common discourse vector" step in Arora, Liang & Ma,
 a *corpus* to remove a shared frequency direction; this spec applies
 the same idea per-*document* to remove the document's central topic.
 
-Compute it as follows:
+Compute the correction as a single ordered procedure. The "skip
+correction" outcome falls back to the unit-normalized embeddings from
+step 1 of SPEC-CHUNK-320 in every skip case.
 
 1. Determine the `TYPICAL_CHUNKLET_LOWER_QUANTILE`-th
    (`= 0.15`) and `TYPICAL_CHUNKLET_UPPER_QUANTILE`-th
    (`= 0.85`) percentiles of chunklet character length; call them
    `q15` and `q85`.
+
 2. Identify *typical* chunklets: those whose length is in
-   `[q15, q85]` — i.e., the middle 70% of the chunklet-length
+   `[q15, q85]` — the middle 70% of the chunklet-length
    distribution.
-3. If any typical chunklets exist, set `discourse` to the
-   L2-normalized mean of those chunklets' unit-normalized embeddings.
-4. Project each chunklet's embedding onto the hyperplane orthogonal
-   to `discourse`:
+
+3. **First skip check.** If fewer than two typical chunklets exist
+   (a degenerate or very-short document), skip the correction.
+
+4. Otherwise, set `discourse` to the L2-normalized mean of the
+   typical chunklets' unit-normalized embeddings.
+
+5. Tentatively compute the projected embeddings:
    ```
    X_corrected = X - (X · discourse) * discourse
    ```
-5. Re-normalize `X_corrected` to unit norm.
-6. **Safeguard:** if step 4 would zero out any chunklet (i.e., a row
-   becomes shorter than the machine epsilon after projection), abandon
-   the correction and use the un-corrected, unit-normalized embeddings
-   instead.
 
-When fewer than two typical chunklets exist (a degenerate or
-very-short document), no correction is applied.
+6. **Second skip check.** If any row of `X_corrected` has L2 norm
+   below the machine epsilon (i.e., a chunklet was effectively
+   parallel to the discourse vector and got zeroed out), skip the
+   correction.
+
+7. Otherwise, re-normalize `X_corrected` to unit norm and use it as
+   the corrected embeddings.
 
 The middle-70% trim exists because unusually-short chunklets (titles,
 one-line code blocks, list-item fragments) and unusually-long
@@ -170,22 +177,38 @@ A chunklet is a *heading* if, after stripping newlines and surrounding
 whitespace, it begins with `^#+\s` (one or more `#` characters
 followed by whitespace — the Markdown heading syntax).
 
-Walk the chunklets in order (treating the position before the first
-chunklet as a virtual "previous was a heading"). For each chunklet `i`
-from `0` to `N-2`:
+Apply the following procedure. (Pseudocode below; treat the position
+before the first chunklet as if the prior chunklet had been a heading
+— this suppresses the "encourage split before" boost for a heading
+that is the document's first chunklet, since there is no partition
+point at index `-1`.)
 
-- If chunklet `i` **is a heading**:
-  - If chunklet `i-1` is **not** a heading and `i > 0`:
-    `sim[i-1] = sim[i-1] / HEADING_SPLIT_BEFORE_DIVISOR` — encourage
-    splitting *before* the heading.
-  - `sim[i] = HEADING_SPLIT_AFTER_FORBID` — discourage splitting
-    *immediately after* a heading (the heading is part of the next
-    chunk's intro, not a standalone chunk).
+```
+previous_is_heading = True
+for i in 0 .. N - 1:
+    if is_heading(chunklets[i]):
+        # Encourage splitting before this heading
+        # (only if there is a partition point at i-1, and the
+        # previous chunklet was not itself a heading).
+        if i >= 1 and not previous_is_heading:
+            sim[i - 1] = sim[i - 1] / HEADING_SPLIT_BEFORE_DIVISOR
 
-- If chunklet `i` is **not** a heading: no modification.
+        # Discourage splitting immediately after this heading
+        # (only if there is a partition point at i; the heading
+        # belongs with the next chunk's intro, not as a standalone
+        # chunk). The last chunklet has no partition point after it.
+        if i <= N - 2:
+            sim[i] = HEADING_SPLIT_AFTER_FORBID
 
-Update "previous was a heading" for the next iteration based on
-chunklet `i`.
+        previous_is_heading = True
+    else:
+        previous_is_heading = False
+```
+
+The iteration runs the full length of the chunklet list so that a
+heading at the *end* of the document still triggers the "encourage
+split before" boost on `sim[N-2]`. The bounds guards prevent indexing
+into nonexistent partition points at either end.
 
 The two constants play different roles:
 
@@ -225,12 +248,16 @@ choices.
 
 ## Edge cases
 
-### SPEC-CHUNK-340 — Short-circuit: zero or one chunklet
+### SPEC-CHUNK-340 — Short-circuit: trivial input
 
-If `len(chunklets) <= 1` or `sum(len(c) for c in chunklets) <=
-max_size`, return the input unchanged: one chunk that is the
-concatenation of all chunklets, and one embedding matrix containing
-all the input rows.
+- If `chunklets == []`, return `([], [])`.
+- Otherwise, if `len(chunklets) == 1` or
+  `sum(len(c) for c in chunklets) <= max_size`, return the input as a
+  single chunk: `(["".join(chunklets)], [chunklet_embeddings])` —
+  one string concatenating all chunklets, and one embedding matrix
+  containing all the input rows.
+
+In both cases no optimization is performed.
 
 ### SPEC-CHUNK-341 — Chunklet exceeds `max_size`
 
@@ -276,5 +303,3 @@ that partition optimization failed.
 
 - Behavior when the embedding matrix has fewer or more rows than the
   chunklets list. The implementation should validate and raise.
-- Behavior when `chunklets == []` (treat as the SPEC-CHUNK-340
-  short-circuit, returning `([], [<empty matrix>])`).

@@ -165,15 +165,12 @@ Validates SPEC-CHUNK-112.
 | `max_len` | `None` |
 | `known_boundary_probas` | vector of length 17; all `NaN` except index `5` which is `1.0` and index `11` which is `1.0` |
 
-**Expected output:** `["abcde ", "fghij ", "klmno"]`. Boundaries at
-index 5 and 11 are forced by overrides; nothing else split.
+**Expected output:** `["abcde ", "fghij ", "klmno"]`.
 
-Note: SPEC-CHUNK-114 may shift the exact boundary location within the
-whitespace run. Acceptable variants include
-`["abcde", " fghij", " klmno"]` only if SPEC-CHUNK-114 is *not*
-applied to overrides — but since override values participate in the
-final probability vector, the whitespace-trailing rule applies and
-the first partition is the conforming one.
+Override values are merged into the probability vector before
+SPEC-CHUNK-114 (whitespace-trailing) is applied. The trailing-
+whitespace rule shifts each split to just after its space, giving
+the partition shown.
 
 ## TV-112 — Override prevents split inside heading (model-independent)
 

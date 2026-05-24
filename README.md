@@ -31,9 +31,11 @@ Optionally:
 ## What it does *not* do
 
 - It does not parse PDFs, Word documents, or HTML. Input is Markdown.
-- It does not embed text by default. Embedding is the caller's
-  responsibility; fancychunk consumes pre-computed chunklet embeddings
-  for the semantic-chunking stage.
+- It does not embed text in the core three-stage pipeline. Embedding
+  is the caller's responsibility; fancychunk consumes pre-computed
+  chunklet embeddings for the semantic-chunking stage. (The optional
+  `embed_with_late_chunking` helper does invoke an embedder, but it
+  is opt-in and requires the caller to supply one.)
 - It does not store, index, or retrieve. Output is a list of strings.
 - It does not generate. There is no LLM in the loop.
 

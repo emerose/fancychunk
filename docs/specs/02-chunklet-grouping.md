@@ -84,11 +84,11 @@ The default `statement_cost` for a chunklet containing `s` statements
 (see SPEC-CHUNK-230 for what "statements" means) is:
 
 ```
-statement_cost = (s - TARGET_STATEMENTS_PER_CHUNKLET)² / sqrt(max(s, STATEMENT_COST_FLOOR)) / 2
+statement_cost = STATEMENT_COST_SCALE * (s - TARGET_STATEMENTS_PER_CHUNKLET)² / sqrt(max(s, STATEMENT_COST_FLOOR))
 ```
 
-with `TARGET_STATEMENTS_PER_CHUNKLET = 3` and
-`STATEMENT_COST_FLOOR = 1e-6`.
+with `TARGET_STATEMENTS_PER_CHUNKLET = 3`,
+`STATEMENT_COST_FLOOR = 1e-6`, and `STATEMENT_COST_SCALE = 0.5`.
 
 Interpretation:
 - Minimum at `s = TARGET_STATEMENTS_PER_CHUNKLET` (target = 3
@@ -98,6 +98,11 @@ Interpretation:
   10-statement chunklet is not 49× worse than a 4-statement
   chunklet); for small `s` it would explode, hence the
   `STATEMENT_COST_FLOOR` clamp.
+- `STATEMENT_COST_SCALE = 0.5` is an overall scale factor that sets
+  the magnitude of the statement cost relative to the boundary cost
+  (SPEC-CHUNK-220), which competes with it additively in the DP. The
+  factor doesn't change the minimizer for any single chunklet but
+  shifts the relative weighting of the two cost components.
 
 > **About `TARGET_STATEMENTS_PER_CHUNKLET = 3`.** This is a heuristic:
 > a chunklet of 3 statements roughly corresponds to a paragraph of
@@ -155,9 +160,16 @@ but the default must match the formula above.
 
 Each sentence is assigned a single *boundary probability* indicating
 how structurally strong its starting position is. The vector has
-length equal to the number of sentences. Sentence `i`'s boundary
-probability is determined by Markdown parsing of the concatenated
-document according to the following ranked table:
+length equal to the number of sentences.
+
+**Matching rule.** Sentence `i`'s boundary probability is determined
+by the Markdown token whose opening occurs on the same line as
+sentence `i`'s first non-whitespace character. If multiple openings
+fall on that line, the *first* one in document order wins (see "When
+multiple token openings..." below). If no listed token opens on that
+line, the probability is `0.00`.
+
+The mapping from token type to probability:
 
 | Markdown token opening on the same line as sentence `i`'s start | Named constant | Value |
 |-----------------------------------------------------------------|----------------|-------|
@@ -178,6 +190,11 @@ in `[0, 1]` and matches the probability convention used throughout the
 pipeline. Implementations may adjust the values to tune the *gaps*
 between ranks but should preserve the order.
 
+Blockquote outranks paragraph because a blockquote shift almost
+always marks a quotation boundary or an attribution change — a
+topic-relevant break — whereas a paragraph break can also occur for
+purely visual or rhythmic reasons within a single topic.
+
 When multiple token openings would assign a probability to the same
 sentence, the *first* assignment wins (the iteration is in document
 order, and reassignment to a sentence already assigned is skipped).
@@ -191,7 +208,8 @@ type names. The Markdown parser must produce equivalent token types
 After the per-sentence boundary probabilities are assigned, the vector
 is post-processed: within each maximal contiguous run of non-zero
 probabilities, only the maximum value is kept; the others are set to
-zero.
+zero. A run of length 1 (a singleton) is its own maximum and survives
+unchanged.
 
 This encourages splitting at the *strongest* nearby structural
 boundary, not at multiple weaker ones in a row.
@@ -200,8 +218,8 @@ Example:
 - Before: `[0.0, 0.5, 0.75, 0.25, 0.0, 0.5, 0.0]`
 - After:  `[0.0, 0.0, 0.75, 0.0,  0.0, 0.5, 0.0]`
 
-(In the first run `[0.5, 0.75, 0.25]`, only `0.75` survives. In the
-second run `[0.5]`, the lone value survives.)
+In the first run `[0.5, 0.75, 0.25]`, only `0.75` survives. In the
+second run `[0.5]`, the lone value survives.
 
 ## Determinism and tie-breaking
 
@@ -210,12 +228,14 @@ second run `[0.5]`, the lone value survives.)
 Given a deterministic Markdown parser, chunklet grouping is fully
 deterministic for the same inputs.
 
-### SPEC-CHUNK-251 — Tie-breaking prefers smaller chunklets
+### SPEC-CHUNK-251 — Tie-breaking is deterministic
 
 When two partitions have equal total cost, prefer the one whose
-earlier splits use the earlier possible split point. Equivalently, in
-DP terms: when extending the partition table, ties are broken in
-favor of the smaller predecessor index.
+earliest split is at the smallest possible sentence index. (In a
+forward-iterating DP this is the partition built by always extending
+from the smallest predecessor index when ties occur in the DP
+table.) This is required because TV-210 depends on a deterministic
+choice.
 
 ## Edge cases
 
@@ -238,12 +258,15 @@ The size constraint is an upper bound, not a forcing function.
 
 ### SPEC-CHUNK-263 — No valid partition (sentence exceeds max_size)
 
-If any single input sentence exceeds `max_size`, no partition can
-satisfy SPEC-CHUNK-201. The behavior is implementation-defined: either
-raise an explicit error or place the oversized sentence in its own
-chunklet (violating SPEC-CHUNK-201). Stage 1 is responsible for
-ensuring this does not happen by passing `max_len = max_size` when
-called upstream.
+If any single input sentence exceeds `max_size` characters, no
+partition can satisfy SPEC-CHUNK-201. The implementation raises an
+error before optimization begins. The exact error type is
+implementation-defined; the message should indicate that the input
+contains a sentence longer than `max_size`.
+
+The upstream stage is responsible for ensuring this never happens:
+pass `max_len = max_size` to `split_sentences` when wiring the
+stages end-to-end.
 
 ## Named constants
 
@@ -252,6 +275,7 @@ called upstream.
 | `DEFAULT_MAX_SIZE_CHARS` | `2048` | inputs table |
 | `TARGET_STATEMENTS_PER_CHUNKLET` | `3` | SPEC-CHUNK-221 |
 | `STATEMENT_COST_FLOOR` | `1e-6` | SPEC-CHUNK-221 |
+| `STATEMENT_COST_SCALE` | `0.5` | SPEC-CHUNK-221 |
 | `STATEMENTS_AT_Q25` | `0.75` | SPEC-CHUNK-230 |
 | `QUARTILE_GAP_STATEMENTS` | `0.50` | SPEC-CHUNK-230 |
 | `BOUNDARY_STRENGTH_HEADING` | `1.00` | SPEC-CHUNK-240 |

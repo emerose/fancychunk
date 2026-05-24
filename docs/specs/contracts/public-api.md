@@ -2,15 +2,22 @@
 
 External surface of fancychunk. These are the signatures and defaults
 that callers depend on. Internals are unconstrained by this document;
-only the four contracts below cross the API boundary.
+only the contracts below cross the API boundary.
 
-The signatures below are written in Python type-hint syntax for
-clarity. Any language is fine; the contract is the shape of the
-operation, not the syntax. The function names below are illustrative
-and may be renamed, grouped under a `Chunker` class, or wrapped in a
-pipeline object — the
-[acceptance checklist](../acceptance/checklist.md) refers to
-operations by behavior (SPEC-CHUNK-NNN), not by function name.
+There are three required functions (`split_sentences`,
+`split_chunklets`, `split_chunks`) and two optional helpers
+(`embed_with_late_chunking`, `heading_paths`). The signatures are
+written in Python type-hint syntax for clarity; any language is fine,
+as the contract is the shape of the operation, not the syntax.
+
+Implementations may rename, group, or wrap these operations (e.g., as
+methods on a `Chunker` class). When they do, the implementation must
+publish a mapping from its concrete names to the
+[acceptance-checklist](../acceptance/checklist.md) SPEC-CHUNK IDs, so
+that the test vectors and acceptance criteria can be applied without
+guessing. The
+[checklist](../acceptance/checklist.md) refers to operations by
+behavior, not by function name.
 
 ## Function: split sentences
 
@@ -30,7 +37,7 @@ Implements [spec 01](../01-sentence-splitting.md).
 | `document` | — | A UTF-8 string. |
 | `min_len` | `4` | Minimum sentence length in characters. |
 | `max_len` | `None` | Optional maximum sentence length in characters. |
-| `known_boundary_probas` | the Markdown-heading function | Either a per-character probability vector or a callable that produces one. Finite values override the model; `NaN` defers to the model. |
+| `known_boundary_probas` | the Markdown-heading function (see SPEC-CHUNK-113) | Either a per-character probability vector or a callable that produces one. Finite values override the model; `NaN` defers to the model. Passing `None` selects the default. |
 
 Returns a list of sentences satisfying SPEC-CHUNK-100 through
 SPEC-CHUNK-106.
@@ -130,6 +137,24 @@ texts_for_embedding = [
     (p + "\n" + c) if p else c
     for p, c in zip(paths, chunks)
 ]
+```
+
+## Wiring the stages
+
+The pipeline has no top-level "do everything" function; callers
+compose the three stages themselves. When doing so, pass
+`max_len = max_size` to `split_sentences` so that no individual
+sentence exceeds the downstream chunklet size limit (which would
+trigger SPEC-CHUNK-263). `split_sentences`'s own default for
+`max_len` is `None` because the function is also useful standalone.
+
+Example:
+
+```python
+sentences = split_sentences(doc, max_len=2048)
+chunklets = split_chunklets(sentences, max_size=2048)
+embeddings = my_embedder(chunklets)
+chunks, chunk_embeddings = split_chunks(chunklets, embeddings, max_size=2048)
 ```
 
 ## Error contract

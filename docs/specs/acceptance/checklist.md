@@ -108,9 +108,9 @@ A conforming implementation has every box checked.
 - [ ] **SPEC-CHUNK-261** — Single sentence returns single chunklet.
   Covered by TV-202.
 - [ ] **SPEC-CHUNK-262** — Total length within `max_size` may still
-  produce multi-chunklet partition. Verify by inspection: construct
-  an input that fits in one chunklet and confirm the DP may return a
-  multi-chunklet partition when the cost favors it.
+  produce multi-chunklet partition. Covered by TV-206 (12 short
+  sentences fitting in `max_size = 2048` partition into four
+  chunklets driven by statement cost).
 - [ ] **SPEC-CHUNK-263** — Sentence exceeding `max_size` raises an
   error. Covered by TV-211.
 

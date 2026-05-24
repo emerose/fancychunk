@@ -169,8 +169,9 @@ Two reasons:
 ### SPEC-CHUNK-110 — Splitting maximizes total score above threshold
 
 Given the final per-character probability vector, sentence boundaries
-are chosen to **maximize the sum of `(probability − BOUNDARY_SCORE_THRESHOLD)`**
-over the selected boundary positions, subject to the length constraints
+are chosen to **maximize the sum of
+`(probability[k] − BOUNDARY_SCORE_THRESHOLD)`** over the selected
+boundary positions `k`, subject to the length constraints
 (SPEC-CHUNK-103, SPEC-CHUNK-104).
 
 `BOUNDARY_SCORE_THRESHOLD` defaults to `0.25`, the recommended
@@ -189,6 +190,22 @@ This is an optimization problem with `O(N)` candidate boundary
 positions and a length-range constraint coupling them. The standard
 solution is dynamic programming, but any solver that finds the optimum
 is conforming.
+
+**Output structure.** Given the selected boundary positions
+`{k₁ < k₂ < … < kₘ}` (possibly empty), the returned sentences are:
+
+```
+document[0 : k₁ + 1],
+document[k₁ + 1 : k₂ + 1],
+…,
+document[kₘ + 1 : N]
+```
+
+Position `N - 1` (the document's final character) is always a
+sentence end and is not represented in the boundary set — it is
+implicit in the final slice's upper bound. The empty boundary set is
+a valid solution: it yields the single-sentence partition
+`[document]` whenever that satisfies SPEC-CHUNK-103/104.
 
 ### SPEC-CHUNK-111 — Two-pass max-length handling
 
@@ -214,19 +231,25 @@ deterministic across runs.
 
 When two partitions yield the same total score, the DP picks the one
 obtained by always choosing the **smallest** predecessor index `j`
-whenever multiple `j`'s achieve the minimum of `dp[j] + cost(j..i)`
-during table construction.
+whenever multiple `j`'s achieve the maximum of
+`dp[j] + score(j..i)` during table construction, where `score(j..i)`
+is the score contribution of placing a boundary at position `i - 1`
+(equal to `probability[i-1] − BOUNDARY_SCORE_THRESHOLD` per
+SPEC-CHUNK-110, or `0` for the case where no boundary is placed at
+`i - 1`).
 
 Behaviorally, this rule has two consequences worth knowing:
 
-- Among equal-cost partitions, the one with the **fewest boundaries**
+- Among equal-score partitions, the one with the **fewest boundaries**
   is preferred (the smallest-`j` choice at the final step is `j = 0`
-  when all costs tie, yielding the single-sentence partition).
-- Among equal-cost partitions of the same size, the one whose **last
+  when all scores tie, yielding the single-sentence partition).
+- Among equal-score partitions of the same size, the one whose **last
   boundary is at the smallest position** is preferred (applied
   recursively for earlier boundaries).
 
-This matches the tie-breaking rule of stage 2 (SPEC-CHUNK-251).
+Stage 2 (SPEC-CHUNK-251) uses the same smallest-predecessor rule
+under a minimization objective — the rule is the same; only the
+objective's direction differs between the two stages.
 Determinism is required so the output is reproducible across runs.
 
 ## Edge cases

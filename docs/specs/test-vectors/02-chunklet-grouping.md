@@ -147,13 +147,20 @@ non-zero structural cue.
 
 | Input | Value |
 |-------|-------|
-| `sentences` | `["Intro.\n\n", "> Blockquote line.\n", "* Bullet one.\n", "Continued text.\n"]` |
+| `sentences` | `["Intro.\n\n", "> Blockquote line.\n\n", "* Bullet one.\n\n", "Continued text.\n"]` |
 | `max_size` | `2048` |
+
+Each sentence ends with `\n\n` (blank line) so that the Markdown
+parser emits a fresh block-level token at the start of the next
+sentence — avoiding CommonMark lazy-continuation semantics, which
+would otherwise fold "Continued text." into the preceding bullet
+item as a continuation rather than a new paragraph.
 
 Per-sentence boundary probabilities *before* SPEC-CHUNK-241 cleanup:
 - Sentence 0: `paragraph_open` → `0.5`
 - Sentence 1: `blockquote_open` → `0.75`
-- Sentence 2: `bullet_list_open` → `0.25`
+- Sentence 2: `bullet_list_open` (with paragraph_open shadowed per
+  SPEC-CHUNK-240's list-precedence rule) → `0.25`
 - Sentence 3: `paragraph_open` → `0.5`
 
 The run `[0.75, 0.25]` at sentences 1-2 has its `0.25` suppressed to
@@ -171,17 +178,27 @@ preferred.
 
 ## TV-209 — Heading on first sentence (default state)
 
-Validates SPEC-CHUNK-240.
+Validates SPEC-CHUNK-240 by placing a heading in a non-leading
+position so the test isn't trivially satisfied by index 0.
 
 | Input | Value |
 |-------|-------|
-| `sentences` | `["# Title\n\n", "Body sentence one.\n", "Body sentence two.\n"]` |
+| `sentences` | `["Opening paragraph sentence.\n\n", "## Title\n\n", "Body sentence one.\n", "Body sentence two.\n"]` |
 | `max_size` | `2048` |
 
-**Expected output (property):** sentence 0 (heading) starts a
-chunklet, which is trivially true (it's the first sentence). The body
-sentences may or may not be in the same chunklet as the heading
-depending on statement cost.
+The opening paragraph (sentence 0) gets `BOUNDARY_STRENGTH_PARAGRAPH
+= 0.5`. The heading (sentence 1) gets `BOUNDARY_STRENGTH_HEADING =
+1.0`. Body sentences (2, 3) get `0.0` (no token opens on their
+lines).
+
+**Expected output (property):** sentence 1 (the heading) appears as
+the start of some chunklet in the partition. Equivalently, the
+partition includes a split point between sentences 0 and 1. With
+heading probability `1.0` versus paragraph `0.5`, the boundary cost
+strictly prefers a chunklet boundary at the heading position over
+folding the heading into the opening paragraph. The body sentences
+may or may not be in the same chunklet as the heading depending on
+statement cost; only the heading-start property is asserted here.
 
 ## TV-210 — Custom cost functions (model-independent)
 

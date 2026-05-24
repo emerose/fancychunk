@@ -96,10 +96,15 @@ does not invoke an embedder.)
 ### SPEC-CHUNK-902 — Size monotonicity
 
 A unit produced by stage N is no larger than the size limit configured
-for stage N:
-- Sentences respect their configured `max_len` (when supplied).
+for stage N, on the normal path:
+- Sentences respect their configured `max_len` (when supplied),
+  subject to the short-circuit exception in SPEC-CHUNK-114 (a
+  document shorter than `min_len` is returned as a single sentence
+  even if it exceeds `max_len`).
 - Chunklets are no larger than `max_size` characters.
-- Chunks are no larger than `max_size` characters.
+- Chunks are no larger than `max_size` characters (subject to the
+  oversize-sentence carve-out in SPEC-CHUNK-411's progress
+  guarantee, when late chunking is in use).
 
 A unit at stage N is the concatenation of one or more units from stage
 N-1; the stage-N size limit is therefore an upper bound on the

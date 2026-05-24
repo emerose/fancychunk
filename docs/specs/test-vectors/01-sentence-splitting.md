@@ -68,9 +68,11 @@ Validates SPEC-CHUNK-108.
 its own sentence, separated from the body. The body may further split
 into one or two sentences depending on the segmenter.
 
-The conformance check: `expected[0]` ends at or after the position of
-the final character of the heading (inclusive of the trailing
-newline(s)).
+The conformance check: `expected[0]` ends exactly at the heading's
+trailing newline(s) — i.e., the first sentence consists of the
+heading line and only its trailing whitespace. Concretely,
+`expected[0]` equals `"# Hello\n\n"` (per SPEC-CHUNK-109,
+whitespace is trailing).
 
 ## TV-105 — Heading with body on same paragraph (model-independent)
 
@@ -196,13 +198,28 @@ Validates SPEC-CHUNK-115.
 
 | Input | Value |
 |-------|-------|
-| `document` | `"abcdefghij"` (10 chars) |
+| `document` | `"abcdefghij"` (10 chars, no whitespace) |
 | `min_len` | `4` |
-| `max_len` | `3` (impossible: max < min) |
+| `max_len` | `8` |
+| `known_boundary_probas` | vector of length 10; all `NaN` (no overrides) |
+
+The document is longer than `max_len` (10 > 8), so at least one split
+is required. But no internal split position can produce two sentences
+each of length `≥ min_len = 4`: a split at index `k` produces
+sentences of length `k + 1` and `10 - (k + 1)`, and for both to be
+`≥ 4` we need `k ∈ {3, 4, 5}`. At each such `k` the first sentence
+has length `≥ 4` but the second has length `≤ 6`, and either sentence
+must independently satisfy `≤ max_len = 8` (which all candidates do)
+*and* the chosen `k` must score positively after the segmenter's
+output is combined with the threshold — but no internal position has
+a probability high enough to clear the threshold when overrides are
+absent and the segmenter predicts uniformly low probabilities on a
+run of identical characters. The DP exhausts every valid `k` and
+finds the no-boundary partition itself violates `max_len`.
 
 **Expected output:** the implementation raises an error indicating
-no valid partition exists. The exception type is
-implementation-defined.
+no valid partition exists under the length constraints. The exception
+type is implementation-defined.
 
 ## Model-dependent vectors (informational only)
 

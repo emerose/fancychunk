@@ -138,12 +138,12 @@ Compute the correction as a single ordered procedure. The "skip
 correction" outcome falls back to the unit-normalized embeddings from
 step 1 of SPEC-CHUNK-320 in every skip case.
 
-1. Determine the `TYPICAL_CHUNKLET_LOWER_QUANTILE`-th
-   (`= 0.15`) and `TYPICAL_CHUNKLET_UPPER_QUANTILE`-th
-   (`= 0.85`) percentiles of chunklet character length; call them
-   `q15` and `q85`. Use linear interpolation between the two
-   nearest ranks (NumPy's default percentile method; R type 7),
-   matching SPEC-CHUNK-230.
+1. Determine the 15th and 85th percentiles of chunklet character
+   length; call them `q15` and `q85`. The percentile boundaries are
+   the named constants `TYPICAL_CHUNKLET_LOWER_QUANTILE = 0.15` and
+   `TYPICAL_CHUNKLET_UPPER_QUANTILE = 0.85`. Use the same percentile
+   method as SPEC-CHUNK-230 (linear interpolation between the two
+   nearest ranks; specified once there and inherited here).
 
 2. Identify *typical* chunklets: those whose length is in
    `[q15, q85]` — the middle 70% of the chunklet-length
@@ -190,7 +190,7 @@ which chunklets are Markdown headings.
 
 A chunklet is a *heading* if, after stripping leading and trailing
 whitespace, its entire stripped content is a single ATX-style
-Markdown heading line. The heading marker is `^#{1,6}\s` (one to six
+Markdown heading line. The heading marker is `^#{1,6}(\s|$)` (one to six
 `#` characters followed by whitespace; the standard Markdown range,
 matching SPEC-CHUNK-512). A line beginning with seven or more `#`
 characters is not a heading. A chunklet that *begins* with a heading
@@ -199,22 +199,30 @@ purposes of this section.
 
 Setext-style headings (a heading text followed by a line of `=` or
 `-` characters) are not recognized here. By the time chunklets reach
-stage 3, any Setext heading has been resolved into a sentence by
-stage 1 and grouped with adjacent content by stage 2, so the
-heading-aware modification applies only to ATX form.
+stage 3, stage 1 has marked the Setext heading as one sentence and
+stage 2's optimizer typically groups it with adjacent content under a
+paragraph-strength boundary cue — but stage 2 makes no guarantee:
+under low statement cost or specific size pressure, a Setext heading
+can survive as a standalone chunklet. In that case stage 3's
+heading-aware modification does not fire, and the chunklet is treated
+like any other non-heading chunklet during partition similarity. This
+is a known limitation; standalone Setext-heading chunklets are rare
+in practice. Implementations may extend SPEC-CHUNK-322's detection to
+recognize Setext form if their corpora make this case material.
 
-Apply the following procedure. Treat the position before the first
-chunklet as if the prior chunklet had been a heading — this
-suppresses the "encourage split before" boost for a heading that is
-the document's first chunklet, since there is no partition point at
-index `-1`.
+Apply the following procedure. The `previous_is_heading` flag tracks
+whether the immediately preceding chunklet was itself a heading, so
+that two adjacent headings don't trigger a redundant boost at the
+boundary between them. The initial value is irrelevant — the loop's
+first iteration overwrites it before any guard reads it — but `False`
+matches the natural "no chunklet has been seen yet" reading.
 
 ```
 # i is a CHUNKLET index in [0, N).
 # sim is indexed by PARTITION POINT — sim[k] sits between
 # chunklets k and k+1 — so sim has length N-1 and valid indices
 # are [0, N-2]. The bounds guards below enforce that.
-previous_is_heading = True
+previous_is_heading = False
 for i in range(N):           # i = 0, 1, ..., N-1 inclusive
     if is_heading(chunklets[i]):
         # Encourage splitting before this heading
@@ -296,8 +304,11 @@ choices.
   sole input chunklet, paired with the full input embedding matrix.
 - Otherwise, if `sum(len(c) for c in chunklets) <= max_size`, return
   `(["".join(chunklets)], [chunklet_embeddings])` — one chunk that
-  concatenates all chunklets, paired with the full input embedding
-  matrix.
+  concatenates all `N` chunklets, paired with the full input
+  embedding matrix as a single element of the outer list. (The inner
+  matrix has all `N` rows in their original order; concatenating
+  across the single-element outer list yields the original
+  `chunklet_embeddings` unchanged, satisfying SPEC-CHUNK-302.)
 
 In all three cases no optimization is performed and the
 heading-aware modification of SPEC-CHUNK-322 is skipped, even if

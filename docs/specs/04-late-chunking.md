@@ -134,9 +134,12 @@ text whose embeddings are already kept.
 Starting from `content_start = 0`, each segment is constructed as
 follows:
 
-1. Reserve up to `max_tokens_preamble = round(preamble_fraction *
+1. Reserve up to `max_tokens_preamble = floor(preamble_fraction *
    max_tokens_per_segment)` tokens of preamble *before*
-   `content_start`. Walk backwards from `content_start`,
+   `content_start`. (Use `floor`, not `round`: this never overshoots
+   the budget and is unambiguous across languages — `round`'s
+   half-to-even vs. half-up behavior differs between standard
+   libraries.) Walk backwards from `content_start`,
    accumulating sentences until the next sentence would push the
    preamble token count above the budget. This gives
    `segment_start`.
@@ -162,7 +165,9 @@ follows:
 3. Walk forward from `content_start`, accumulating sentences as
    content until the next sentence would push the *content* tokens
    above the augmented content budget (equivalently: the *segment*
-   tokens above `max_tokens_per_segment`). This gives `segment_end`.
+   tokens above `max_tokens_per_segment`). Token counts here are
+   isolated-sentence counts, same as in step 1. This gives
+   `segment_end`.
 
 4. Append the segment `(segment_start, content_start, segment_end)`.
    Set the next iteration's `content_start = segment_end`.
@@ -192,14 +197,12 @@ may tune it as a configuration parameter.
 
 For each segment `(segment_start, content_start, segment_end)`:
 
-1. Build a single joined string from the segment's sentences
-   (preamble + content) using whatever joiner the per-sentence
-   token-counting method of SPEC-CHUNK-420 requires (the empty
-   string for offset-based counting; the sentinel character for the
-   sentinel method). Call the embedder's `embed` operation on this
-   *same string*. The result is a matrix of per-token embeddings;
-   the per-sentence token counts derived in step 2 must add up to
-   exactly this matrix's row count.
+1. Build the joined string per the counting method chosen for
+   SPEC-CHUNK-420 (the method itself specifies which joiner to use).
+   Call the embedder's `embed` operation on this same string. The
+   result is a matrix of per-token embeddings; the per-sentence token
+   counts derived in step 2 must add up to exactly this matrix's row
+   count.
 
 2. Compute the per-sentence token count *as the embedder would see
    it* for each sentence in the segment, using SPEC-CHUNK-420.
@@ -272,12 +275,18 @@ One valid implementation is the sentinel-token method:
    span; sentinel tokens are counted as part of the preceding
    sentence.
 
-Other valid implementations include: tokenizing the joined input and
-mapping byte offsets back to sentence boundaries (if the tokenizer
-exposes offset metadata), or any other mechanism that produces
-correct per-sentence counts. The sentinel method is not normative;
-any character or method satisfying this section and SPEC-CHUNK-421 is
-acceptable.
+Other valid implementations include the **offset-based method**:
+join sentences with the empty string (i.e., `"".join(sentences)`),
+tokenize the result, and use the tokenizer's offset metadata (if
+exposed — e.g., HuggingFace `tokenizers` returns `(start, end)` byte
+offsets per token) to map each token back to its source sentence by
+character position. Per-sentence token counts are the number of
+tokens whose offset range falls within each sentence's character
+range. The joiner here is the empty string because no separator is
+needed when offsets are available.
+
+Any method satisfying this section and SPEC-CHUNK-421 is acceptable.
+The sentinel method is not normative.
 
 ### SPEC-CHUNK-421 — Sentinel character requirements (if using the sentinel method)
 
@@ -291,6 +300,14 @@ satisfy:
   the input it can occupy (start of string, mid-sequence, after
   whitespace, etc.). If the tokenizer produces token variants
   depending on context, all variants must be recognized as sentinels.
+
+Sentinel discovery uses both `tokenize` and `detokenize`. A
+conforming approach: tokenize a small probe string that contains the
+candidate sentinel in several positions, collect the candidate
+sentinel token IDs, then for each candidate ID call
+`detokenize([id])` and check that the result contains the sentinel
+character. This identifies the set of token IDs the implementation
+must recognize as sentinels in step 3 of SPEC-CHUNK-420.
 
 ## Output normalization
 

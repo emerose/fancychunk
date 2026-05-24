@@ -92,21 +92,23 @@ that is *missing* from the chunk, not context already present.
 
 ### SPEC-CHUNK-512 — Heading detection
 
-A heading line is detected by matching `^#+\s` at the start of a line
-(after any leading newline). The match captures:
+A heading line is detected by matching `^#{1,6}(\s|$)` at the start
+of a line (after any leading newline). This matches one to six `#`
+characters followed by either a whitespace character or end of line,
+which is the standard Markdown ATX-heading syntax. The match
+captures:
 
-- The heading marker (`#`, `##`, `###`, `####`, `#####`, or `######`).
-- A required whitespace character.
+- The heading marker (`#` through `######`).
+- The required trailing whitespace (or end of line for an empty
+  heading like `# \n`).
 - The heading text up to the line's terminating newline.
 
-Headings with more than 6 `#` characters are not standard Markdown
-and are treated as non-headings (paragraph content).
+A line beginning with seven or more `#` characters does not match
+this pattern and is treated as paragraph content. This regex form
+matches the heading-detection rule in SPEC-CHUNK-322.
 
 Setext-style headings (a line of `=` or `-` characters underlining a
-heading text) are *not* recognized by this spec. Stage 1's Markdown
-parser handles Setext headings at the sentence-splitting level, but
-by stage 3 those have been resolved into chunklet content; this
-spec's heading detection is purely the ATX-style `#+\s` form.
+heading text) are *not* recognized by this spec.
 
 ### SPEC-CHUNK-513 — Path formatting
 

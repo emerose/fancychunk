@@ -11,8 +11,8 @@ chunklet is a contiguous group of sentences targeting roughly three
 |------|------|----------|---------|-------------|
 | `sentences` | list of strings | yes | — | An ordered sequence of sentences. Typically the output of stage 1. |
 | `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunklet length in characters. |
-| `boundary_cost` | callable | no | the default in SPEC-CHUNK-220 | Cost contributed by a chunklet's boundary probabilities. |
-| `statement_cost` | callable | no | the default in SPEC-CHUNK-221 | Cost contributed by a chunklet's statement count. |
+| `boundary_cost` | callable taking a length-`k` probability vector (one entry per sentence in the chunklet) and returning a non-negative float | no | the default in SPEC-CHUNK-220 | Cost contributed by a chunklet's boundary probabilities. |
+| `statement_cost` | callable taking a non-negative float (the chunklet's total statement count) and returning a non-negative float | no | the default in SPEC-CHUNK-221 | Cost contributed by a chunklet's statement count. |
 
 > **About `DEFAULT_MAX_SIZE_CHARS = 2048`.** This is a rule-of-thumb
 > rather than a derived value. It produces chunklets of roughly
@@ -181,19 +181,23 @@ length equal to the number of sentences.
 
 **Matching rule.** For each sentence `i`, gather every token (of
 the table's listed types) that opens on the line containing sentence
-`i`'s first non-whitespace character. From that set, sentence `i`
-gets the **strongest** probability per the table — independent of
-the parser's token-emission order. Specifically:
+`i`'s first non-whitespace character. Apply these rules in order:
 
-1. **List-open precedence.** If *any* `bullet_list_open` or
-   `ordered_list_open` token opens on the line, sentence `i` gets
-   `BOUNDARY_STRENGTH_LIST`. This is checked first to suppress an
-   accompanying `paragraph_open` (which most parsers emit for the
-   first item of a list) — without this rule, the paragraph-open
-   would shadow the list cue.
-2. Otherwise, the strongest applicable type in the table below wins
-   (heading > blockquote > paragraph).
-3. If no listed token opens on the line, the probability is `0.00`.
+1. If any of `heading_open`, `blockquote_open` opens on the line,
+   take the **strongest** of those that apply per the table below
+   (heading > blockquote). Stop.
+2. Otherwise, if any `bullet_list_open` or `ordered_list_open` opens
+   on the line, sentence `i` gets `BOUNDARY_STRENGTH_LIST` —
+   suppressing an accompanying `paragraph_open` that most parsers
+   emit for the first item of a list. Stop.
+3. Otherwise, if `paragraph_open` opens on the line, sentence `i`
+   gets `BOUNDARY_STRENGTH_PARAGRAPH`.
+4. Otherwise, the probability is `0.00`.
+
+The two-stage structure ensures a blockquote that contains a nested
+list (e.g., `> - item`) keeps its blockquote strength `0.75` rather
+than being demoted to `0.25` by the list cue — consistent with the
+ranking documented below.
 
 The mapping from token type to probability:
 

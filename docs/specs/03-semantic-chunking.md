@@ -12,7 +12,7 @@ size and special handling of Markdown headings.
 |------|------|----------|---------|-------------|
 | `chunklets` | list of strings | yes | — | An ordered sequence of chunklets, typically from stage 2. |
 | `chunklet_embeddings` | matrix `[N, D]` of floats | yes | — | One row per chunklet, in the same order. Each row must have nonzero L2 norm. |
-| `max_size` | positive integer | no | `2048` | Hard upper bound on chunk length in characters. |
+| `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunk length in characters. See U-CHUNK-203 (in spec 02). |
 
 ## Outputs
 
@@ -34,6 +34,14 @@ Invariants:
 ## Behavior
 
 ### SPEC-CHUNK-310 — Optimization framing
+
+> **Conceptual origin.** This stage corresponds to "level 4" in Greg
+> Kamradt's
+> [5 Levels of Text Splitting](https://www.youtube.com/watch?v=8OJC21T2SL4&t=1930s)
+> taxonomy: split text where adjacent units are *least* semantically
+> similar, rather than at fixed character/token counts (levels 1-3).
+> The integer-programming framing below is one specific implementation
+> of that idea.
 
 Semantic chunking selects a subset of *partition points*. A partition
 point sits between adjacent chunklets `i` and `i+1`; there are `N-1`
@@ -84,12 +92,22 @@ discourse-corrected, re-normalized embeddings of chunklets `i` and
 `i+1`. Then rescale and clamp:
 
 ```
-sim[i] = max( (dot_product + 1) / 2,  sqrt(epsilon) )
+sim[i] = max( (dot_product + 1) / 2,  MIN_PARTITION_SIMILARITY )
 ```
 
-where `epsilon` is the machine epsilon of the embedding's float dtype.
-This maps cosine similarity from `[-1, 1]` to `[0, 1]` (with a small
-positive floor).
+where `MIN_PARTITION_SIMILARITY = sqrt(epsilon)` and `epsilon` is the
+machine epsilon of the embedding's float dtype. The rescaling maps
+cosine similarity from `[-1, 1]` to `[0, 1]`; the clamp ensures every
+partition point has strictly positive cost.
+
+> **Why the positive floor?** Without it, an antipodal pair of
+> embeddings (`dot_product = -1`) would yield `sim[i] = 0`, and the
+> optimizer would be indifferent to adding extra splits at zero-cost
+> points — producing nondeterministic over-splitting where two
+> partitions of different sizes have the same total cost. Floor at
+> `sqrt(epsilon)` (rather than `epsilon` directly) keeps the floor
+> safely above floating-point noise without distorting any real
+> similarity value.
 
 **Step 4 — Heading-aware modification (SPEC-CHUNK-322).** Adjust
 `sim[i]` for partition points adjacent to heading chunklets.
@@ -100,14 +118,28 @@ The *discourse vector* represents the document's overall topic; the
 intent is that subtracting it makes the remaining cosine similarity
 reflect *local* topic shifts rather than the document's central theme.
 
+> **Lineage.** The technique of subtracting a single dominant
+> direction from sentence embeddings to surface local semantic content
+> is structurally the same as the "common discourse vector" step in
+> Arora, Liang & Ma,
+> [*A Simple but Tough-to-Beat Baseline for Sentence Embeddings*](https://openreview.net/forum?id=SyK00v5xx)
+> (ICLR 2017). That paper subtracts the top principal component across
+> a *corpus* to remove a shared frequency direction; we apply the same
+> idea per-*document* to remove the document's central topic.
+> (The upstream source does not cite this work; the resemblance is
+> structural, not documented lineage.)
+
 Compute it as follows:
 
-1. Determine the 15th and 85th percentiles of chunklet character
-   length, call them `q15` and `q85`.
-2. Identify *non-outlying* chunklets: those whose length is in
-   `[q15, q85]`.
-3. If any non-outlying chunklets exist, set `discourse` to the L2-normalized
-   mean of those chunklets' unit-normalized embeddings.
+1. Determine the `TYPICAL_CHUNKLET_LOWER_QUANTILE`-th
+   (`= 0.15`) and `TYPICAL_CHUNKLET_UPPER_QUANTILE`-th
+   (`= 0.85`) percentiles of chunklet character length; call them
+   `q15` and `q85`.
+2. Identify *typical* chunklets: those whose length is in
+   `[q15, q85]` — i.e., the middle 70% of the chunklet-length
+   distribution.
+3. If any typical chunklets exist, set `discourse` to the
+   L2-normalized mean of those chunklets' unit-normalized embeddings.
 4. Project each chunklet's embedding onto the hyperplane orthogonal
    to `discourse`:
    ```
@@ -119,8 +151,17 @@ Compute it as follows:
    the correction and use the un-corrected, unit-normalized embeddings
    instead.
 
+> **Why trim to the middle 70%?** Unusually-short chunklets (titles,
+> one-line code blocks, list-item fragments) and unusually-long
+> chunklets (large preformatted blocks, table dumps) are
+> systematically *off-topic* relative to the document's typical
+> prose. Including them in the topic estimate pulls the discourse
+> vector toward those outliers and weakens the correction for the
+> bulk of the document. Trimming to `[q15, q85]` keeps the estimate
+> robust to such tails. The exact `0.15`/`0.85` choice is a tuning
+> decision (see U-CHUNK-302).
 
-When fewer than two non-outlying chunklets exist (a degenerate or
+When fewer than two typical chunklets exist (a degenerate or
 very-short document), no correction is applied.
 
 ### SPEC-CHUNK-322 — Heading-aware modification of partition similarity
@@ -138,20 +179,39 @@ from `0` to `N-2`:
 
 - If chunklet `i` **is a heading**:
   - If chunklet `i-1` is **not** a heading and `i > 0`:
-    `sim[i-1] = sim[i-1] / 4` — encourage splitting *before* the
-    heading.
-  - `sim[i] = 1.0` — discourage splitting *immediately after* a
-    heading (the heading is part of the next chunk's intro, not a
-    standalone chunk).
+    `sim[i-1] = sim[i-1] / HEADING_SPLIT_BEFORE_DIVISOR` — encourage
+    splitting *before* the heading.
+  - `sim[i] = HEADING_SPLIT_AFTER_FORBID` — discourage splitting
+    *immediately after* a heading (the heading is part of the next
+    chunk's intro, not a standalone chunk).
 
 - If chunklet `i` is **not** a heading: no modification.
 
 Update "previous was a heading" for the next iteration based on
 chunklet `i`.
 
-The factor `1/4` (the boost to "split before a heading") and the
-value `1.0` (the penalty to "split immediately after a heading") are
-preserved as part of the spec.
+The two named constants are:
+
+| Named constant | Value | Role |
+|---|---|---|
+| `HEADING_SPLIT_BEFORE_DIVISOR` | `4` | Hand-tuned attractiveness boost for "split before a heading." |
+| `HEADING_SPLIT_AFTER_FORBID` | `1.0` | The **maximum possible** post-rescaling similarity (see SPEC-CHUNK-320 step 3), so a split immediately after a heading carries maximum cost — effectively forbidden. |
+
+> **Why the asymmetry?** The two constants play different roles, not
+> mirror-image ones.
+>
+> - `HEADING_SPLIT_AFTER_FORBID = 1.0` is **structural**: it equals
+>   the ceiling of the partition-similarity range, so the
+>   minimization will never choose to split there unless absolutely
+>   required by the covering constraint. This is not a tuning knob;
+>   any value `≥ 1.0` produces the same effect.
+>
+> - `HEADING_SPLIT_BEFORE_DIVISOR = 4` is **heuristic**: it makes
+>   "split before a heading" roughly four times more attractive than
+>   "split mid-paragraph." A value of 2 would still encourage the
+>   split but less strongly; a value of 10 would treat every heading
+>   as a near-forced split point. The choice of 4 is hand-tuned (see
+>   U-CHUNK-303).
 
 ## Determinism and tie-breaking
 
@@ -190,6 +250,17 @@ issue, time limit), the implementation raises an error. The exact
 error type is implementation-defined; the message should indicate
 that partition optimization failed.
 
+## Named constants
+
+| Name | Value | Spec ref | Type |
+|------|-------|----------|------|
+| `DEFAULT_MAX_SIZE_CHARS` | `2048` | input table | tunable (heuristic) |
+| `MIN_PARTITION_SIMILARITY` | `sqrt(epsilon)` | SPEC-CHUNK-320 step 3 | numerical safety (resolved) |
+| `TYPICAL_CHUNKLET_LOWER_QUANTILE` | `0.15` | SPEC-CHUNK-321 | tunable (heuristic; U-CHUNK-302) |
+| `TYPICAL_CHUNKLET_UPPER_QUANTILE` | `0.85` | SPEC-CHUNK-321 | tunable (heuristic; U-CHUNK-302) |
+| `HEADING_SPLIT_BEFORE_DIVISOR` | `4` | SPEC-CHUNK-322 | tunable (heuristic; U-CHUNK-303) |
+| `HEADING_SPLIT_AFTER_FORBID` | `1.0` | SPEC-CHUNK-322 | structural (= similarity ceiling; resolved) |
+
 ## Implementation-defined behavior
 
 - Choice of solver (binary integer programming, ILP, LP-with-rounding
@@ -213,20 +284,29 @@ that partition optimization failed.
 ### U-CHUNK-301 — Discourse vector necessity
 
 The discourse-vector correction is mathematically meaningful (it
-removes a shared topic direction), but the *empirical benefit* is not
-documented in the source. The reimplementor should preserve it; an
-optional flag to disable it for benchmarking is acceptable, but the
-default behavior must include the correction.
+removes a shared topic direction; see the Arora et al. lineage note
+in SPEC-CHUNK-321) and the technique has published precedent for
+sentence embeddings. The *empirical benefit at this specific stage*
+is not measured in the upstream source. The reimplementor should
+preserve it; an optional flag to disable it for benchmarking is
+acceptable, but the default behavior must include the correction.
 
-### U-CHUNK-302 — Percentile choice (`q15`, `q85`)
+### U-CHUNK-302 — Percentile choice for trimming (largely resolved)
 
-The choice of 15th and 85th percentiles in SPEC-CHUNK-321 is not
-explained. These are preserved as defaults. Tweaking them is unlikely
-to dramatically change behavior, but exact reproduction requires the
-documented values.
+The *intent* of `TYPICAL_CHUNKLET_LOWER_QUANTILE = 0.15` /
+`TYPICAL_CHUNKLET_UPPER_QUANTILE = 0.85` is now explained under
+SPEC-CHUNK-321 (trim systematically off-topic outliers when
+estimating the document's topic direction). The exact choice of
+15/85 versus, say, 10/90 or 20/80 is still hand-tuned. Tweaking
+within reason is unlikely to dramatically change behavior, but exact
+reproduction requires the documented values.
 
-### U-CHUNK-303 — Heading-penalty constants
+### U-CHUNK-303 — Heading-split-before divisor (heuristic component only)
 
-The `1/4` and `1.0` constants in SPEC-CHUNK-322 are preserved as
-defaults. They encode a strong preference; the reimplementor should
-not change them silently.
+`HEADING_SPLIT_AFTER_FORBID = 1.0` is structural (it equals the
+similarity ceiling; see SPEC-CHUNK-322) and is not a tuning knob.
+`HEADING_SPLIT_BEFORE_DIVISOR = 4` is heuristic: it makes "split
+before a heading" approximately 4× more attractive than splitting
+mid-paragraph. The choice of `4` is hand-tuned; the implementor may
+expose it as a configuration parameter and should default to `4`
+for behavioral parity.

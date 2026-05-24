@@ -56,6 +56,16 @@ The reimplementor may use any segmenter (rule-based, statistical, or
 learned). Quality of sentence boundaries will track the quality of the
 segmenter, but the contract here is purely the vector shape.
 
+> **Reference implementation.** A natural choice is a model from the
+> [SaT (Segment any Text)](https://arxiv.org/abs/2406.16678) family
+> (Frohmann et al., 2024), available via
+> [wtpsplit-lite](https://github.com/superlinear-ai/wtpsplit-lite).
+> SaT is multilingual, punctuation-agnostic, and exposes per-character
+> boundary probabilities directly — matching the contract above
+> without any adaptation. Lighter alternatives (rule-based splitters
+> from `nltk`, `spacy`, or `blingfire`) work too but will produce
+> probability vectors with most values clamped to 0 or 1.
+
 ### SPEC-CHUNK-112 — Known overrides take precedence
 
 If the caller (or a default function) supplies *known* boundary
@@ -105,17 +115,44 @@ non-whitespace characters:
 This biases the splitter to break *after* whitespace, so the next
 sentence starts at a non-whitespace character.
 
+> **Why trailing whitespace?** Two reasons.
+>
+> 1. *Reader expectation.* A printed sentence starts with a word, not
+>    with the space separating it from the previous sentence. Storing
+>    sentences with leading whitespace would surprise downstream
+>    consumers (display, search-result snippets, highlighting).
+>
+> 2. *Unambiguous re-concatenation.* The boundary between two
+>    sentences sits in a whitespace run. Without this rule, the
+>    splitter could place the boundary anywhere inside the run, so
+>    `"".join(sentences)` would round-trip but the *split points*
+>    would be ambiguous. Pinning every internal whitespace position to
+>    the run's minimum and the final position to the run's maximum
+>    means whichever boundary the model preferred ends up at the same
+>    place: just before the next non-whitespace character. Min/max
+>    specifically (rather than, say, zero/one) preserves the model's
+>    *relative* preferences across runs while making each run's
+>    boundary location deterministic.
+
 ### SPEC-CHUNK-115 — Splitting maximizes total score above threshold
 
 Given the final per-character probability vector, sentence boundaries
-are chosen to **maximize the sum of (probability − 0.25)** over the
-selected boundary positions, subject to the length constraints
+are chosen to **maximize the sum of `(probability − BOUNDARY_SCORE_THRESHOLD)`**
+over the selected boundary positions, subject to the length constraints
 (SPEC-CHUNK-105, SPEC-CHUNK-106).
 
-The threshold value `0.25` is preserved as part of the spec. Positions
-with probability above `0.25` contribute positive score (the splitter
+The threshold (`BOUNDARY_SCORE_THRESHOLD = 0.25`) is the recommended
+operating point published for SaT's `-sm` model family (see the
+reference implementation note in SPEC-CHUNK-111). Positions with
+probability above this value contribute positive score (the splitter
 is rewarded for placing a boundary there); positions below contribute
 negative score (the splitter is penalized).
+
+If the implementor substitutes a different sentence-segmentation
+model, the threshold should be recalibrated to that model's
+recommended operating point. The exact value is meaningful only
+relative to the model's calibration — it is not a universal
+"goodness" cutoff.
 
 This is an optimization problem with `O(N)` candidate boundary
 positions and a length-range constraint coupling them. The standard
@@ -180,14 +217,20 @@ The behavior for an empty document (`""`) is implementation-defined.
 Reasonable choices are returning `[""]` or `[]`. The reimplementor
 should document which is chosen.
 
+## Named constants
+
+| Name | Value | Spec ref |
+|------|-------|----------|
+| `BOUNDARY_SCORE_THRESHOLD` | `0.25` | SPEC-CHUNK-115 |
+
 ## Implementation-defined behavior
 
 - Choice of sentence-segmentation model.
 - Whether to use one solve or two for max-length handling.
 - Memory representation of the probability vector (NumPy, list,
   etc.).
-- Whether to support per-call override of `0.25` threshold or
-  hard-code it.
+- Whether to support per-call override of `BOUNDARY_SCORE_THRESHOLD`
+  or hard-code it.
 
 ## Unspecified behavior
 

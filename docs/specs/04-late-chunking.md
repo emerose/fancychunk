@@ -10,6 +10,17 @@ This spec describes a contract on the *embedding function*, not on
 fancychunk's pipeline directly. A late-chunking embed function can be
 plugged into stages 2 and 3 to produce more context-aware embeddings.
 
+> **Origin and rationale.** The technique was introduced and named in
+> Weaviate's blog post
+> [*Late Chunking in Long-Context Embedding Models*](https://weaviate.io/blog/late-chunking),
+> and quantified in the Jina AI paper
+> [*Late Chunking: Contextual Chunk Embeddings Using Long-Context Embedding Models*](https://arxiv.org/abs/2409.04701)
+> (Günther et al., 2024). The core observation: when a chunk is
+> embedded in isolation, anaphoric references ("it", "this method",
+> "the algorithm") lose their referents because the surrounding
+> context is gone. Encoding the whole context first and pooling
+> *after* preserves those references in the per-chunk embedding.
+
 ## Inputs
 
 | Name | Type | Required | Default | Description |
@@ -17,7 +28,7 @@ plugged into stages 2 and 3 to produce more context-aware embeddings.
 | `sentences` | list of strings | yes | — | The sentences to embed, in document order. Typically the output of stage 1. |
 | `embedder` | object satisfying the embedder contract below | yes | — | A token-level embedding model. |
 | `max_tokens_per_segment` | positive integer | no | derived from the embedder's context window | The upper bound on tokens fed to the embedder in one call. |
-| `preamble_fraction` | float in `(0, 1)` | no | `0.382` | Fraction of `max_tokens_per_segment` reserved for the segment's preamble. |
+| `preamble_fraction` | float in `(0, 1)` | no | `DEFAULT_PREAMBLE_FRACTION` (`= 0.382`) | Fraction of `max_tokens_per_segment` reserved for the segment's preamble. See U-CHUNK-401. |
 
 ## Outputs
 
@@ -90,8 +101,12 @@ follows:
 
 5. Repeat until `content_start >= len(sentences)`.
 
-The constants `preamble_fraction = 0.382` (the inverse golden ratio)
-and the addition-of-unused-budget behavior are preserved as defaults.
+The constant `DEFAULT_PREAMBLE_FRACTION = 0.382` (the inverse golden
+ratio, `1 - 1/φ`) and the addition-of-unused-budget behavior are
+preserved as defaults. The numeric value has no published
+justification — only the *intent* does: most of the segment should be
+content, but a non-trivial fraction (≈ 38%) is reserved as upstream
+context. See U-CHUNK-401 for the honest acknowledgment.
 
 ### SPEC-CHUNK-412 — Per-segment encoding and pooling
 
@@ -105,8 +120,11 @@ For each segment `(segment_start, content_start, segment_end)`:
    it* for each sentence in the segment (SPEC-CHUNK-420 gives one
    implementation).
 
-3. Apportion the per-token embeddings to sentences using the largest
-   remainder method:
+3. Apportion the per-token embeddings to sentences using the
+   [largest remainder method](https://en.wikipedia.org/wiki/Largest_remainder_method)
+   (a standard apportionment algorithm from voting systems, applied
+   here so the per-sentence token counts sum to exactly the segment's
+   total):
 
    - For each sentence `s` in the segment, the fractional share is
      `len(token_embeddings) * (tokens_in(s) / total_tokens)`.
@@ -217,6 +235,12 @@ implementation should either floor every sentence's share at `1`
 (at the cost of slight inaccuracy in apportionment) or detect and
 raise.
 
+## Named constants
+
+| Name | Value | Spec ref | Type |
+|------|-------|----------|------|
+| `DEFAULT_PREAMBLE_FRACTION` | `0.382` | SPEC-CHUNK-411 | tunable (heuristic; U-CHUNK-401) |
+
 ## Implementation-defined behavior
 
 - Choice of token-level embedder (any model with no-pooling output).
@@ -224,8 +248,9 @@ raise.
   offset-based, etc.) subject to SPEC-CHUNK-420.
 - Whether to batch segments across multiple embedder calls.
 - Storage precision (`float16` vs `float32`) of returned embeddings.
-- Whether to expose `preamble_fraction` and `max_tokens_per_segment`
-  as configuration or to derive both from the embedder.
+- Whether to expose `DEFAULT_PREAMBLE_FRACTION` and
+  `max_tokens_per_segment` as configuration or to derive both from
+  the embedder.
 
 ## Unspecified behavior
 
@@ -237,12 +262,20 @@ raise.
 
 ## Uncertainties
 
-### U-CHUNK-401 — Choice of golden-ratio preamble fraction
+### U-CHUNK-401 — Honest acknowledgment: `DEFAULT_PREAMBLE_FRACTION = 0.382`
 
-The value `0.382` is the inverse golden ratio. Its choice is not
-explained in the source beyond "Golden ratio." It is preserved as the
-default. The reimplementor may expose it as configuration but should
-default to `0.382`.
+The default value `0.382` is the inverse golden ratio (`1 - 1/φ`).
+There is no published or principled justification for using the
+golden ratio at this point in the pipeline; the upstream source
+comment simply reads "Golden ratio." It is preserved as the spec's
+default so reimplementations match the reference behavior.
+
+The intent is unambiguous: content dominates the segment, but a
+non-trivial fraction is reserved for upstream context. Any value
+roughly in `[0.25, 0.45]` would plausibly satisfy that intent. The
+implementor should expose `DEFAULT_PREAMBLE_FRACTION` as a tuning
+parameter and benchmark on their own corpus rather than treating
+`0.382` as sacred.
 
 ### U-CHUNK-402 — Sentinel choice
 

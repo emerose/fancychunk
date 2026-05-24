@@ -37,8 +37,9 @@ of one or more contiguous input sentences.
 - **SPEC-CHUNK-201** — Every chunklet is at most `max_size`
   characters. This is enforced as a hard constraint during
   optimization, not as a post-filter.
-- **SPEC-CHUNK-202** — The number of chunklets is between 1 and
-  `len(sentences)`.
+- **SPEC-CHUNK-202** — The number of chunklets is between `1` and
+  `len(sentences)`, except for the empty-input case (SPEC-CHUNK-260)
+  which returns `0` chunklets.
 
 ## Behavior
 
@@ -101,9 +102,14 @@ Interpretation:
   below to keep the denominator strictly positive.
 - `STATEMENT_COST_SCALE = 0.5` is an overall scale factor that sets
   the magnitude of the statement cost relative to the boundary cost
-  (SPEC-CHUNK-220), which competes with it additively in the DP. The
-  factor doesn't change the minimizer for any single chunklet but
-  shifts the relative weighting of the two cost components.
+  (SPEC-CHUNK-220), which competes with it additively in the DP.
+  Useful tuning range: roughly `[0.1, 2.0]`. Below ≈ `0.1` the
+  boundary cost dominates and chunklets snap to structural
+  boundaries regardless of statement balance; above ≈ `2.0` the
+  statement cost dominates and the optimizer ignores structural
+  cues. The factor doesn't change the minimizer for any single
+  chunklet but shifts the relative weighting of the two cost
+  components.
 
 > **About `TARGET_STATEMENTS_PER_CHUNKLET = 3`.** This is a heuristic:
 > a chunklet of 3 statements roughly corresponds to a paragraph of
@@ -129,9 +135,12 @@ percentile method; equivalent to R's type 7). Clamp the results:
 - `q25 = max(q25, MIN_Q25_WORDS)` with `MIN_Q25_WORDS = 1.0`. This
   prevents division by zero in the piecewise function when the
   document is dominated by zero- or one-word sentences.
-- `q75 = max(q75, q25 + MIN_Q25_WORDS)`. This guarantees a
+- `q75 = max(q75, q25 + MIN_Q25_WORDS)`. The same `MIN_Q25_WORDS`
+  value also serves as the minimum quartile gap, guaranteeing a
   strictly-positive denominator `(q75 - q25)` in the upper branch
-  of the piecewise function.
+  of the piecewise function. The two uses are independent — one
+  floors q25, the other floors the q75-minus-q25 gap — but both
+  happen to want the same magnitude, so a single constant suffices.
 
 The function is anchored at two design points:
 
@@ -170,20 +179,20 @@ Each sentence is assigned a single *boundary probability* indicating
 how structurally strong its starting position is. The vector has
 length equal to the number of sentences.
 
-**Matching rule.** Sentence `i`'s boundary probability is determined
-by the Markdown tokens that open on the line containing sentence
-`i`'s first non-whitespace character:
+**Matching rule.** For each sentence `i`, gather every token (of
+the table's listed types) that opens on the line containing sentence
+`i`'s first non-whitespace character. From that set, sentence `i`
+gets the **strongest** probability per the table — independent of
+the parser's token-emission order. Specifically:
 
 1. **List-open precedence.** If *any* `bullet_list_open` or
    `ordered_list_open` token opens on the line, sentence `i` gets
-   `BOUNDARY_STRENGTH_LIST` regardless of whether a `paragraph_open`
-   or `list_item_open` token also opens on the same line. This
-   prevents parser-implementation drift: different CommonMark
-   parsers emit the list-open / list-item-open / paragraph-open
-   triple in different orders for the first sentence of a list.
-2. Otherwise, the *first* listed token in the table below that opens
-   on the line wins (ranked from strongest: heading, blockquote,
-   paragraph).
+   `BOUNDARY_STRENGTH_LIST`. This is checked first to suppress an
+   accompanying `paragraph_open` (which most parsers emit for the
+   first item of a list) — without this rule, the paragraph-open
+   would shadow the list cue.
+2. Otherwise, the strongest applicable type in the table below wins
+   (heading > blockquote > paragraph).
 3. If no listed token opens on the line, the probability is `0.00`.
 
 The mapping from token type to probability:
@@ -211,13 +220,10 @@ always marks a quotation boundary or an attribution change — a
 topic-relevant break — whereas a paragraph break can also occur for
 purely visual or rhythmic reasons within a single topic.
 
-When multiple token openings would assign a probability to the same
-sentence, the *first* assignment wins (the iteration is in document
-order, and reassignment to a sentence already assigned is skipped).
-
-The token-type names above are the CommonMark / markdown-it token
-type names. The Markdown parser must produce equivalent token types
-(or map its parser's tokens to this table).
+The token-type names above are markdown-it's token-stream type
+names. AST-based parsers (which traverse a tree rather than emit a
+token stream) must map their node types equivalently — e.g., a
+"heading" AST node corresponds to `heading_open`.
 
 ### SPEC-CHUNK-241 — Suppress consecutive non-zero boundaries
 
@@ -248,12 +254,21 @@ deterministic for the same inputs.
 
 ### SPEC-CHUNK-251 — Tie-breaking is deterministic
 
-When two partitions have equal total cost, prefer the one whose
-earliest split is at the smallest possible sentence index. (In a
-forward-iterating DP this is the partition built by always extending
-from the smallest predecessor index when ties occur in the DP
-table.) This is required because TV-210 depends on a deterministic
-choice.
+When two partitions have equal total cost, the DP picks the one
+obtained by always choosing the **smallest** predecessor index `j`
+whenever multiple `j`'s achieve the minimum of `dp[j] + cost(j..i)`
+during table construction.
+
+Behaviorally, this rule has two consequences worth knowing:
+
+- Among equal-cost partitions, the one with the **fewest chunklets**
+  is preferred (the smallest-`j` choice at the final step is `j = 0`
+  when all costs tie, yielding the single-chunklet partition).
+- Among equal-cost partitions of the same size, the one whose **last
+  split is at the smallest sentence index** is preferred (applied
+  recursively for earlier splits).
+
+Determinism is required so the output is reproducible across runs.
 
 ## Edge cases
 
@@ -318,7 +333,7 @@ stages end-to-end.
   zero-length contributions.
 - Behavior when sentences contain trailing whitespace such that the
   Markdown parser sees a different structure than the caller expects.
-  Stage 1's SPEC-CHUNK-114 should make this rare.
+  Stage 1's SPEC-CHUNK-109 should make this rare.
 
 ## Dependencies
 

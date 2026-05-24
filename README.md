@@ -22,8 +22,10 @@ each chunk:
 Optionally:
 
 - When paired with a token-level embedding model, fancychunk can
-  produce chunk embeddings that incorporate surrounding-document
-  context ("late chunking").
+  produce *per-sentence* embeddings that incorporate surrounding-
+  document context ("late chunking"). The caller aggregates them to
+  per-chunklet level (typically by mean-pool over the sentences in
+  each chunklet) before passing them to the semantic-chunking stage.
 - For each chunk, fancychunk can compute the Markdown heading path
   that was in scope at the chunk's start, suitable for prepending as
   embedding context.

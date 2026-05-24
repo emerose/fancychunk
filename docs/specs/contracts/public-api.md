@@ -37,10 +37,10 @@ Implements [spec 01](../01-sentence-splitting.md).
 | `document` | — | A UTF-8 string. |
 | `min_len` | `4` | Minimum sentence length in characters. |
 | `max_len` | `None` | Optional maximum sentence length in characters. |
-| `known_boundary_probas` | the Markdown-heading function (see SPEC-CHUNK-113) | Either a per-character probability vector or a callable that produces one. Finite values override the model; `NaN` defers to the model. Passing `None` selects the default. |
+| `known_boundary_probas` | the Markdown-heading function (see SPEC-CHUNK-108) | Either a per-character probability vector or a callable that produces one. Finite values override the model; `NaN` defers to the model. Passing `None` selects the default. |
 
 Returns a list of sentences satisfying SPEC-CHUNK-100 through
-SPEC-CHUNK-106.
+SPEC-CHUNK-104.
 
 ## Function: split chunklets
 
@@ -161,7 +161,7 @@ chunks, chunk_embeddings = split_chunks(chunklets, embeddings, max_size=2048)
 
 All functions must signal errors via exceptions (in Python) or the
 language-native error mechanism. Each error case in the specs
-(SPEC-CHUNK-131, -263, -341, -342, -343, -451) must produce a
+(SPEC-CHUNK-115, -263, -341, -342, -343, -451) must produce a
 distinguishable signal, not a silent failure or a returned sentinel.
 
 Validation errors (caller-fixable) and computation errors

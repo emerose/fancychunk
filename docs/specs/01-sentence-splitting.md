@@ -12,7 +12,7 @@ configurable length range, and structurally meaningful boundaries
 | `document` | string (UTF-8) | yes | — | The Markdown document to split. |
 | `min_len` | non-negative integer | no | `4` | Minimum characters per sentence. See "About `min_len`" below. |
 | `max_len` | positive integer or `None` | no | `None` | Maximum characters per sentence. `None` means no upper bound. |
-| `known_boundary_probas` | per-character probability vector or callable producing one | no | the Markdown-heading boundary function (SPEC-CHUNK-113) | An override mechanism: positions where the caller already knows the boundary probability. See SPEC-CHUNK-112. |
+| `known_boundary_probas` | per-character probability vector or callable producing one | no | the Markdown-heading boundary function (SPEC-CHUNK-108) | An override mechanism: positions where the caller already knows the boundary probability. See SPEC-CHUNK-107. |
 
 > **About `min_len = 4`.** Sentence segmenters sometimes emit
 > degenerate sentences when given noisy input: a stray punctuation
@@ -37,25 +37,29 @@ A list of strings (the sentences), satisfying:
 - **SPEC-CHUNK-102** — No sentence except the first begins with
   whitespace. The first sentence may begin with whitespace only if the
   document itself does.
-- **SPEC-CHUNK-105** — Every sentence is at least `min_len` characters
-  long. (Exception: the short-circuit in SPEC-CHUNK-130 returns a
+- **SPEC-CHUNK-103** — Every sentence is at least `min_len` characters
+  long. (Exception: the short-circuit in SPEC-CHUNK-114 returns a
   single sentence shorter than `min_len` when the entire document is.)
-- **SPEC-CHUNK-106** — When `max_len` is set, every sentence is at most
-  `max_len` characters long.
+- **SPEC-CHUNK-104** — When `max_len` is set, every sentence is at most
+  `max_len` characters long. (Exception: the short-circuit in
+  SPEC-CHUNK-114 returns a single sentence longer than `max_len` when
+  the document itself is `≤ min_len` characters; see SPEC-CHUNK-114
+  for the precedence.)
 
 ## Behavior
 
-### SPEC-CHUNK-110 — Boundary probabilities are the input
+### SPEC-CHUNK-105 — Boundary probabilities are the input
 
 Sentence splitting operates on a per-character vector of *boundary
 probabilities*. A boundary probability at index `k` represents the
 probability that the character at index `k` is the *last* character of
 a sentence (i.e. the next sentence begins at index `k+1`).
 
-The vector has length equal to the number of characters in the
-document.
+The vector has length `N` (the document's character count), indexed
+`0` through `N - 1`. Any operation that would index outside this
+range (e.g., position `-1` or position `N`) is a no-op.
 
-### SPEC-CHUNK-111 — Predicted probabilities come from a model
+### SPEC-CHUNK-106 — Predicted probabilities come from a model
 
 Boundary probabilities are produced by a sentence-segmentation model
 that, given a document, returns a per-character probability vector.
@@ -77,7 +81,7 @@ segmenter, but the contract here is purely the vector shape.
 > from `nltk`, `spacy`, or `blingfire`) work too but will produce
 > probability vectors with most values clamped to 0 or 1.
 
-### SPEC-CHUNK-112 — Known overrides take precedence
+### SPEC-CHUNK-107 — Known overrides take precedence
 
 If the caller (or a default function) supplies *known* boundary
 probabilities for some positions, those values override the predicted
@@ -87,7 +91,7 @@ means "no override; use the predicted value".
 
 The override vector has the same length as the predicted vector.
 
-### SPEC-CHUNK-113 — Markdown headings are forced to be standalone sentences
+### SPEC-CHUNK-108 — Markdown headings are forced to be standalone sentences
 
 The default `known_boundary_probas` function inspects the document's
 Markdown structure and constructs a per-character override vector
@@ -98,17 +102,24 @@ heading marker** (e.g., the `#` in `# Hello`) through the **final
 non-whitespace character of the heading text** (e.g., the `o` in
 `Hello`). Trailing whitespace within or after the heading line
 (newlines, blank lines that the Markdown parser includes in the
-heading token) is *not* part of the span; SPEC-CHUNK-114's
+heading token) is *not* part of the span; SPEC-CHUNK-109's
 whitespace-trailing rule handles those uniformly.
 
 For every heading's span at character positions `[first, last]`:
 
 - Set probability `1` at position `first - 1` (the character before
-  the heading marker). The heading starts a new sentence.
+  the heading marker). The heading starts a new sentence. **Edge
+  case:** if `first == 0` (the heading is at the very start of the
+  document), skip this write — there is no position `-1`.
 - Set probability `0` at every position `[first, last - 1]` (inside
   the heading body). No sentence can split inside the heading.
 - Set probability `1` at position `last` (the final non-whitespace
   character of the heading text). The heading ends a sentence.
+  **Edge case:** if the heading line has no non-whitespace text
+  after the marker (e.g., `# \n` — a `#` followed by whitespace and
+  no title), the body span is degenerate. Skip the in-body and
+  last-position writes; the predicted probabilities determine
+  sentence boundaries around the empty heading.
 
 All other positions are `NaN` (defer to predicted probabilities).
 
@@ -119,7 +130,7 @@ heading) and its corresponding content span.
 The net effect: a Markdown heading is always exactly one sentence,
 neither split internally nor joined to adjacent text.
 
-### SPEC-CHUNK-114 — Whitespace is trailing, not leading
+### SPEC-CHUNK-109 — Whitespace is trailing, not leading
 
 After the predicted and known probabilities are merged, the final
 probability vector is adjusted so that whitespace attaches to the
@@ -155,16 +166,16 @@ Two reasons:
    *relative* preferences across runs while making each run's
    boundary location deterministic.
 
-### SPEC-CHUNK-115 — Splitting maximizes total score above threshold
+### SPEC-CHUNK-110 — Splitting maximizes total score above threshold
 
 Given the final per-character probability vector, sentence boundaries
 are chosen to **maximize the sum of `(probability − BOUNDARY_SCORE_THRESHOLD)`**
 over the selected boundary positions, subject to the length constraints
-(SPEC-CHUNK-105, SPEC-CHUNK-106).
+(SPEC-CHUNK-103, SPEC-CHUNK-104).
 
 `BOUNDARY_SCORE_THRESHOLD` defaults to `0.25`, the recommended
 operating point published for SaT's `-sm` model family (see
-SPEC-CHUNK-111). Positions with probability above this value
+SPEC-CHUNK-106). Positions with probability above this value
 contribute positive score (the splitter is rewarded for placing a
 boundary there); positions below contribute negative score (the
 splitter is penalized).
@@ -179,7 +190,7 @@ positions and a length-range constraint coupling them. The standard
 solution is dynamic programming, but any solver that finds the optimum
 is conforming.
 
-### SPEC-CHUNK-116 — Two-pass max-length handling
+### SPEC-CHUNK-111 — Two-pass max-length handling
 
 When `max_len` is set, the implementation may first solve the
 optimization with no max-length constraint, then for each resulting
@@ -190,33 +201,50 @@ the constrained one.
 
 The two-pass structure is implementation-defined behavior. A single
 constrained solve is conforming, provided the final output satisfies
-SPEC-CHUNK-105 and SPEC-CHUNK-106.
+SPEC-CHUNK-103 and SPEC-CHUNK-104.
 
 ## Determinism and tie-breaking
 
-### SPEC-CHUNK-120 — Deterministic given a deterministic segmenter
+### SPEC-CHUNK-112 — Deterministic given a deterministic segmenter
 
 For a given document, configuration, and segmenter, the output is
 deterministic across runs.
 
-### SPEC-CHUNK-121 — Ties broken by smallest predecessor index
+### SPEC-CHUNK-113 — Ties broken by smallest predecessor index
 
-When two partitions yield the same total score, prefer the partition
-whose earliest boundary is at the smallest position. In a forward
-DP this is implemented by always extending from the smallest
-predecessor index when ties occur in the DP table — matching the
-deterministic tie-breaking used by stage 2 (SPEC-CHUNK-251) so the
-two stages share one rule. Test vectors do not depend on this
-tie-breaker, but determinism is required for cross-run reproducibility.
+When two partitions yield the same total score, the DP picks the one
+obtained by always choosing the **smallest** predecessor index `j`
+whenever multiple `j`'s achieve the minimum of `dp[j] + cost(j..i)`
+during table construction.
+
+Behaviorally, this rule has two consequences worth knowing:
+
+- Among equal-cost partitions, the one with the **fewest boundaries**
+  is preferred (the smallest-`j` choice at the final step is `j = 0`
+  when all costs tie, yielding the single-sentence partition).
+- Among equal-cost partitions of the same size, the one whose **last
+  boundary is at the smallest position** is preferred (applied
+  recursively for earlier boundaries).
+
+This matches the tie-breaking rule of stage 2 (SPEC-CHUNK-251).
+Determinism is required so the output is reproducible across runs.
 
 ## Edge cases
 
-### SPEC-CHUNK-130 — Document shorter than `min_len`
+### SPEC-CHUNK-114 — Document shorter than `min_len`
 
 If `len(document) <= min_len`, return `[document]` as the single
 sentence. No splitting occurs.
 
-### SPEC-CHUNK-131 — Document cannot be split to satisfy length constraints
+This short-circuit takes precedence over both length constraints: it
+may return a sentence shorter than `min_len` (the document itself
+is) and, in the unusual case where `max_len` is set very small
+(`max_len < len(document) <= min_len`), longer than `max_len`. If
+the configuration is genuinely unsatisfiable in this short-circuit
+case, the caller should detect it before calling
+(`min_len > max_len` is a configuration error).
+
+### SPEC-CHUNK-115 — Document cannot be split to satisfy length constraints
 
 If no boundary placement satisfies both `min_len` and `max_len` (e.g.,
 the document is longer than `max_len` but has no internal split
@@ -225,14 +253,14 @@ implementation raises an error. The exact error type is
 implementation-defined; the error message should indicate that no
 valid partition exists.
 
-### SPEC-CHUNK-132 — Document with no valid boundaries
+### SPEC-CHUNK-116 — Document with no valid boundaries
 
 If the predicted probabilities yield no positions above the threshold,
 but the no-boundary partition (single sentence equal to the full
 document) is itself valid under the length constraints, the splitter
 returns `[document]`.
 
-### SPEC-CHUNK-133 — Empty document
+### SPEC-CHUNK-117 — Empty document
 
 For an empty document (`""`), return `[]`. This matches stage 2's
 empty-input convention (SPEC-CHUNK-260) and stage 3's
@@ -245,7 +273,7 @@ least one non-whitespace character).
 
 | Name | Value | Defined in |
 |------|-------|------------|
-| `BOUNDARY_SCORE_THRESHOLD` | `0.25` | SPEC-CHUNK-115 |
+| `BOUNDARY_SCORE_THRESHOLD` | `0.25` | SPEC-CHUNK-110 |
 
 ## Implementation-defined behavior
 
@@ -266,4 +294,4 @@ least one non-whitespace character).
 - A Markdown parser that exposes heading token positions (start and
   end line of every heading). Any CommonMark-conforming parser is
   sufficient.
-- A sentence-segmentation model satisfying SPEC-CHUNK-111.
+- A sentence-segmentation model satisfying SPEC-CHUNK-106.

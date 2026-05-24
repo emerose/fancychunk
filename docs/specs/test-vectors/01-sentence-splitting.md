@@ -22,7 +22,7 @@ specific probabilities from a particular segmenter; otherwise it is
 
 ## TV-101 — Document shorter than `min_len` (model-independent)
 
-Validates SPEC-CHUNK-130.
+Validates SPEC-CHUNK-114.
 
 | Input | Value |
 |-------|-------|
@@ -56,7 +56,7 @@ SPEC-CHUNK-100.
 
 ## TV-104 — Heading forced standalone with default override (model-independent)
 
-Validates SPEC-CHUNK-113.
+Validates SPEC-CHUNK-108.
 
 | Input | Value |
 |-------|-------|
@@ -87,7 +87,7 @@ immediately.\n"`.
 
 ## TV-106 — Whitespace is trailing, not leading (model-independent)
 
-Validates SPEC-CHUNK-102 and SPEC-CHUNK-114.
+Validates SPEC-CHUNK-102 and SPEC-CHUNK-109.
 
 | Input | Value |
 |-------|-------|
@@ -108,7 +108,7 @@ Unacceptable:
 
 ## TV-107 — `max_len` splits an overlong sentence (model-independent)
 
-Validates SPEC-CHUNK-106 and SPEC-CHUNK-116.
+Validates SPEC-CHUNK-104 and SPEC-CHUNK-111.
 
 | Input | Value |
 |-------|-------|
@@ -151,11 +151,11 @@ No re-encoding, no normalization (NFC/NFD), no whitespace collapsing.
 | `min_len` | `4` |
 | `max_len` | `None` |
 
-**Expected output:** `[]` (per SPEC-CHUNK-133).
+**Expected output:** `[]` (per SPEC-CHUNK-117).
 
 ## TV-111 — Override forces split at specified position (model-independent)
 
-Validates SPEC-CHUNK-112.
+Validates SPEC-CHUNK-107.
 
 | Input | Value |
 |-------|-------|
@@ -167,13 +167,13 @@ Validates SPEC-CHUNK-112.
 **Expected output:** `["abcde ", "fghij ", "klmno"]`.
 
 Override values are merged into the probability vector before
-SPEC-CHUNK-114 (whitespace-trailing) is applied. The trailing-
+SPEC-CHUNK-109 (whitespace-trailing) is applied. The trailing-
 whitespace rule shifts each split to just after its space, giving
 the partition shown.
 
 ## TV-112 — Override prevents split inside heading (model-independent)
 
-Validates SPEC-CHUNK-113.
+Validates SPEC-CHUNK-108.
 
 Construct a document where the segmenter model would naturally split
 inside a heading (e.g., a long heading with internal punctuation).
@@ -192,7 +192,7 @@ punctuation, and more.\n"` is contained within a single sentence.
 
 ## TV-113 — Unsplittable document (model-independent)
 
-Validates SPEC-CHUNK-131.
+Validates SPEC-CHUNK-115.
 
 | Input | Value |
 |-------|-------|

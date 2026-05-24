@@ -50,11 +50,14 @@ stage N+1.
 
 ## Optional: Late chunking
 
-Late chunking is an alternative embed strategy that replaces "caller
-embeds each chunklet" with a token-level embedding pass over longer
-document segments. It produces sentence-level embeddings that
-incorporate surrounding-document context. Late-chunked sentence
-embeddings can be aggregated to chunklet level for use in stage 3.
+Late chunking is an alternative embed strategy that the caller plugs
+in *between* stages 2 and 3 in place of a naive "embed each chunklet
+in isolation" step. The late-chunking helper takes the sentences from
+stage 1 and returns *per-sentence* embeddings computed in a token-
+level pass over longer document segments. The caller then aggregates
+the per-sentence embeddings to per-chunklet level (typically by
+mean-pool over the sentences in each chunklet) before passing the
+chunklet-embedding matrix into stage 3.
 
 See [04-late-chunking.md](04-late-chunking.md).
 
@@ -83,9 +86,12 @@ Therefore: `"".join(sentences) == document`,
 ### SPEC-CHUNK-901 — Determinism
 
 Given the same input and the same configuration, every stage produces
-the same output across runs. Where a stage depends on a learned model
-(stage 1's sentence segmenter; the caller's embedder for stage 3),
-determinism is conditional on that model being deterministic.
+the same output across runs. Stage 1's determinism is conditional on
+its sentence-segmentation model being deterministic. Stage 3's
+determinism is conditional on the precomputed chunklet embeddings
+being deterministic — which in turn depends on the caller's embedder.
+(Stage 3 itself takes a precomputed embedding matrix as input; it
+does not invoke an embedder.)
 
 ### SPEC-CHUNK-902 — Size monotonicity
 
@@ -104,8 +110,8 @@ combined size of the stage-(N-1) units inside it.
 All three stages short-circuit on the trivial *size* cases (empty
 input and single-item input). Beyond that they differ:
 
-- **Stage 1:** empty document returns `[]` (SPEC-CHUNK-133); document
-  no longer than `min_len` returns `[document]` (SPEC-CHUNK-130).
+- **Stage 1:** empty document returns `[]` (SPEC-CHUNK-117); document
+  no longer than `min_len` returns `[document]` (SPEC-CHUNK-114).
 - **Stage 2:** empty input returns `[]` (SPEC-CHUNK-260); single
   sentence returns `[s]` (SPEC-CHUNK-261). Beyond those, stage 2
   does *not* short-circuit on the "fits in one chunklet" case — it

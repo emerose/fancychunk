@@ -31,49 +31,51 @@ A conforming implementation has every box checked.
 ## Sentence splitting (SPEC-CHUNK-1xx)
 
 - [ ] **SPEC-CHUNK-100** — Concatenation reproduces document.
-  Covered by TV-103 (property held by every other 1xx TV).
+  Covered by TV-103 (general property), TV-109 (multi-byte UTF-8
+  content).
 - [ ] **SPEC-CHUNK-101** — Every sentence has at least one non-whitespace
   character. Verify by inspection (no test vector explicitly checks
   the property; every 1xx TV implicitly relies on it).
 - [ ] **SPEC-CHUNK-102** — Only the first sentence may begin with
   whitespace. Covered by TV-106.
-- [ ] **SPEC-CHUNK-105** — Sentence length `≥ min_len` (with
-  SPEC-CHUNK-130 short-circuit exception). Covered by TV-102
+- [ ] **SPEC-CHUNK-103** — Sentence length `≥ min_len` (with
+  SPEC-CHUNK-114 short-circuit exception). Covered by TV-102
   (boundary case) and TV-107 (length-bounded splitting).
-- [ ] **SPEC-CHUNK-106** — Sentence length `≤ max_len` when set. Covered
-  by TV-107.
-- [ ] **SPEC-CHUNK-110** — Operates on per-character boundary probability
+- [ ] **SPEC-CHUNK-104** — Sentence length `≤ max_len` when set. Covered
+  by TV-107 (length-bounded splitting), TV-108 (`max_len` larger
+  than document is a no-op).
+- [ ] **SPEC-CHUNK-105** — Operates on per-character boundary probability
   vector. Verify by inspection.
-- [ ] **SPEC-CHUNK-111** — Uses a sentence-segmentation model. Verify by
+- [ ] **SPEC-CHUNK-106** — Uses a sentence-segmentation model. Verify by
   inspection (the implementation should expose a swappable model
   interface).
-- [ ] **SPEC-CHUNK-112** — Known overrides take precedence over
+- [ ] **SPEC-CHUNK-107** — Known overrides take precedence over
   predicted values; `NaN` defers to predicted. Covered by TV-111.
-- [ ] **SPEC-CHUNK-113** — Markdown headings are forced to be standalone
+- [ ] **SPEC-CHUNK-108** — Markdown headings are forced to be standalone
   sentences. Covered by TV-104, TV-105, TV-112.
-- [ ] **SPEC-CHUNK-114** — Whitespace is trailing, not leading. Covered
+- [ ] **SPEC-CHUNK-109** — Whitespace is trailing, not leading. Covered
   by TV-106.
-- [ ] **SPEC-CHUNK-115** — Splitting maximizes
+- [ ] **SPEC-CHUNK-110** — Splitting maximizes
   `Σ (probability − BOUNDARY_SCORE_THRESHOLD)` over chosen boundaries.
   Verify by inspection (the property is the optimization objective;
   test it by constructing a small probability vector with known
   optimum).
-- [ ] **SPEC-CHUNK-116** — Max-length handling produces sentences
+- [ ] **SPEC-CHUNK-111** — Max-length handling produces sentences
   `≤ max_len`. Covered by TV-107. (One-pass vs. two-pass is
   implementation-defined.)
-- [ ] **SPEC-CHUNK-120** — Deterministic. Run any TV twice and assert
+- [ ] **SPEC-CHUNK-112** — Deterministic. Run any TV twice and assert
   identical output.
-- [ ] **SPEC-CHUNK-121** — Ties broken by smallest predecessor index.
+- [ ] **SPEC-CHUNK-113** — Ties broken by smallest predecessor index.
   Verify by inspection (no TV depends on the tie-breaker; required
   for cross-run reproducibility).
-- [ ] **SPEC-CHUNK-130** — Document shorter than `min_len` returns single
+- [ ] **SPEC-CHUNK-114** — Document shorter than `min_len` returns single
   sentence. Covered by TV-101.
-- [ ] **SPEC-CHUNK-131** — Unsatisfiable length constraints raise.
+- [ ] **SPEC-CHUNK-115** — Unsatisfiable length constraints raise.
   Covered by TV-113.
-- [ ] **SPEC-CHUNK-132** — No boundary above threshold + no-boundary
+- [ ] **SPEC-CHUNK-116** — No boundary above threshold + no-boundary
   case valid → single sentence. Verify by inspection (construct an
   input where the model predicts all-zero probabilities).
-- [ ] **SPEC-CHUNK-133** — Empty document returns `[]`. Covered by
+- [ ] **SPEC-CHUNK-117** — Empty document returns `[]`. Covered by
   TV-110.
 
 ## Chunklet grouping (SPEC-CHUNK-2xx)
@@ -106,8 +108,9 @@ A conforming implementation has every box checked.
 - [ ] **SPEC-CHUNK-261** — Single sentence returns single chunklet.
   Covered by TV-202.
 - [ ] **SPEC-CHUNK-262** — Total length within `max_size` may still
-  produce multi-chunklet partition. Verify by inspection (this is the
-  *negation* of SPEC-CHUNK-903 for stage 2).
+  produce multi-chunklet partition. Verify by inspection: construct
+  an input that fits in one chunklet and confirm the DP may return a
+  multi-chunklet partition when the cost favors it.
 - [ ] **SPEC-CHUNK-263** — Sentence exceeding `max_size` raises an
   error. Covered by TV-211.
 

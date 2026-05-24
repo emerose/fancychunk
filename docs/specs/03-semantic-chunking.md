@@ -37,6 +37,9 @@ Invariants:
 - **SPEC-CHUNK-301** — Every chunk is at most `max_size` characters.
 - **SPEC-CHUNK-302** — The rows of `chunklet_embeddings`, concatenated
   across `chunk_embeddings` in order, equal `chunklet_embeddings`.
+  The returned rows are the *original* input rows; the
+  unit-normalized and discourse-corrected forms used internally
+  during partition similarity construction are not exposed.
 
 ## Behavior
 
@@ -56,9 +59,7 @@ Structurally this is an *interval-cover minimization* with linear
 partition cost: a one-dimensional segmentation problem solvable by
 `O(N²)` dynamic programming. Other solvers (binary integer
 programming, LP relaxation plus rounding) work too, as long as they
-return the optimum. A general "minimum-cost set cover" framing
-overstates the difficulty — the interval structure makes this
-polynomial.
+return the optimum.
 
 ### SPEC-CHUNK-311 — Covering constraint
 
@@ -122,12 +123,16 @@ on by default; an implementation may expose a flag to disable it for
 benchmarking, but the default must include the correction.
 
 The technique of subtracting a single dominant direction from
-sentence embeddings to surface local semantic content is structurally
-the same as the "common discourse vector" step in Arora, Liang & Ma,
+sentence embeddings to surface local semantic content is inspired by
+Arora, Liang & Ma,
 [*A Simple but Tough-to-Beat Baseline for Sentence Embeddings*](https://openreview.net/forum?id=SyK00v5xx)
-(ICLR 2017). That paper subtracts the top principal component across
-a *corpus* to remove a shared frequency direction; this spec applies
-the same idea per-*document* to remove the document's central topic.
+(ICLR 2017). Two methodological differences are worth noting: that
+paper subtracts the top **principal component** across a *corpus*;
+this spec subtracts the **mean** of typical-chunklet embeddings
+per-*document*. The mean is cheaper to compute and approximates the
+top PC well when the typical-chunklet embeddings cluster around a
+single dominant direction (which they usually do within one
+document).
 
 Compute the correction as a single ordered procedure. The "skip
 correction" outcome falls back to the unit-normalized embeddings from
@@ -136,7 +141,9 @@ step 1 of SPEC-CHUNK-320 in every skip case.
 1. Determine the `TYPICAL_CHUNKLET_LOWER_QUANTILE`-th
    (`= 0.15`) and `TYPICAL_CHUNKLET_UPPER_QUANTILE`-th
    (`= 0.85`) percentiles of chunklet character length; call them
-   `q15` and `q85`.
+   `q15` and `q85`. Use linear interpolation between the two
+   nearest ranks (NumPy's default percentile method; R type 7),
+   matching SPEC-CHUNK-230.
 
 2. Identify *typical* chunklets: those whose length is in
    `[q15, q85]` — the middle 70% of the chunklet-length
@@ -155,8 +162,13 @@ step 1 of SPEC-CHUNK-320 in every skip case.
 
 6. **Second skip check.** If any row of `X_corrected` has L2 norm
    below the machine epsilon of the embedding's float dtype (i.e., a
-   chunklet was effectively parallel to the discourse vector and got
-   zeroed out), skip the correction.
+   chunklet was effectively zeroed by the projection), skip the
+   correction. The threshold here is the bare machine epsilon, not
+   `sqrt(epsilon)`: this check detects rows that *became* zero from
+   floating-point cancellation, which happens at epsilon scale.
+   SPEC-CHUNK-320's similarity floor, by contrast, is a *cost-design*
+   choice keeping the optimization well-defined and sits at a larger
+   scale.
 
 7. Otherwise, re-normalize `X_corrected` to unit norm and use it as
    the corrected embeddings.
@@ -177,11 +189,19 @@ After computing the base partition similarities, modify them based on
 which chunklets are Markdown headings.
 
 A chunklet is a *heading* if, after stripping leading and trailing
-whitespace, its entire stripped content is a single heading line
-(matching `^#+\s` and ending at the line's terminating newline or
-the chunklet's end, with no further non-whitespace content
-afterwards). A chunklet that *begins* with a heading line but also
-contains body text is not a heading for the purposes of this section.
+whitespace, its entire stripped content is a single ATX-style
+Markdown heading line. The heading marker is `^#{1,6}\s` (one to six
+`#` characters followed by whitespace; the standard Markdown range,
+matching SPEC-CHUNK-512). A line beginning with seven or more `#`
+characters is not a heading. A chunklet that *begins* with a heading
+line but also contains body text afterwards is not a heading for the
+purposes of this section.
+
+Setext-style headings (a heading text followed by a line of `=` or
+`-` characters) are not recognized here. By the time chunklets reach
+stage 3, any Setext heading has been resolved into a sentence by
+stage 1 and grouped with adjacent content by stage 2, so the
+heading-aware modification applies only to ATX form.
 
 Apply the following procedure. Treat the position before the first
 chunklet as if the prior chunklet had been a heading — this
@@ -190,6 +210,10 @@ the document's first chunklet, since there is no partition point at
 index `-1`.
 
 ```
+# i is a CHUNKLET index in [0, N).
+# sim is indexed by PARTITION POINT — sim[k] sits between
+# chunklets k and k+1 — so sim has length N-1 and valid indices
+# are [0, N-2]. The bounds guards below enforce that.
 previous_is_heading = True
 for i in range(N):           # i = 0, 1, ..., N-1 inclusive
     if is_heading(chunklets[i]):
@@ -275,7 +299,11 @@ choices.
   concatenates all chunklets, paired with the full input embedding
   matrix.
 
-In all three cases no optimization is performed.
+In all three cases no optimization is performed and the
+heading-aware modification of SPEC-CHUNK-322 is skipped, even if
+the input contains heading chunklets. This is intentional: the
+covering constraint is trivially satisfied, so there is no
+similarity-driven split to bias.
 
 ### SPEC-CHUNK-341 — Chunklet exceeds `max_size`
 

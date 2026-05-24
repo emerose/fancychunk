@@ -7,8 +7,14 @@ isolation" pattern; it is interchangeable with stage-2/stage-3 input
 provided the embedder supports per-token output.
 
 This spec describes a contract on the *embedding function*, not on
-the pipeline directly. A late-chunking embed function can be plugged
-into stages 2 and 3 to produce more context-aware embeddings.
+the pipeline directly. It replaces the caller's "embed each chunklet"
+step that sits between stage 2 and stage 3: instead of embedding each
+chunklet directly, the caller embeds each *sentence* with late
+chunking, then aggregates per-chunklet (typically by mean-pool over
+the sentences in each chunklet) to produce the
+`chunklet_embeddings` matrix stage 3 requires. The aggregation step
+is the caller's responsibility; this spec produces sentence
+embeddings only.
 
 The technique was introduced and named in Weaviate's blog post
 [*Late Chunking in Long-Context Embedding Models*](https://weaviate.io/blog/late-chunking),
@@ -28,7 +34,7 @@ the per-chunk embedding.
 | `sentences` | list of strings | yes | — | The sentences to embed, in document order. Typically the output of stage 1. |
 | `embedder` | object satisfying the embedder contract below | yes | — | A token-level embedding model. |
 | `max_tokens_per_segment` | positive integer | no | `embedder.n_ctx` | The upper bound on tokens fed to the embedder in one call. Defaults to the embedder's reported context-window size. |
-| `preamble_fraction` | float in `(0, 1)` | no | `DEFAULT_PREAMBLE_FRACTION` (`= 0.382`) | Fraction of `max_tokens_per_segment` reserved for the segment's preamble. |
+| `preamble_fraction` | float in `[0, 1)` | no | `DEFAULT_PREAMBLE_FRACTION` (`= 0.382`) | Fraction of `max_tokens_per_segment` reserved for the segment's preamble. `0.0` is permitted and degenerates to standard chunking (no contextualization); useful for benchmarking against late chunking. Values `≥ 1.0` are rejected (the segment would have no content). |
 
 ## Outputs
 
@@ -54,15 +60,13 @@ The embedder is a black box that satisfies four operations:
 | `tokenize(text)` | method, returns `list[int]` | Returns the token IDs the model would receive for this text. Required to be deterministic. |
 | `detokenize(list[int])` | method, returns `str` | Inverse of `tokenize`, used only for sentinel-token discovery (SPEC-CHUNK-420). |
 | `embed(text)` | method, returns matrix `[T, D]` | Returns one embedding vector per token in `text`, with `T` equal to the number of tokens. The embedder must NOT pool tokens internally for this call. |
-| `n_ctx` | integer attribute (property; not a method) | The maximum number of input tokens per `embed` call. |
+| `n_ctx` | integer attribute (property; not a method) | The maximum number of input tokens per `embed` call. `n_ctx` is the canonical Python attribute name; in other languages or libraries, an idiomatic equivalent (`max_tokens`, `context_size`, `model_max_length`) is fine as long as the value's meaning matches. |
 
 Any embedding model that exposes token-level outputs (a "no pooling"
 or "per-token output" mode) is acceptable. Cloud embedding APIs that
 return only one vector per input do not satisfy the contract — late
 chunking needs the per-token outputs to pool within sentence
-boundaries that the embedder doesn't know about. If a future
-embedder exposed a "pool over these token ranges" API, late chunking
-would not need the explicit per-token output and pooling step.
+boundaries that the embedder doesn't know about.
 
 ## Behavior
 
@@ -137,6 +141,15 @@ follows:
    preamble token count above the budget. This gives
    `segment_start`.
 
+   **Token counting during segment construction.** The walk uses
+   *isolated-sentence* token counts (e.g., `len(embedder.tokenize(s))`
+   per sentence). These may differ slightly from the joined-input
+   token counts the embedder ultimately sees (due to subword merges
+   across sentence boundaries or sentinel insertion). Isolated counts
+   are a budgeting heuristic; SPEC-CHUNK-420 derives the *authoritative*
+   per-sentence token counts from the joined-input tokenization, and
+   SPEC-CHUNK-412's largest-remainder allocation absorbs any drift.
+
    **First segment edge case:** when `content_start == 0`, there are
    no sentences before it. Set `segment_start = 0` and skip the
    backward walk; the full preamble budget is then unused and rolls
@@ -147,9 +160,9 @@ follows:
    the document just started), content gets the remainder.
 
 3. Walk forward from `content_start`, accumulating sentences as
-   content until the next sentence would push the segment's total
-   tokens above the (possibly augmented) content budget. This gives
-   `segment_end`.
+   content until the next sentence would push the *content* tokens
+   above the augmented content budget (equivalently: the *segment*
+   tokens above `max_tokens_per_segment`). This gives `segment_end`.
 
 4. Append the segment `(segment_start, content_start, segment_end)`.
    Set the next iteration's `content_start = segment_end`.
@@ -159,13 +172,15 @@ follows:
 **Progress guarantee.** Step 3's forward walk must include at least
 one sentence in the content range — that is, `segment_end >
 content_start` — so that each iteration consumes at least one
-sentence and the loop terminates. If a sentence's token count
-exceeds the available content budget (preamble budget plus the
-augmented content budget from step 2, but still bounded by
-`max_tokens_per_segment`) yet fits inside `embedder.n_ctx`, include
-that single sentence as the segment's sole content sentence even
-though the segment slightly exceeds `max_tokens_per_segment`. If the
-sentence's token count exceeds `embedder.n_ctx`, raise per
+sentence and the loop terminates. If a single content sentence
+exceeds the augmented content budget but `preamble_tokens +
+sentence_tokens` still fits inside `embedder.n_ctx`, include that
+single sentence as the segment's sole content sentence even though
+the segment exceeds `max_tokens_per_segment`. If even
+`preamble_tokens + sentence_tokens` exceeds `embedder.n_ctx`, shrink
+the preamble — drop the oldest (earliest-indexed) preamble sentences
+one at a time until the sum fits, or until the preamble is empty.
+If `sentence_tokens` alone exceeds `embedder.n_ctx`, raise per
 SPEC-CHUNK-451.
 
 The default `DEFAULT_PREAMBLE_FRACTION = 0.382` is the inverse golden
@@ -224,6 +239,16 @@ This is non-trivial because:
   than tokenizing the concatenation (e.g., subword merges across
   sentence boundaries).
 - Many tokenizers drop or add tokens at the start/end of input.
+- Many transformer tokenizers add special tokens (`[CLS]`, `[SEP]`,
+  BOS, EOS) at the start and/or end of the sequence. These tokens
+  belong to no input sentence. The implementation must either (a)
+  use an `embed` operation that strips special tokens before
+  returning per-token embeddings, or (b) detect them in the output
+  and assign them to a neighbouring content sentence (typically: a
+  leading special token joins sentence 0's allocation; a trailing
+  special token joins the last content sentence's allocation). Either
+  choice must be applied consistently so that
+  `sum(tokens_in(s)) == len(token_embeddings)`.
 
 The implementation must use a method that recovers per-sentence
 counts *from the embedder's actual tokenization of the joined input*.
@@ -290,7 +315,8 @@ considered a violation.
 
 For `sentences == [s]`, the document has one segment with empty
 preamble. The output is a single-row matrix with the mean-pooled
-embedding of `s` taken from a single embedder call.
+embedding of `s` taken from a single embedder call. (Subject to
+SPEC-CHUNK-451 if `s` exceeds `embedder.n_ctx`.)
 
 ### SPEC-CHUNK-451 — Sentence longer than the embedder's context
 

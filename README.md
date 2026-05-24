@@ -1,12 +1,38 @@
 # fancychunk
 
 A small, focused library for splitting text documents into semantically
-coherent chunks suitable for retrieval-augmented generation. Specs only
-at this stage — no implementation has been written.
+coherent chunks suitable for retrieval-augmented generation.
 
-> **Status:** spec phase. The full specification lives in
-> [`docs/specs/`](docs/specs/README.md). The implementation team builds
-> against those specs.
+> **Status:** initial implementation. The full specification lives in
+> [`docs/specs/`](docs/specs/README.md); the public API in
+> [`docs/specs/contracts/public-api.md`](docs/specs/contracts/public-api.md);
+> the test vectors in
+> [`docs/specs/test-vectors/`](docs/specs/test-vectors/). The
+> implementation lives in [`src/fancychunk/`](src/fancychunk/) and
+> covers the three required pipeline stages plus the two optional
+> helpers (`embed_with_late_chunking`, `heading_paths`).
+
+## Quick start
+
+```python
+import numpy as np
+from fancychunk import (
+    split_sentences,
+    split_chunklets,
+    split_chunks,
+    heading_paths,
+)
+
+doc = open("README.md").read()
+sentences = split_sentences(doc, max_len=2048)
+chunklets = split_chunklets(sentences, max_size=2048)
+
+# Caller supplies the embedding matrix; embedding is not part of
+# fancychunk's core pipeline. Any deterministic embedder works.
+embeddings = my_embedder(chunklets)
+chunks, chunk_embeddings = split_chunks(chunklets, embeddings, max_size=2048)
+paths = heading_paths(chunks)
+```
 
 ## What it does
 
@@ -71,8 +97,17 @@ fancychunk/
 │   ├── contracts/                # Public API signatures
 │   ├── test-vectors/             # Concrete input → expected output pairs
 │   └── acceptance/               # Pass/fail criteria
-├── src/fancychunk/               # (Empty stub — implementation TBD)
-└── tests/                        # (Placeholder)
+├── src/fancychunk/               # Implementation
+│   ├── sentences.py              # Stage 1 — sentence splitting
+│   ├── chunklets.py              # Stage 2 — chunklet grouping
+│   ├── chunks.py                 # Stage 3 — semantic chunking
+│   ├── late_chunking.py          # Stage 4 — late chunking (optional)
+│   ├── headings.py               # Stage 5 — heading paths (optional)
+│   ├── _markdown.py              # Markdown-it heading + opener helpers
+│   ├── _segmenter.py             # Default punctuation segmenter
+│   ├── _constants.py             # Named constants from the specs
+│   └── errors.py                 # Exception hierarchy
+└── tests/                        # pytest suite covering every TV-*
 ```
 
 ## Acknowledgments

@@ -188,27 +188,27 @@ discourse vectors.
 After computing the base partition similarities, modify them based on
 which chunklets are Markdown headings.
 
-A chunklet is a *heading* if, after stripping leading and trailing
-whitespace, its entire stripped content is a single ATX-style
-Markdown heading line. The heading marker is `^#{1,6}(\s|$)` (one to six
-`#` characters followed by whitespace; the standard Markdown range,
-matching SPEC-CHUNK-512). A line beginning with seven or more `#`
-characters is not a heading. A chunklet that *begins* with a heading
-line but also contains body text afterwards is not a heading for the
-purposes of this section.
+A chunklet is a *heading* if its full Markdown block-level structure
+consists of exactly one heading element — equivalently, parsing the
+chunklet yields exactly one `heading_open` token and no other
+block-opening tokens. Both ATX-style (`^#{1,6}(\s|$)`, matching
+SPEC-CHUNK-512) and Setext-style (a heading text followed by a line
+of `=` or `-` characters) qualify, recognized through whatever
+CommonMark-conforming parser the implementation uses elsewhere. A
+chunklet that *begins* with a heading line but also contains body
+text afterwards is not a heading for the purposes of this section
+(its parse contains additional block tokens beyond the heading).
+A line beginning with seven or more `#` characters is not an ATX
+heading (no parser will emit `heading_open` for it).
 
-Setext-style headings (a heading text followed by a line of `=` or
-`-` characters) are not recognized here. By the time chunklets reach
-stage 3, stage 1 has marked the Setext heading as one sentence and
-stage 2's optimizer typically groups it with adjacent content under a
-paragraph-strength boundary cue — but stage 2 makes no guarantee:
-under low statement cost or specific size pressure, a Setext heading
-can survive as a standalone chunklet. In that case stage 3's
-heading-aware modification does not fire, and the chunklet is treated
-like any other non-heading chunklet during partition similarity. This
-is a known limitation; standalone Setext-heading chunklets are rare
-in practice. Implementations may extend SPEC-CHUNK-322's detection to
-recognize Setext form if their corpora make this case material.
+The choice to use the parser rather than a hand-rolled regex matters
+for cross-stage consistency: stage 1 (SPEC-CHUNK-108) and stage 2
+(SPEC-CHUNK-240) already determine heading-ness through the same
+parser, so a heading flagged by an earlier stage will always also be
+flagged here. SPEC-CHUNK-512 in stage 5 deliberately recognizes ATX
+only — it operates on chunk text without re-parsing the full
+chunk — and is the only place where the two heading-detection
+strategies diverge.
 
 Apply the following procedure. The `previous_is_heading` flag tracks
 whether the immediately preceding chunklet was itself a heading, so

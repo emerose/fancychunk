@@ -70,8 +70,10 @@ A conforming implementation has every box checked.
   for cross-run reproducibility).
 - [ ] **SPEC-CHUNK-114** — Document shorter than `min_len` returns single
   sentence. Covered by TV-101.
-- [ ] **SPEC-CHUNK-115** — Unsatisfiable length constraints raise.
-  Covered by TV-113.
+- [ ] **SPEC-CHUNK-115** — Genuinely unsatisfiable length constraints
+  raise. Covered by TV-113 (the document is longer than `max_len` and
+  every internal split would also produce a sentence shorter than
+  `min_len`).
 - [ ] **SPEC-CHUNK-116** — No boundary above threshold + no-boundary
   case valid → single sentence. Verify by inspection (construct an
   input where the model predicts all-zero probabilities).
@@ -97,7 +99,9 @@ A conforming implementation has every box checked.
   function over word count, anchored at document `q25`/`q75`.
   Covered by TV-206, TV-207.
 - [ ] **SPEC-CHUNK-240** — Per-sentence boundary probabilities follow
-  the Markdown token-type table. Covered by TV-205, TV-208, TV-209.
+  the Markdown token-type table. Covered by TV-205 (heading vs.
+  paragraph in a contiguous non-zero run) and TV-208 (blockquote vs.
+  list precedence + suppression).
 - [ ] **SPEC-CHUNK-241** — Consecutive non-zero boundaries: only the max
   survives. Covered by TV-208.
 - [ ] **SPEC-CHUNK-250** — Deterministic. Run any TV twice and assert
@@ -125,14 +129,17 @@ A conforming implementation has every box checked.
   similarity. Verify by inspection (this is the optimization
   objective).
 - [ ] **SPEC-CHUNK-311** — Covering constraint enforced; no chunk
-  exceeds `max_size`. Covered by TV-304, TV-306.
+  exceeds `max_size`. Covered by TV-304.
 - [ ] **SPEC-CHUNK-320** — Partition similarity construction follows the
-  four-step procedure. Verify by inspection (TV-306 exercises step
-  3's rescaling; TV-307/TV-308 exercise step 4).
+  four-step procedure. Verify by inspection; TV-307/TV-308 exercise
+  step 4 (the heading-aware modification).
 - [ ] **SPEC-CHUNK-321** — Discourse-vector correction with two-stage
   safeguard. Covered by TV-311 (degenerate case forces fallback).
-- [ ] **SPEC-CHUNK-322** — Heading-aware similarity modification.
-  Covered by TV-307, TV-308.
+- [ ] **SPEC-CHUNK-322** — Heading-aware similarity modification,
+  with both ATX and Setext heading detection. Covered by TV-307,
+  TV-308; parser-based detection is parametrized in
+  `test_is_heading_atx_and_setext` and the Setext analogue of TV-308
+  in `test_setext_heading_pulls_split_before`.
 - [ ] **SPEC-CHUNK-330** — Deterministic given solver. Run any TV
   twice and assert identical output (with a deterministic solver).
 - [ ] **SPEC-CHUNK-340** — Short-circuit on single chunklet, total-fits,

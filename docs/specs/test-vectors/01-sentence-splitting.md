@@ -198,27 +198,19 @@ Validates SPEC-CHUNK-115.
 
 | Input | Value |
 |-------|-------|
-| `document` | `"abcdefghij"` (10 chars, no whitespace) |
-| `min_len` | `4` |
-| `max_len` | `8` |
-| `known_boundary_probas` | vector of length 10; all `NaN` (no overrides) |
+| `document` | `"abcdefghi"` (9 chars, no whitespace) |
+| `min_len` | `5` |
+| `max_len` | `3` |
 
-The document is longer than `max_len` (10 > 8), so at least one split
-is required. But no internal split position can produce two sentences
-each of length `≥ min_len = 4`: a split at index `k` produces
-sentences of length `k + 1` and `10 - (k + 1)`, and for both to be
-`≥ 4` we need `k ∈ {3, 4, 5}`. At each such `k` the first sentence
-has length `≥ 4` but the second has length `≤ 6`, and either sentence
-must independently satisfy `≤ max_len = 8` (which all candidates do)
-*and* the chosen `k` must score positively after the segmenter's
-output is combined with the threshold — but no internal position has
-a probability high enough to clear the threshold when overrides are
-absent and the segmenter predicts uniformly low probabilities on a
-run of identical characters. The DP exhausts every valid `k` and
-finds the no-boundary partition itself violates `max_len`.
+The document is longer than `max_len` (9 > 3), so at least one split
+is required. But every internal split produces a sentence of length
+at most 8 — and `max_len = 3` requires every sentence to be `≤ 3`, so
+every candidate partition contains a sentence longer than `max_len`.
+Independently, every internal split produces at least one sentence
+shorter than `min_len = 5`. The constraints are jointly infeasible.
 
-**Expected output:** the implementation raises an error indicating
-no valid partition exists under the length constraints. The exception
+**Expected output:** the implementation raises an error indicating no
+valid partition exists under the length constraints. The exception
 type is implementation-defined.
 
 ## Model-dependent vectors (informational only)

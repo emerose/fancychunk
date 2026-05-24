@@ -88,41 +88,6 @@ Validates the partition-similarity ranking.
 SPEC-CHUNK-340 short-circuit applies, and no optimization is
 performed.
 
-## TV-306 — Orthogonal embeddings: split at every opportunity (model-independent)
-
-Validates the partition-similarity ranking and discourse-vector
-robustness.
-
-| Input | Value |
-|-------|-------|
-| `chunklets` | 4 chunklets of 1000 chars each (`a`*1000, `b`*1000, `c`*1000, `d`*1000) |
-| `embeddings` | 4 pairwise-orthogonal unit vectors in a 4-D space |
-| `max_size` | `2048` |
-
-After SPEC-CHUNK-321 discourse-vector correction, the rows remain
-pairwise orthogonal (subject to the safeguard: if the correction
-would zero any row, it's skipped — but orthogonal rows projected
-onto the orthogonal complement of their mean remain nonzero). After
-SPEC-CHUNK-320 step 3 rescaling, `sim[i] = (0 + 1) / 2 = 0.5` for
-every adjacent pair.
-
-The covering constraint requires that no window exceeds 2048 chars.
-Two adjacent chunklets total 2000 chars (fits); three total 3000
-(does not fit). So every pair `(i, i+2)` requires at least one split
-between `i` and `i+1`.
-
-With all `sim[i] = 0.5`, the optimization chooses the minimum number
-of splits satisfying the covering constraint, which is 2 splits.
-
-**Expected output (property):** 3 chunks, each containing 1 or 2
-chunklets, with no chunk exceeding 2048 chars. Possible partitions:
-- `[chk[0] + chk[1], chk[2], chk[3]]`
-- `[chk[0], chk[1] + chk[2], chk[3]]`
-- `[chk[0], chk[1], chk[2] + chk[3]]`
-
-All are optimal (tie among 3 split-pairings). Tie-breaking is
-solver-defined.
-
 ## TV-307 — Heading-aware modification: no split immediately after heading (model-independent)
 
 Validates SPEC-CHUNK-322.

@@ -20,6 +20,10 @@ env/
 # uv
 uv.lock
 
+# pyenv (developer-local; pyproject.toml's requires-python is the
+# project-wide source of truth).
+.python-version
+
 # IDE
 .vscode/
 .idea/

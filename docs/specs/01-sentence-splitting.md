@@ -136,18 +136,21 @@ After the predicted and known probabilities are merged, the final
 probability vector is adjusted so that whitespace attaches to the
 preceding sentence rather than starting the next one. For every
 maximal run of whitespace characters at positions `[i, j)` flanked by
-non-whitespace characters:
+non-whitespace characters, the *extended run* is `[i', j)` where
+`i' = i - 1` when `i > 0` (the immediately-preceding non-whitespace
+position is included in the extended run) and `i' = i` otherwise.
+Then:
 
-- For positions `[i, j-1)` (every whitespace position except the last
-  in the run), set the probability to the minimum probability in the
-  run.
+- Let `M = max(p[i'], p[i'+1], ..., p[j-1])`.
+- Let `m = min` over the same positions.
+- For positions `[i', j-1)`, set the probability to `m`.
 - For position `j-1` (the last whitespace position), set the
-  probability to the maximum probability in the run.
+  probability to `M`.
 
 This biases the splitter to break *after* whitespace, so the next
 sentence starts at a non-whitespace character.
 
-Two reasons:
+Three reasons:
 
 1. **Reader expectation.** A printed sentence starts with a word, not
    with the space separating it from the previous sentence. Storing
@@ -165,6 +168,17 @@ Two reasons:
    specifically (rather than, say, zero/one) preserves the model's
    *relative* preferences across runs while making each run's
    boundary location deterministic.
+
+3. **Transport of boundary signal across whitespace.** Including
+   `i' = i - 1` in the extended run is what carries a structural
+   boundary signal — most importantly the heading-end `1.0` placed
+   by SPEC-CHUNK-108 — across the trailing whitespace to the last
+   position in the run. Without the inclusion of `i - 1`, a heading
+   like `# Title\n\n` would leave its boundary at the heading's
+   last non-whitespace character (the `e`), and the trailing
+   newlines would begin the next sentence, violating SPEC-CHUNK-102.
+   The extended-run rule shifts the boundary one whitespace run
+   forward so the heading sentence consumes its blank-line tail.
 
 ### SPEC-CHUNK-110 — Splitting maximizes total score above threshold
 
@@ -283,14 +297,18 @@ but the no-boundary partition (single sentence equal to the full
 document) is itself valid under the length constraints, the splitter
 returns `[document]`.
 
-### SPEC-CHUNK-117 — Empty document
+### SPEC-CHUNK-117 — Empty document or whitespace-only document
 
-For an empty document (`""`), return `[]`. This matches stage 2's
-empty-input convention (SPEC-CHUNK-260) and stage 3's
-(SPEC-CHUNK-340), so an empty document flows through the whole
-pipeline as empty lists, and avoids producing a single-sentence
-output that would violate SPEC-CHUNK-101 (every sentence contains at
-least one non-whitespace character).
+For an empty document (`""`) or a document containing only whitespace
+characters, return `[]`. This matches stage 2's empty-input convention
+(SPEC-CHUNK-260) and stage 3's (SPEC-CHUNK-340), so a content-free
+document flows through the whole pipeline as empty lists, and avoids
+producing a single-sentence output that would violate SPEC-CHUNK-101
+(every sentence contains at least one non-whitespace character).
+The whitespace-only case is grouped with the empty case rather than
+the SPEC-CHUNK-114 short-circuit because the SPEC-CHUNK-114 path
+returns the document as a single sentence, which would itself violate
+SPEC-CHUNK-101 when the document is all whitespace.
 
 ## Named constants
 

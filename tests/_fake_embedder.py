@@ -72,3 +72,34 @@ class WhitespaceDroppingFakeEmbedder(FakeEmbedder):
 
     def embed(self, text: str):  # type: ignore[override]
         return super().embed(text.replace("b", ""))
+
+
+_BERT_CLS = 1000
+_BERT_SEP = 1001
+
+
+class BertLikeFakeEmbedder(FakeEmbedder):
+    """Fake embedder that wraps every embed/tokenize call in ``[CLS] ... [SEP]``.
+
+    Used to exercise SPEC-CHUNK-420 option (b): leading and trailing
+    special tokens are absorbed into the first and last content
+    sentences' allocations.
+    """
+
+    def tokenize(self, text: str) -> list[int]:  # type: ignore[override]
+        return [_BERT_CLS] + super().tokenize(text) + [_BERT_SEP]
+
+    def detokenize(self, tokens: list[int]) -> str:  # type: ignore[override]
+        out: list[str] = []
+        for t in tokens:
+            if t in (_BERT_CLS, _BERT_SEP):
+                continue
+            out.append(super().detokenize([t]))
+        return "".join(out)
+
+    def embed(self, text: str):  # type: ignore[override]
+        tokens = self.tokenize(text)
+        mat = np.zeros((len(tokens), self.dim), dtype=np.float64)
+        for i, tok in enumerate(tokens):
+            mat[i, tok % self.dim] = 1.0
+        return mat

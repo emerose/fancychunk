@@ -12,15 +12,12 @@ from markdown_it import MarkdownIt
 from numpy.typing import NDArray
 
 from . import _constants as C
+from ._typing import Matrix, Vector
 from .errors import (
-    OptimizationFailedError,
     OversizedChunkletError,
     ValidationError,
     ZeroNormEmbeddingError,
 )
-
-Matrix = NDArray[np.floating]
-Vector = NDArray[np.floating]
 
 
 def split_chunks(
@@ -103,8 +100,8 @@ def _partition_similarities(
         val = (dot + 1.0) / 2.0
         sim[i] = max(val, floor)
 
-    # Step 4 — heading-aware modification.
-    _apply_heading_modification(sim, chunklets, floor)
+    # Step 4 — heading-aware modification (in place).
+    _apply_heading_modification_inplace(sim, chunklets, floor)
     return sim
 
 
@@ -163,11 +160,17 @@ def _is_heading(chunklet: str) -> bool:
     return len(block_opens) == 1 and block_opens[0].type == "heading_open"
 
 
-def _apply_heading_modification(sim: Vector, chunklets: list[str], floor: float) -> None:
+def _apply_heading_modification_inplace(
+    sim: Vector, chunklets: list[str], floor: float
+) -> None:
     n = len(chunklets)
+    # Compute the heading flag once per chunklet; markdown-it parsing
+    # is reentrant but not free, and the loop below reads each value
+    # once.
+    is_heading_flags = [_is_heading(c) for c in chunklets]
     previous_is_heading = False
     for i in range(n):
-        if _is_heading(chunklets[i]):
+        if is_heading_flags[i]:
             if i >= 1 and not previous_is_heading:
                 sim[i - 1] = max(sim[i - 1] / C.HEADING_SPLIT_BEFORE_DIVISOR, floor)
             if i <= n - 2:
@@ -218,16 +221,12 @@ def _solve_partition(
             continue
         candidates = dp_cost[j_lo:j_hi] + transition_to_j[j_lo:j_hi]
         local_argmin = int(np.argmin(candidates))
-        cand_cost = float(candidates[local_argmin])
-        if not np.isfinite(cand_cost):
-            continue
-        dp_cost[i] = cand_cost
+        dp_cost[i] = float(candidates[local_argmin])
         dp_prev[i] = j_lo + local_argmin
 
-    if not np.isfinite(dp_cost[n]):
-        raise OptimizationFailedError(
-            "covering constraint is infeasible; this should have been caught earlier"
-        )
+    # Unreachable in practice: every chunklet ≤ max_size (validated
+    # above), so the per-chunklet partition is always feasible.
+    assert np.isfinite(dp_cost[n]), "internal: chunks DP left dp_cost[n] non-finite"
 
     cuts: list[int] = []
     i = n

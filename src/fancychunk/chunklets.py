@@ -13,9 +13,8 @@ from numpy.typing import NDArray
 
 from . import _constants as C
 from ._markdown import compute_line_starts, line_of_offset, openers_by_line
+from ._typing import Vector
 from .errors import OversizedSentenceError, ValidationError
-
-Vector = NDArray[np.float64]
 
 
 def split_chunklets(
@@ -246,10 +245,12 @@ def _dp_partition(
         dp_cost[i] = float(candidates[local_argmin])
         dp_prev[i] = j_lo + local_argmin
 
-    if not np.isfinite(dp_cost[n]):
-        raise OversizedSentenceError(
-            "no valid chunklet partition exists; a sentence likely exceeds max_size"
-        )
+    # Unreachable in practice: every sentence's length is ≤ max_size
+    # (validated above), so the per-sentence chunklet partition is
+    # always feasible and dp_cost[n] is finite. Kept as an assertion
+    # so a future bug surfaces as an internal error rather than a
+    # confusing user-facing OversizedSentenceError.
+    assert np.isfinite(dp_cost[n]), "internal: chunklet DP left dp_cost[n] non-finite"
 
     cuts: list[int] = []
     i = n

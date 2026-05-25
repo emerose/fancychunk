@@ -20,13 +20,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, Protocol
 
 import numpy as np
-from numpy.typing import NDArray
+
+from ._typing import Vector
+from .errors import SegmenterError
 
 if TYPE_CHECKING:
     from wtpsplit_lite import SaT
-
-
-Vector = NDArray[np.float64]
 
 
 class SentenceSegmenter(Protocol):
@@ -91,7 +90,7 @@ class SaTSegmenter:
         raw = sat.predict_proba(document)
         arr = np.asarray(raw, dtype=np.float64)
         if arr.ndim != 1 or arr.shape[0] != len(document):
-            raise RuntimeError(
+            raise SegmenterError(
                 f"SaT returned shape {arr.shape}; expected ({len(document)},)"
             )
         return arr

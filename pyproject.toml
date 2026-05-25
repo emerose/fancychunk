@@ -22,7 +22,6 @@ classifiers = [
 
 dependencies = [
     "numpy>=1.26",
-    "scipy>=1.13",
     "markdown-it-py>=3.0",
     "wtpsplit-lite>=0.1",
 ]

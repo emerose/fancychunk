@@ -23,9 +23,9 @@ from numpy.typing import NDArray
 from . import _constants as C
 from ._markdown import heading_spans
 from ._segmenter import SentenceSegmenter, make_segmenter
+from ._typing import Vector
 from .errors import UnsplittableDocumentError, ValidationError
 
-Vector = NDArray[np.float64]
 _KnownArg = Vector | Callable[[str], Vector] | None
 
 
@@ -51,6 +51,13 @@ def split_sentences(
 
     # SPEC-CHUNK-117 — empty document.
     if not document:
+        return []
+
+    # SPEC-CHUNK-101 — every sentence must contain a non-whitespace
+    # character. A document consisting only of whitespace cannot
+    # produce any conforming sentence, so it is treated the same as
+    # the empty document.
+    if not document.strip():
         return []
 
     # SPEC-CHUNK-114 — short-circuit when document is no longer than min_len.
@@ -113,14 +120,15 @@ def _merge_known(predicted: Vector, known: Vector) -> Vector:
 
 
 def _whitespace_trailing(document: str, p: Vector) -> Vector:
-    """SPEC-CHUNK-109 — pin every whitespace run's last position to the
-    max probability spanning the run plus the preceding non-whitespace
-    position, and every earlier position (including that preceding
-    non-whitespace position when it exists) to the run's min.
+    """SPEC-CHUNK-109 — over every maximal whitespace run ``[i, j)``,
+    pin position ``j-1`` to the maximum probability of the *extended
+    run* and every earlier position (including ``i-1`` when present)
+    to the minimum of the same set.
 
-    Including the preceding non-whitespace position in the min/max
-    domain is what lets SPEC-CHUNK-108's heading-end probability shift
-    onto the trailing newline so the heading sentence consumes its
+    The extended run ``[i', j)`` is ``[i-1, j)`` when ``i > 0`` and
+    ``[i, j)`` otherwise; including the preceding non-whitespace
+    position is what carries SPEC-CHUNK-108's heading-end probability
+    across the trailing newline so the heading sentence consumes its
     blank-line tail.
     """
     p = p.copy()
@@ -137,6 +145,7 @@ def _whitespace_trailing(document: str, p: Vector) -> Vector:
         if not include_prev:
             i = j
             continue
+        # Extended run: [i-1, j). Min/max include position i-1.
         values = [float(x) for x in p[i:j]]
         values.append(float(p[i - 1]))
         mn = min(values)

@@ -125,3 +125,52 @@ def test_every_sentence_has_nonwhitespace() -> None:
     doc = "First sentence. Second sentence. Third sentence."
     for s in split_sentences(doc):
         assert any(not ch.isspace() for ch in s)
+
+
+# SPEC-CHUNK-101 / SPEC-CHUNK-117 — whitespace-only documents return [].
+# (Returning a single all-whitespace "sentence" would violate
+# SPEC-CHUNK-101 on the no-non-whitespace-character clause.)
+@pytest.mark.parametrize(
+    "doc", ["     ", "\n\n\n", "\t\t", "   \n   ", "          "]
+)
+def test_whitespace_only_document_returns_empty(doc: str) -> None:
+    assert split_sentences(doc) == []
+
+
+# SPEC-CHUNK-110 — DP returns the score-maximizing boundary set.
+# Constructed input: a 12-character document with one obvious boundary
+# signal at position 5 (probability 1.0, well above threshold). With
+# min_len=4 the only valid placements are k ∈ {3, 4, 5, 6, 7}; among
+# these, k=5 has the highest score and is the unique optimum.
+def test_spec_chunk_110_dp_finds_score_optimum() -> None:
+    doc = "abcdef ghijkl"  # 13 chars
+    known = np.full(len(doc), np.nan)
+    known[5] = 1.0  # space after 'abcdef'
+    out = split_sentences(doc, min_len=4, known_boundary_probas=known)
+    # SPEC-CHUNK-109 shifts the boundary to the end of the whitespace
+    # run; here that's position 6 (single-space run pinned to max via
+    # the extended-run rule), giving the partition ['abcdef ', 'ghijkl'].
+    assert out == ["abcdef ", "ghijkl"]
+
+
+# SPEC-CHUNK-113 — tie-break by smallest predecessor index. With all
+# probabilities equal (zero), every partition has the same total
+# score; the spec selects the partition with the fewest boundaries.
+def test_spec_chunk_113_tie_break_fewest_sentences() -> None:
+    # 12 'a' characters, no internal boundary signals, no length
+    # constraint pressure — the all-tied DP must pick the
+    # single-sentence partition (smallest-predecessor at the final
+    # step is j=0).
+    doc = "a" * 12
+    out = split_sentences(doc, min_len=4)
+    assert out == [doc]
+
+
+# SPEC-CHUNK-116 — when no position has probability above threshold
+# but the single-sentence partition is feasible, return it.
+def test_spec_chunk_116_no_boundaries_above_threshold() -> None:
+    doc = "abcdefghij"  # 10 chars, no whitespace, no segmenter signal
+    known = np.full(len(doc), np.nan)  # no overrides either
+    # No max_len, so the single-sentence partition is valid.
+    out = split_sentences(doc, min_len=4, known_boundary_probas=known)
+    assert out == [doc]

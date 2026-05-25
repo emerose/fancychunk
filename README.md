@@ -85,7 +85,7 @@ ID.
 fancychunk/
 ├── README.md                     # This file
 ├── LICENSE                       # MIT
-├── pyproject.toml                # Package metadata (no deps yet)
+├── pyproject.toml                # Package metadata + runtime deps
 ├── docs/specs/
 │   ├── README.md                 # Glossary and reading order
 │   ├── 00-pipeline-overview.md   # End-to-end data flow
@@ -104,7 +104,7 @@ fancychunk/
 │   ├── late_chunking.py          # Stage 4 — late chunking (optional)
 │   ├── headings.py               # Stage 5 — heading paths (optional)
 │   ├── _markdown.py              # Markdown-it heading + opener helpers
-│   ├── _segmenter.py             # Default punctuation segmenter
+│   ├── _segmenter.py             # SaT default + punctuation fallback
 │   ├── _constants.py             # Named constants from the specs
 │   └── errors.py                 # Exception hierarchy
 └── tests/                        # pytest suite covering every TV-*

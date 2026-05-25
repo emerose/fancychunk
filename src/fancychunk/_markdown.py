@@ -15,7 +15,6 @@ markdown-it tokens are 0-indexed into a list of lines split on ``\n``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 from markdown_it import MarkdownIt
 
@@ -47,8 +46,14 @@ def _line_starts(document: str) -> list[int]:
     return starts
 
 
+# Module-level CommonMark parser. ``markdown-it-py`` parsing is
+# reentrant, so a single shared instance is safe and avoids the
+# per-call construction overhead.
+_PARSER = MarkdownIt("commonmark")
+
+
 def _parser() -> MarkdownIt:
-    return MarkdownIt("commonmark")
+    return _PARSER
 
 
 def heading_spans(document: str) -> list[HeadingSpan]:
@@ -143,17 +148,16 @@ def openers_by_line(document: str) -> dict[int, set[str]]:
     return out
 
 
-def line_of_offset(line_starts: Iterable[int], offset: int) -> int:
+def line_of_offset(line_starts: list[int], offset: int) -> int:
     """Return the 0-indexed line containing ``offset``.
 
-    ``line_starts`` must be sorted (e.g. produced by ``_line_starts``).
+    ``line_starts`` must be sorted ascending (e.g. produced by
+    :func:`compute_line_starts`).
     """
-    # Binary search.
-    starts = list(line_starts) if not isinstance(line_starts, list) else line_starts
-    lo, hi = 0, len(starts) - 1
+    lo, hi = 0, len(line_starts) - 1
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if starts[mid] <= offset:
+        if line_starts[mid] <= offset:
             lo = mid
         else:
             hi = mid - 1

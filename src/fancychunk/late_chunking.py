@@ -15,12 +15,10 @@ import math
 from typing import Protocol, Sequence
 
 import numpy as np
-from numpy.typing import NDArray
 
 from . import _constants as C
+from ._typing import Matrix
 from .errors import SentenceExceedsContextError, ValidationError
-
-Matrix = NDArray[np.floating]
 
 _DEFAULT_SENTINEL = "⊕"  # CIRCLED PLUS
 
@@ -53,11 +51,16 @@ def embed_with_late_chunking(
         raise ValidationError("preamble_fraction must be in [0, 1)")
     if max_tokens_per_segment is not None and max_tokens_per_segment <= 0:
         raise ValidationError("max_tokens_per_segment must be positive")
+    n_ctx = int(embedder.n_ctx)
+    if max_tokens_per_segment is not None and max_tokens_per_segment > n_ctx:
+        raise ValidationError(
+            f"max_tokens_per_segment ({max_tokens_per_segment}) exceeds "
+            f"embedder.n_ctx ({n_ctx})"
+        )
     if not sentences:
         return np.zeros((0, _infer_dim(embedder)), dtype=np.float64)
 
-    budget = max_tokens_per_segment if max_tokens_per_segment is not None else int(embedder.n_ctx)
-    n_ctx = int(embedder.n_ctx)
+    budget = max_tokens_per_segment if max_tokens_per_segment is not None else n_ctx
     preamble_budget = math.floor(preamble_fraction * budget)
 
     # Pre-compute isolated tokenization counts (used for segment construction).
@@ -304,4 +307,14 @@ def _largest_remainder(total: int, counts: list[int]) -> list[int]:
             if floors[i] > 1:
                 floors[i] -= 1
                 deficit -= 1
+    # Round-trip invariant: apportionment must conserve the total. If
+    # this assertion ever fires it means the borrow loop above ran
+    # out of donors before zeroing the deficit (pathological input
+    # like ``total == 1`` with many positive-count sentences); promote
+    # to a typed error rather than silently overshooting the buffer.
+    if sum(floors) != total:
+        raise ValidationError(
+            f"per-sentence token apportionment ({sum(floors)}) does not "
+            f"sum to embedder output rows ({total})"
+        )
     return floors

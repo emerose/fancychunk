@@ -51,3 +51,9 @@ class OptimizationFailedError(FancyChunkError):
 
     Raised by stage 3 (SPEC-CHUNK-343).
     """
+
+
+class SegmenterError(FancyChunkError):
+    """A sentence-segmentation model returned output that violated
+    SPEC-CHUNK-106 (wrong shape, NaN/Inf, etc.).
+    """

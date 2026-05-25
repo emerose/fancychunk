@@ -7,10 +7,15 @@ import pytest
 
 from fancychunk import (
     SentenceExceedsContextError,
+    ValidationError,
     embed_with_late_chunking,
 )
 
-from ._fake_embedder import FakeEmbedder, WhitespaceDroppingFakeEmbedder
+from ._fake_embedder import (
+    BertLikeFakeEmbedder,
+    FakeEmbedder,
+    WhitespaceDroppingFakeEmbedder,
+)
 
 
 # TV-401 / SPEC-CHUNK-400, -401 — shape conforms.
@@ -119,8 +124,9 @@ def test_tv_409_zero_token_sentence_handled() -> None:
     sentences = ["a", "b", "c"]
     try:
         out = embed_with_late_chunking(sentences, fake)
-    except Exception:
-        return
+    except ValidationError:
+        return  # option (b): explicit refusal is conforming.
+    # option (a): floor-at-one apportionment must produce finite rows.
     assert out.shape == (3, 8)
     assert np.all(np.isfinite(out))
 
@@ -137,6 +143,27 @@ def test_tv_410_normalize_control() -> None:
     # ``1 / sqrt(token_count)`` for a single sentence — not 1.0.
     for row in out_raw:
         assert not np.isclose(np.linalg.norm(row), 1.0)
+
+
+# SPEC-CHUNK-420 option (b) — leading and trailing special tokens
+# emitted by the embedder are absorbed into the neighbouring content
+# sentence's allocation, preserving ``sum(tokens_in(s)) == len(token_embeddings)``.
+def test_spec_chunk_420_option_b_specials_absorbed() -> None:
+    fake = BertLikeFakeEmbedder(dim=8, n_ctx=512)
+    out = embed_with_late_chunking(["AB", "CD"], fake)
+    assert out.shape == (2, 8)
+    # tokenize("AB⊕CD") = [CLS, A, B, ⊕, C, D, SEP] (7 tokens).
+    # Sentence 0 spans [0, 3] (including sentinel position 3) — 4 tokens
+    # absorbing the leading [CLS]. Sentence 1 spans (3, 7) — 3 tokens
+    # absorbing the trailing [SEP]. The implementation must not raise.
+    assert np.all(np.isfinite(out))
+
+
+# Validation: max_tokens_per_segment may not exceed embedder.n_ctx.
+def test_max_tokens_per_segment_validation() -> None:
+    fake = FakeEmbedder(dim=8, n_ctx=64)
+    with pytest.raises(ValidationError):
+        embed_with_late_chunking(["hello"], fake, max_tokens_per_segment=128)
 
 
 # SPEC-CHUNK-440 — determinism.

@@ -15,6 +15,7 @@ from .errors import (
     OptimizationFailedError,
     OversizedChunkletError,
     OversizedSentenceError,
+    SegmenterError,
     SentenceExceedsContextError,
     UnsplittableDocumentError,
     ValidationError,
@@ -43,6 +44,7 @@ __all__ = [
     "ZeroNormEmbeddingError",
     "SentenceExceedsContextError",
     "OptimizationFailedError",
+    "SegmenterError",
     "constants",
 ]
 

@@ -54,13 +54,14 @@ def test_tv_106_whitespace_trailing() -> None:
         assert not s[0].isspace(), f"sentence begins with whitespace: {s!r}"
 
 
-# TV-107 / SPEC-CHUNK-104, -111 — max_len splits an overlong sentence.
+# TV-107 / SPEC-CHUNK-103, -104, -111 — max_len splits an overlong
+# sentence and every output sentence sits in [min_len, max_len].
 def test_tv_107_max_len_splits() -> None:
     doc = "a" * 100
-    out = split_sentences(doc, max_len=40)
+    out = split_sentences(doc, min_len=4, max_len=40)
     assert "".join(out) == doc
     for s in out:
-        assert len(s) <= 40
+        assert 4 <= len(s) <= 40
 
 
 # TV-108 — max_len larger than document is a no-op.

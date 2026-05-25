@@ -88,18 +88,25 @@ def split_sentences(
             return [document]
 
         n = len(document)
-        predicted = np.asarray(resolved(document), dtype=np.float64)
+        tracer = get_tracer()
+        with tracer.start_as_current_span("fancychunk.sentences.segmenter"):
+            predicted = np.asarray(resolved(document), dtype=np.float64)
         if predicted.shape != (n,):
             raise ValidationError(
                 f"segmenter returned shape {predicted.shape}; expected ({n},)"
             )
 
-        known = _resolve_known(known_boundary_probas, document, n)
-        merged = _merge_known(predicted, known)
-        final = _whitespace_trailing(document, merged)
+        with tracer.start_as_current_span("fancychunk.sentences.heading_override"):
+            known = _resolve_known(known_boundary_probas, document, n)
+        with tracer.start_as_current_span("fancychunk.sentences.merge"):
+            merged = _merge_known(predicted, known)
+        with tracer.start_as_current_span("fancychunk.sentences.whitespace_trailing"):
+            final = _whitespace_trailing(document, merged)
 
-        boundaries = _dp_split(final, min_len=min_len, max_len=max_len)
-        out = _slice(document, boundaries)
+        with tracer.start_as_current_span("fancychunk.sentences.dp"):
+            boundaries = _dp_split(final, min_len=min_len, max_len=max_len)
+        with tracer.start_as_current_span("fancychunk.sentences.slice"):
+            out = _slice(document, boundaries)
         span.set_attribute("fancychunk.sentences.count", len(out))
         return out
 

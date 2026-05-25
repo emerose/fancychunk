@@ -81,8 +81,11 @@ def split_chunks(
             span.set_attribute("fancychunk.short_circuit", "total_fits")
             return ["".join(chunklets)], [emb]
 
-        sim = _partition_similarities(emb, chunklets, lengths)
-        chunks, splits = _solve_partition(chunklets, lengths, sim, max_size)
+        tracer = get_tracer()
+        with tracer.start_as_current_span("fancychunk.chunks.partition_similarities"):
+            sim = _partition_similarities(emb, chunklets, lengths)
+        with tracer.start_as_current_span("fancychunk.chunks.dp"):
+            chunks, splits = _solve_partition(chunklets, lengths, sim, max_size)
         chunk_embeddings: list[Matrix] = [emb[a:b] for a, b in splits]
         span.set_attribute("fancychunk.chunks.count", len(chunks))
         return chunks, chunk_embeddings

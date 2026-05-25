@@ -60,10 +60,16 @@ def split_chunklets(
         bcost = boundary_cost if boundary_cost is not None else _default_boundary_cost
         scost = statement_cost if statement_cost is not None else _default_statement_cost
 
-        probas = _per_sentence_boundary_probas(sentences)
-        statements = _statement_counts([_word_count(s) for s in sentences])
+        tracer = get_tracer()
+        with tracer.start_as_current_span("fancychunk.chunklets.boundary_probas"):
+            probas = _per_sentence_boundary_probas(sentences)
+        with tracer.start_as_current_span("fancychunk.chunklets.statement_counts"):
+            statements = _statement_counts([_word_count(s) for s in sentences])
 
-        chunklets = _dp_partition(sentences, max_size, probas, statements, bcost, scost)
+        with tracer.start_as_current_span("fancychunk.chunklets.dp"):
+            chunklets = _dp_partition(
+                sentences, max_size, probas, statements, bcost, scost
+            )
         span.set_attribute("fancychunk.chunklets.count", len(chunklets))
         return chunklets
 

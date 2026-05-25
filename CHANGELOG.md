@@ -6,6 +6,34 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (breaking — pre-1.0)
+- `embed_with_late_chunking` now takes a `SegmentEmbedder` instead of
+  `TokenLevelEmbedder`. The new protocol is two methods + one
+  attribute (`n_ctx`, `count_tokens`, `embed_segment`) — replacing
+  the four-method `tokenize` / `detokenize` / `embed` / `n_ctx`
+  contract.
+- Tokenization, special-token policy, and sentence-to-token
+  alignment are now the embedder's concern, not the library's. The
+  sentinel-token method (with `⊕` default), sentinel discovery,
+  and the `sentinel` keyword argument are removed.
+- New `examples/embedders/` directory with reference adapters for
+  MLX (`qwen3_mlx.py`), HuggingFace transformers
+  (`huggingface_offsets.py`), and a remote HTTP service
+  (`remote_http.py`), each runnable.
+
+### Spec changes
+- SPEC-CHUNK-420 rewritten: per-sentence alignment is the embedder's
+  responsibility; the library's contract is that
+  `sum(per_sentence_counts) == matrix_row_count`.
+- SPEC-CHUNK-421 removed (sentinel character requirements are no
+  longer normative — implementations that adopt the sentinel method
+  test it against their own tokenizer).
+- SPEC-CHUNK-412 simplified to four steps; the largest-remainder
+  safety net stays as the absorber for count drift between
+  budget-planning and the actual joined-input tokenization.
+- TV-407 (sentinel collision detection) removed; TV-408 rewritten
+  for the new protocol.
+
 ### Added
 - Initial implementation of every pipeline stage in the spec:
   - Stage 1 `split_sentences` (SaT-backed default segmenter via

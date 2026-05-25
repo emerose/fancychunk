@@ -1,9 +1,13 @@
 """Optional integration test: late chunking against a real BERT model.
 
 Gated by ``FANCYCHUNK_TEST_USE_BERT=1`` because the model is ~700 MB
-and downloads via Hugging Face on first run. The fast test suite uses
+and downloads via Hugging Face on first run. The fast suite uses
 deterministic fakes that satisfy the embedder contract; this test
 verifies the same code path runs against a real transformer.
+
+The adapter below is also one of the reference implementations in
+``examples/embedders/huggingface_offsets.py`` — kept here as a test
+fixture and there as a user-facing example.
 """
 
 from __future__ import annotations
@@ -24,8 +28,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def bert_embedder() -> Any:
-    """Wrap ``bert-base-multilingual-cased`` in the
-    ``TokenLevelEmbedder`` protocol."""
+    """SegmentEmbedder backed by ``bert-base-multilingual-cased`` using
+    HuggingFace's ``offset_mapping`` to align tokens to sentences."""
     import torch  # type: ignore[import-untyped]
     from transformers import AutoModel, AutoTokenizer  # type: ignore[import-untyped]
 
@@ -34,22 +38,73 @@ def bert_embedder() -> Any:
     model = AutoModel.from_pretrained(model_name)
     model.eval()
 
-    class RealBert:
+    class HFOffsetEmbedder:
         n_ctx = 512
 
-        def tokenize(self, text: str) -> list[int]:
-            return list(tokenizer.encode(text, add_special_tokens=True))
+        def count_tokens(self, sentences: list[str]) -> list[int]:
+            return [
+                len(tokenizer.encode(s, add_special_tokens=False))
+                for s in sentences
+            ]
 
-        def detokenize(self, tokens: list[int]) -> str:
-            return cast(str, tokenizer.decode(tokens, skip_special_tokens=False))
-
-        def embed(self, text: str) -> np.ndarray:
-            ids = tokenizer.encode(text, add_special_tokens=True, return_tensors="pt")
+        def embed_segment(
+            self, sentences: list[str]
+        ) -> tuple[np.ndarray, list[int]]:
+            # Join with no separator and use offset_mapping to map
+            # each token back to its source sentence by character
+            # offset. Special tokens ([CLS], [SEP]) get offset (0, 0)
+            # and are absorbed into the first/last sentences per
+            # SPEC-CHUNK-420 option (b).
+            joined = "".join(sentences)
+            enc = tokenizer(
+                joined,
+                return_offsets_mapping=True,
+                return_tensors="pt",
+                add_special_tokens=True,
+            )
             with torch.no_grad():
-                out = model(ids).last_hidden_state[0]
-            return cast(np.ndarray, out.numpy())
+                h = model(
+                    input_ids=enc["input_ids"],
+                    attention_mask=enc["attention_mask"],
+                ).last_hidden_state[0]
+            mat = cast(np.ndarray, h.numpy())
 
-    return RealBert()
+            # Compute sentence character spans, then count tokens
+            # whose offset falls inside each.
+            spans = []
+            pos = 0
+            for s in sentences:
+                spans.append((pos, pos + len(s)))
+                pos += len(s)
+
+            offsets = enc["offset_mapping"][0].tolist()
+            counts = [0] * len(sentences)
+            for tok_idx, (a, b) in enumerate(offsets):
+                if a == 0 and b == 0:
+                    # Special token — defer; assigned at the end.
+                    continue
+                for s_idx, (sa, sb) in enumerate(spans):
+                    if sa <= a < sb or sa < b <= sb:
+                        counts[s_idx] += 1
+                        break
+
+            # Absorb specials: leading specials → sentence 0; trailing
+            # → last sentence. Walk the offset list from the ends.
+            for tok_idx, (a, b) in enumerate(offsets):
+                if a == 0 and b == 0:
+                    counts[0] += 1
+                else:
+                    break
+            for tok_idx in range(len(offsets) - 1, -1, -1):
+                a, b = offsets[tok_idx]
+                if a == 0 and b == 0:
+                    counts[-1] += 1
+                else:
+                    break
+
+            return mat, counts
+
+    return HFOffsetEmbedder()
 
 
 SENTENCES = [
@@ -60,21 +115,8 @@ SENTENCES = [
 ]
 
 
-def test_default_sentinel_produces_valid_output(bert_embedder: Any) -> None:
-    """Default sentinel (⊕) falls back to isolated-tokenization apportionment
-    for BERT — the spec allows this; output must still satisfy the contract."""
+def test_offset_method_produces_valid_output(bert_embedder: Any) -> None:
     out = embed_with_late_chunking(SENTENCES, bert_embedder)
-    assert out.shape == (4, 768)
-    assert np.all(np.isfinite(out))
-    # normalize=True default → all rows unit norm.
-    assert np.allclose(np.linalg.norm(out, axis=1), 1.0, atol=1e-5)
-
-
-def test_bert_compatible_sentinel_hits_precise_path(bert_embedder: Any) -> None:
-    """``§`` is a single token in mBERT's vocabulary regardless of context,
-    so passing it via the keyword argument hits SPEC-CHUNK-420's precise
-    sentinel-token alignment without falling back."""
-    out = embed_with_late_chunking(SENTENCES, bert_embedder, sentinel="§")
     assert out.shape == (4, 768)
     assert np.all(np.isfinite(out))
     assert np.allclose(np.linalg.norm(out, axis=1), 1.0, atol=1e-5)
@@ -83,7 +125,6 @@ def test_bert_compatible_sentinel_hits_precise_path(bert_embedder: Any) -> None:
 def test_normalize_false_returns_raw_means(bert_embedder: Any) -> None:
     out = embed_with_late_chunking(SENTENCES, bert_embedder, normalize=False)
     assert out.shape == (4, 768)
-    # Raw mean-pooled rows have non-unit norm.
     norms = np.linalg.norm(out, axis=1)
     assert np.all(norms > 0)
     assert not np.allclose(norms, 1.0, atol=1e-3)

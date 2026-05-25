@@ -53,20 +53,34 @@ sentences.
 
 ## Embedder contract
 
-The embedder is a black box that satisfies four operations:
+The embedder is supplied by the caller. The library owns the
+late-chunking algorithm — segment planning, mean-pool per sentence,
+preamble discard, normalization — and nothing else. The caller owns
+tokenization, special-token policy, and the choice of method for
+mapping joined-input tokens back to their source sentences.
+
+The contract is two methods plus one attribute:
 
 | Operation | Kind | Behavior |
 |-----------|------|----------|
-| `tokenize(text)` | method, returns `list[int]` | Returns the token IDs the model would receive for this text. Required to be deterministic. |
-| `detokenize(list[int])` | method, returns `str` | Inverse of `tokenize`, used only for sentinel-token discovery (SPEC-CHUNK-420). |
-| `embed(text)` | method, returns matrix `[T, D]` | Returns one embedding vector per token in `text`, with `T` equal to the number of tokens. The embedder must NOT pool tokens internally for this call. |
-| `n_ctx` | integer attribute (property; not a method) | The maximum number of input tokens per `embed` call. `n_ctx` is the canonical Python attribute name; in other languages or libraries, an idiomatic equivalent (`max_tokens`, `context_size`, `model_max_length`) is fine as long as the value's meaning matches. |
+| `n_ctx` | integer attribute | Maximum number of tokens the embedder accepts in one segment. |
+| `count_tokens(sentences: list[str])` | method, returns `list[int]` | Approximate per-sentence token count for segment-budget planning. May differ from the actual joined-input tokenization by small amounts (subword merges across sentence boundaries); SPEC-CHUNK-412's largest-remainder safety net absorbs the drift. Used only for segment construction. |
+| `embed_segment(sentences: list[str])` | method, returns `(matrix[T, D], list[int])` | Embed the segment's sentences as one contextualized sequence. Returns the per-token embedding matrix and the per-sentence token allocation. The allocation must conserve the matrix row count: `sum(per_sentence_counts) == T`. Any special tokens (`[CLS]`, `[SEP]`, BOS, EOS) the embedder injects are the implementation's concern. |
 
 Any embedding model that exposes token-level outputs (a "no pooling"
 or "per-token output" mode) is acceptable. Cloud embedding APIs that
 return only one vector per input do not satisfy the contract — late
 chunking needs the per-token outputs to pool within sentence
 boundaries that the embedder doesn't know about.
+
+**Why this shape.** The caller already knows which tokenizer is in
+use, whether special tokens are injected, and what alignment method
+suits their stack (sentinel-token, offset-based, or anything else).
+Pushing the alignment work to the caller keeps the library
+unentangled with tokenizer-specific edge cases (e.g., BERT-family
+models subword-merging stable-looking sentinel characters) and lets
+each adapter pick the simplest valid method for its embedder. See
+`examples/embedders/` for reference adapters.
 
 ## Behavior
 
@@ -197,33 +211,26 @@ may tune it as a configuration parameter.
 
 For each segment `(segment_start, content_start, segment_end)`:
 
-1. Build the joined string per the counting method chosen for
-   SPEC-CHUNK-420 (the method itself specifies which joiner to use).
-   Call the embedder's `embed` operation on this same string. The
-   result is a matrix of per-token embeddings; the per-sentence token
-   counts derived in step 2 must add up to exactly this matrix's row
-   count.
+1. Call `embedder.embed_segment(sentences[segment_start:segment_end])`.
+   The embedder returns a tuple `(token_embeddings, per_sentence_counts)`
+   where `token_embeddings.shape == (T, D)` and the counts sum to `T`.
+   How the embedder joins, tokenizes, and aligns is its concern; the
+   library treats those choices as opaque.
 
-2. Compute the per-sentence token count *as the embedder would see
-   it* for each sentence in the segment, using SPEC-CHUNK-420.
+2. **Largest-remainder safety net.** If
+   `sum(per_sentence_counts) != T`, the library apportions via the
+   [largest-remainder method](https://en.wikipedia.org/wiki/Largest_remainder_method):
+   each sentence gets `floor(T * counts[i] / total)` rows, and any
+   leftover rows go one each to the sentences with the largest
+   fractional parts. This absorbs drift between
+   `count_tokens` (approximate, used for budgeting) and the actual
+   joined-input tokenization. If the embedder's `embed_segment`
+   already conserves the row count (the usual case), this step is
+   a no-op.
 
-3. Allocate per-token embeddings to sentences using the
-   per-sentence token counts from step 2: sentence `s` receives
-   `tokens_in(s)` consecutive token-embedding rows from the
-   beginning of the segment forward. When SPEC-CHUNK-420 holds,
-   `sum(tokens_in(s)) == len(token_embeddings)` exactly and the
-   allocation is unambiguous.
-
-   If an implementation derives `tokens_in(s)` through any
-   approximate method (e.g., re-tokenizing each sentence in
-   isolation), the integer counts may not sum to the segment's
-   actual token count. In that case use the
-   [largest-remainder method](https://en.wikipedia.org/wiki/Largest_remainder_method)
-   to apportion the leftover: each sentence gets
-   `floor(len(token_embeddings) * tokens_in(s) / total_tokens)`
-   rows, and any remaining rows go one each to the sentences with
-   the largest fractional parts. This is a safety net; with
-   SPEC-CHUNK-420 satisfied it reduces to the identity allocation.
+3. Allocate per-token embeddings to sentences sequentially: sentence
+   `s` receives `per_sentence_counts[s]` consecutive token-embedding
+   rows.
 
 4. Mean-pool the token embeddings within each sentence.
 
@@ -231,83 +238,37 @@ For each segment `(segment_start, content_start, segment_end)`:
    (indices `[segment_start, content_start)`); keep those in the
    content range (indices `[content_start, segment_end)`).
 
-### SPEC-CHUNK-420 — Per-sentence token counts must align with what the embedder saw
+### SPEC-CHUNK-420 — Per-sentence token alignment is the embedder's responsibility
 
-The per-sentence token count required by SPEC-CHUNK-412 step 2 must
-equal the number of token embeddings that the embedder produced for
-that sentence's substring within the concatenated segment input.
+The `per_sentence_counts` returned by `embed_segment` must conserve
+the matrix row count and reflect the embedder's actual tokenization
+of the joined segment. The *method* of alignment is up to the
+embedder's implementation. Common choices:
 
-This is non-trivial because:
-- Tokenizing each sentence in isolation can produce a different total
-  than tokenizing the concatenation (e.g., subword merges across
-  sentence boundaries).
-- Many tokenizers drop or add tokens at the start/end of input.
-- Many transformer tokenizers add special tokens (`[CLS]`, `[SEP]`,
-  BOS, EOS) at the start and/or end of the sequence. These tokens
-  belong to no input sentence. The implementation must either (a)
-  use an `embed` operation that strips special tokens before
-  returning per-token embeddings, or (b) detect them in the output
-  and assign them to a neighbouring content sentence (typically: a
-  leading special token joins sentence 0's allocation; a trailing
-  special token joins the last content sentence's allocation). Either
-  choice must be applied consistently so that
-  `sum(tokens_in(s)) == len(token_embeddings)`.
+- **Sentinel-token method.** Insert a stable, rare character between
+  sentences before tokenizing; locate the sentinel tokens in the
+  output; counts are derived from the gaps between sentinel
+  positions. Works for tokenizers that treat the sentinel as one
+  atomic token across positions. (BERT-family tokenizers
+  subword-merge many candidate sentinels — pick the sentinel after
+  probing the specific tokenizer in use.)
+- **Offset-based method.** Join with no separator; use the
+  tokenizer's offset_mapping (HuggingFace `tokenizers`,
+  `tiktoken`, etc.) to map each token back to its source sentence
+  by character offset.
+- **Custom.** Any approach that yields counts conserving the matrix
+  row count is conforming.
 
-The implementation must use a method that recovers per-sentence
-counts *from the embedder's actual tokenization of the joined input*.
+**Special tokens.** Many transformer tokenizers inject special
+tokens (`[CLS]`, `[SEP]`, BOS, EOS). These belong to no input
+sentence. The embedder must either (a) use a per-token output that
+excludes specials, or (b) absorb them into a neighbour sentence's
+allocation (typically: leading specials → sentence 0; trailing
+specials → last sentence). Either choice is conforming as long as
+the counts conserve the matrix row count.
 
-One valid implementation is the sentinel-token method:
-
-1. Pick a character that, when inserted between sentences, tokenizes
-   to a known sentinel token. A good default is `⊕` (CIRCLED PLUS,
-   U+2295) — most tokenizers handle it as a stable single token and
-   it is rare in natural language.
-2. Tokenize `sentinel.join(sentences)`. Note that there is no
-   leading or trailing sentinel — sentinels appear only *between*
-   sentences.
-3. Locate the sentinel token positions in the resulting sequence:
-   call them `s_1, s_2, ..., s_{k-1}` for `k` sentences.
-4. Sentence 0 spans token positions `[0, s_1]` (from the start
-   through and including the first sentinel). Sentence `j` for
-   `1 ≤ j ≤ k-2` spans `(s_j, s_{j+1}]`. The last sentence
-   (`j = k-1`) spans `(s_{k-1}, end_of_sequence)`. In each case the
-   per-sentence token count is the number of token positions in the
-   span; sentinel tokens are counted as part of the preceding
-   sentence.
-
-Other valid implementations include the **offset-based method**:
-join sentences with the empty string (i.e., `"".join(sentences)`),
-tokenize the result, and use the tokenizer's offset metadata (if
-exposed — e.g., HuggingFace `tokenizers` returns `(start, end)` byte
-offsets per token) to map each token back to its source sentence by
-character position. Per-sentence token counts are the number of
-tokens whose offset range falls within each sentence's character
-range. The joiner here is the empty string because no separator is
-needed when offsets are available.
-
-Any method satisfying this section and SPEC-CHUNK-421 is acceptable.
-The sentinel method is not normative.
-
-### SPEC-CHUNK-421 — Sentinel character requirements (if using the sentinel method)
-
-If the sentinel-token method is used, the sentinel character must
-satisfy:
-
-- It does not appear anywhere in the input document. If it does, the
-  implementation must detect this and either choose a different
-  sentinel or fall back to a different counting method.
-- It tokenizes to at least one stable token across all positions in
-  the input it can occupy (start of string, mid-sequence, after
-  whitespace, etc.). If the tokenizer produces token variants
-  depending on context, all variants must be recognized as sentinels.
-
-Sentinel discovery uses both `tokenize` and `detokenize`. A
-conforming approach: tokenize a small probe string that contains the
-candidate sentinel in several positions, collect the candidate
-sentinel token IDs, then for each candidate ID call
-`detokenize([id])` and check that the result contains the sentinel
-character. This identifies the set of token IDs the implementation
-must recognize as sentinels in step 3 of SPEC-CHUNK-420.
+`examples/embedders/` demonstrates each method against a real
+embedder.
 
 ## Output normalization
 

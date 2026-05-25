@@ -22,7 +22,7 @@ from .errors import (
     ZeroNormEmbeddingError,
 )
 from .headings import heading_paths
-from .late_chunking import TokenLevelEmbedder, embed_with_late_chunking
+from .late_chunking import SegmentEmbedder, embed_with_late_chunking
 from ._segmenter import SaTSegmenter, SentenceSegmenter, punctuation_segmenter
 from .sentences import split_sentences
 
@@ -35,7 +35,7 @@ __all__ = [
     "SaTSegmenter",
     "SentenceSegmenter",
     "punctuation_segmenter",
-    "TokenLevelEmbedder",
+    "SegmentEmbedder",
     "FancyChunkError",
     "ValidationError",
     "UnsplittableDocumentError",

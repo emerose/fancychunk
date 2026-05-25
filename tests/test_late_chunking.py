@@ -35,10 +35,8 @@ def test_tv_402_row_order_matches_input() -> None:
     sentences = ["alpha", "bravo", "charlie", "delta"]
     out = embed_with_late_chunking(sentences, fake, max_tokens_per_segment=512)
     assert out.shape == (4, 16)
-    # The fake embeds each character as a one-hot row. Sentence 0's
-    # pooled embedding therefore has weight on dimensions corresponding
-    # to ``alpha``'s characters ('a', 'l', 'p', 'h'). Sentence 3's row
-    # has weight on ``delta``'s characters. Verify they differ.
+    # Distinct sentences (no shared characters near the dim modulus)
+    # produce distinct pooled rows.
     assert not np.array_equal(out[0], out[3])
 
 
@@ -53,13 +51,14 @@ def test_tv_403_single_sentence_input() -> None:
 def test_tv_404_oversize_sentence_raises() -> None:
     fake = FakeEmbedder(dim=8, n_ctx=512)
     with pytest.raises(SentenceExceedsContextError):
-        embed_with_late_chunking(["A" + "a" * 10000], fake, max_tokens_per_segment=512)
+        embed_with_late_chunking(
+            ["A" + "a" * 10000], fake, max_tokens_per_segment=512
+        )
 
 
-# TV-405 / SPEC-CHUNK-410, -411 — every sentence in exactly one segment's content.
+# TV-405 / SPEC-CHUNK-410, -411 — every sentence appears in exactly one
+# segment's content range.
 def test_tv_405_segment_coverage() -> None:
-    # 20 sentences of ~50 tokens each — each sentence is 50 ASCII chars
-    # so that one char = one token for the fake.
     sentences = ["x" * 50 for _ in range(20)]
     fake = FakeEmbedder(dim=4, n_ctx=256)
     out = embed_with_late_chunking(
@@ -70,7 +69,7 @@ def test_tv_405_segment_coverage() -> None:
 
 # TV-406 — first segment has empty preamble; budget rolls into content.
 def test_tv_406_first_segment_empty_preamble() -> None:
-    sentences = ["x" * 30, "x" * 30, "x" * 30]  # ~90 tokens total
+    sentences = ["x" * 30, "x" * 30, "x" * 30]
     fake = FakeEmbedder(dim=4, n_ctx=200)
     out = embed_with_late_chunking(
         sentences, fake, max_tokens_per_segment=200, preamble_fraction=0.382
@@ -78,57 +77,26 @@ def test_tv_406_first_segment_empty_preamble() -> None:
     assert out.shape == (3, 4)
 
 
-# TV-407 / SPEC-CHUNK-421 — sentinel character collision falls back.
-def test_tv_407_sentinel_collision_handled() -> None:
-    fake = FakeEmbedder(dim=8, n_ctx=512)
-    sentences = [
-        "First sentence.",
-        "Has the symbol ⊕ inside.",
-        "Third sentence.",
-    ]
-    out = embed_with_late_chunking(sentences, fake)
-    assert out.shape == (3, 8)
-
-
-# TV-408 / SPEC-CHUNK-420 — per-sentence token counts sum to the
-# joined-input tokenization length, with the sentinel token billed to
-# the preceding sentence.
-def test_tv_408_token_counts_align() -> None:
+# TV-408 / SPEC-CHUNK-420 — the embedder owns per-sentence token
+# alignment. For the FakeEmbedder the alignment is trivial (one
+# character per token, no joiner), so the pooled row reflects the
+# arithmetic mean of the sentence's one-hot character embeddings.
+def test_tv_408_embedder_owns_alignment() -> None:
     fake = FakeEmbedder(dim=4, n_ctx=512)
     out = embed_with_late_chunking(["AB", "CD"], fake)
     assert out.shape == (2, 4)
-    # The sentinel-token method tokenises "AB⊕CD" to five tokens; the
-    # sentinel is billed to sentence 0. Sentence 0's pooled row =
-    # mean(one-hots for A=65, B=66, sentinel=9999): non-zero at
-    # dims 65%4=1, 66%4=2, 9999%4=3, weight 1/3 each. Sentence 1's
-    # pooled row = mean(one-hots for C=67, D=68): non-zero at
-    # dims 3 and 0, weight 1/2 each.
-    expected_0 = np.array([0.0, 1 / 3, 1 / 3, 1 / 3])
-    expected_0 = expected_0 / np.linalg.norm(expected_0)
-    expected_1 = np.array([0.5, 0.0, 0.0, 0.5])
-    expected_1 = expected_1 / np.linalg.norm(expected_1)
-    assert np.allclose(out[0], expected_0)
-    assert np.allclose(out[1], expected_1)
+    # 'A'=65, 'B'=66 → dims 1, 2 each get 0.5 mass before normalize.
+    expected = np.array([0.0, 0.5, 0.5, 0.0])
+    expected /= np.linalg.norm(expected)
+    assert np.allclose(out[0], expected)
 
 
-# TV-409 / SPEC-CHUNK-452 — many short sentences; some tokenize to 0 tokens.
-#
-# The spec allows two outcomes here: floor every sentence's share at
-# one token (option a) or raise (option b). This implementation uses
-# the sentinel-token method, which naturally bills the sentinel to
-# the preceding sentence and therefore satisfies option (a). The
-# test verifies the *contract*: every sentence receives a finite,
-# non-NaN row OR the call raises a clear error.
+# TV-409 / SPEC-CHUNK-452 — sentence tokenizing to zero tokens.
 def test_tv_409_zero_token_sentence_handled() -> None:
     fake = WhitespaceDroppingFakeEmbedder(dim=8, n_ctx=512)
-    sentences = ["a", "b", "c"]
-    try:
-        out = embed_with_late_chunking(sentences, fake)
-    except ValidationError:
-        return  # option (b): explicit refusal is conforming.
-    # option (a): floor-at-one apportionment must produce finite rows.
-    assert out.shape == (3, 8)
-    assert np.all(np.isfinite(out))
+    sentences = ["a", "b", "c"]  # 'b' produces zero tokens
+    with pytest.raises(ValidationError):
+        embed_with_late_chunking(sentences, fake)
 
 
 # TV-410 / SPEC-CHUNK-402, -430 — normalization control.
@@ -139,23 +107,17 @@ def test_tv_410_normalize_control() -> None:
     out_raw = embed_with_late_chunking(sentences, fake, normalize=False)
     for row in out_norm:
         assert np.isclose(np.linalg.norm(row), 1.0)
-    # The raw rows are mean-pooled one-hot vectors; their L2 norm is
-    # ``1 / sqrt(token_count)`` for a single sentence — not 1.0.
     for row in out_raw:
         assert not np.isclose(np.linalg.norm(row), 1.0)
 
 
-# SPEC-CHUNK-420 option (b) — leading and trailing special tokens
-# emitted by the embedder are absorbed into the neighbouring content
-# sentence's allocation, preserving ``sum(tokens_in(s)) == len(token_embeddings)``.
-def test_spec_chunk_420_option_b_specials_absorbed() -> None:
+# SPEC-CHUNK-420 option (b) — leading/trailing special tokens absorbed
+# into the first/last sentences' allocations by the embedder. The
+# library never sees them.
+def test_special_tokens_absorbed_by_embedder() -> None:
     fake = BertLikeFakeEmbedder(dim=8, n_ctx=512)
     out = embed_with_late_chunking(["AB", "CD"], fake)
     assert out.shape == (2, 8)
-    # tokenize("AB⊕CD") = [CLS, A, B, ⊕, C, D, SEP] (7 tokens).
-    # Sentence 0 spans [0, 3] (including sentinel position 3) — 4 tokens
-    # absorbing the leading [CLS]. Sentence 1 spans (3, 7) — 3 tokens
-    # absorbing the trailing [SEP]. The implementation must not raise.
     assert np.all(np.isfinite(out))
 
 

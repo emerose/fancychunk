@@ -8,16 +8,14 @@ contract in SPEC-CHUNK 04 §Embedder contract.
 ## Notation
 
 - `sentences`: list of strings.
-- `embedder`: a fake satisfying the embedder contract:
+- `embedder`: a fake satisfying the SegmentEmbedder contract:
   - `n_ctx`: integer.
-  - `tokenize(text)`: deterministic; returns a list of integer token
-    IDs.
-  - `detokenize(tokens)`: inverse of `tokenize` for sentinel-token
-    lookup.
-  - `embed(text)`: returns a `[T, D]` matrix where `T` is the number
-    of tokens `tokenize` would return and each row is a deterministic
-    function of the token (e.g., `row[i] = one-hot(token_id[i])` in
-    dimension `D`).
+  - `count_tokens(sentences)`: deterministic; returns a list of
+    per-sentence token counts.
+  - `embed_segment(sentences)`: returns a tuple
+    `(per_token_embeddings, per_sentence_counts)` where the matrix has
+    shape `[sum(per_sentence_counts), D]` and each row is a
+    deterministic function of the input.
 
 Most vectors use `D = 8` for tractable output checking. Where a row's
 exact value isn't important, the vector specifies the property (shape,
@@ -136,42 +134,24 @@ becomes `200`. All 3 sentences (~100 tokens) fit in one segment.
 **Expected output:** a `[3, D]` matrix produced from a single
 embedder call on the joined input.
 
-## TV-407 — Sentinel character collision (model-independent; if sentinel method used)
-
-Validates SPEC-CHUNK-421.
-
-| Input | Value |
-|-------|-------|
-| `sentences` | `["First sentence.", "Has the symbol ⊕ inside.", "Third sentence."]` (the sentinel character appears in sentence 1) |
-| `embedder` | any conforming embedder |
-| `max_tokens_per_segment` | `512` |
-
-**Expected behavior (if the implementation uses the sentinel-token
-method):** the implementation detects the collision and either
-chooses a different sentinel or falls back to a different counting
-method (e.g., offset-based) and produces correct per-sentence token
-counts.
-
-**Expected behavior (if the implementation uses a different
-counting method, e.g., offset-based):** the input is handled without
-any special-case logic.
-
-In both cases the final output is a `[3, D]` matrix with correctly
-mean-pooled rows.
-
-## TV-408 — Per-sentence token counts match embedder tokenization (model-independent)
+## TV-408 — Embedder owns per-sentence token alignment (model-independent)
 
 Validates SPEC-CHUNK-420.
 
 | Input | Value |
 |-------|-------|
 | `sentences` | `["AB", "CD"]` |
-| `embedder` | a fake whose `tokenize("AB" + "CD")` returns `[a, b, c, d]` (4 tokens, no subword merging) AND whose `tokenize` of each sentence in isolation also returns 2 tokens each. The fake's `embed("ABCD")` returns 4 rows. |
+| `embedder` | a fake satisfying the contract: `count_tokens(["AB","CD"]) == [2, 2]` and `embed_segment(["AB","CD"])` returns `([4-row matrix], [2, 2])`. |
 
 **Expected output:** sentence 0's row is the mean of rows 0–1 of the
-embedder output; sentence 1's row is the mean of rows 2–3. The sum
-of per-sentence token counts (2 + 2 = 4) equals the embedder output
-row count.
+embedder output; sentence 1's row is the mean of rows 2–3. The library
+allocates rows according to the embedder's reported counts.
+
+(The previous TV-407 covering sentinel-collision detection has been
+removed: with the protocol simplified, the choice of alignment method
+is the embedder's concern, not the library's. Implementations that
+adopt the sentinel-token method should run their own collision tests
+against their tokenizer.)
 
 ## TV-409 — Many short sentences exhaust largest-remainder allocation (model-independent)
 

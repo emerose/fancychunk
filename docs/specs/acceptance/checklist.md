@@ -168,10 +168,15 @@ If late chunking is not implemented, mark the section N/A. Otherwise:
 - [ ] **SPEC-CHUNK-412** — Per-segment encoding, largest-remainder
   apportionment, mean-pool, discard preamble rows. Covered by
   TV-408 (token-count alignment), TV-405 (preamble discard).
-- [ ] **SPEC-CHUNK-420** — Per-sentence token counts match the
-  embedder's tokenization of the joined input. Covered by TV-408.
-- [ ] **SPEC-CHUNK-421** — Sentinel character validation (if using
-  sentinel method). Covered by TV-407.
+- [ ] **SPEC-CHUNK-420** — Per-sentence token alignment is the
+  embedder's responsibility; the library's contract is that
+  `sum(per_sentence_counts) == matrix_row_count`, with the
+  largest-remainder safety net absorbing any drift. Covered by
+  TV-408 (basic alignment) and
+  `test_special_tokens_absorbed_by_embedder` (special-token case).
+- [x] **SPEC-CHUNK-421** — *(Removed.)* Sentinel-method specifics are
+  the embedder's concern; the library no longer prescribes the
+  alignment method.
 - [ ] **SPEC-CHUNK-430** — Output normalization honored. Covered by
   TV-410.
 - [ ] **SPEC-CHUNK-440** — Deterministic given a deterministic embedder.

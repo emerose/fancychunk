@@ -34,6 +34,72 @@ chunks, chunk_embeddings = split_chunks(chunklets, embeddings, max_size=2048)
 paths = heading_paths(chunks)
 ```
 
+## Late chunking — bring your own embedder
+
+`embed_with_late_chunking` is an optional stage that improves
+retrieval quality on documents with anaphoric references ("it",
+"this method", "the algorithm") by giving each sentence an embedding
+computed in the context of its neighbours. It costs about 4 MTEB
+points on retrieval benchmarks vs. naive per-chunklet embedding, at
+the price of ~30% more compute.
+
+**The library doesn't ship any embedding model.** It owns the
+algorithm — segment planning with backward preamble, mean-pool per
+sentence, preamble discard, optional L2 normalize — and delegates
+everything tokenizer-specific to a caller-supplied
+[`SegmentEmbedder`](docs/specs/04-late-chunking.md#embedder-contract).
+The contract is two methods and one attribute:
+
+```python
+class SegmentEmbedder(Protocol):
+    n_ctx: int
+    def count_tokens(self, sentences: list[str]) -> list[int]: ...
+    def embed_segment(
+        self, sentences: list[str]
+    ) -> tuple[NDArray, list[int]]: ...
+```
+
+Adapters for three deployment shapes ship as runnable examples:
+
+| File | Backend | Best for |
+|---|---|---|
+| [`examples/embedders/qwen3_mlx.py`](examples/embedders/qwen3_mlx.py) | MLX + Qwen3-Embedding | Apple Silicon; offline / batch |
+| [`examples/embedders/huggingface_offsets.py`](examples/embedders/huggingface_offsets.py) | HuggingFace transformers | Any platform; recommended default |
+| [`examples/embedders/remote_http.py`](examples/embedders/remote_http.py) | HTTP client + local tokenizer | When the GPU lives on another machine |
+
+See [`examples/embedders/README.md`](examples/embedders/README.md)
+for guidance on picking an alignment method (offset-based vs.
+sentinel-token), handling special tokens, and writing your own
+adapter — typically ~20 lines of glue.
+
+Wire it into the pipeline between stages 2 and 3:
+
+```python
+from examples.embedders.huggingface_offsets import HFOffsetEmbedder
+from fancychunk import (
+    embed_with_late_chunking,
+    split_chunklets,
+    split_chunks,
+    split_sentences,
+)
+
+embedder = HFOffsetEmbedder("BAAI/bge-m3")
+
+sentences = split_sentences(doc, max_len=2048)
+chunklets = split_chunklets(sentences, max_size=2048)
+
+# Per-sentence embeddings with surrounding context.
+sentence_embeddings = embed_with_late_chunking(sentences, embedder)
+
+# Aggregate to per-chunklet (mean-pool over the sentences inside
+# each chunklet — the caller's responsibility).
+chunklet_embeddings = aggregate_to_chunklets(
+    sentence_embeddings, sentences, chunklets
+)
+
+chunks, _ = split_chunks(chunklets, chunklet_embeddings, max_size=2048)
+```
+
 ## Observability
 
 Every public stage emits an OpenTelemetry span with attributes that
@@ -51,7 +117,7 @@ Span names are `fancychunk.<function>` (e.g.
 | `split_sentences` | `document.length`, `min_len`, `max_len`, `segmenter`, `sentences.count`, `short_circuit` |
 | `split_chunklets` | `sentences.count`, `max_size`, `custom_costs`, `chunklets.count`, `short_circuit` |
 | `split_chunks` | `chunklets.count`, `max_size`, `embedding.dim`, `chunks.count`, `short_circuit` |
-| `embed_with_late_chunking` | `sentences.count`, `embedder`, `embedder.n_ctx`, `budget`, `preamble_budget`, `preamble_fraction`, `normalize`, `sentinel_method`, `segments.count`, `embedding.dim` |
+| `embed_with_late_chunking` | `sentences.count`, `embedder`, `embedder.n_ctx`, `budget`, `preamble_budget`, `preamble_fraction`, `normalize`, `segments.count`, `embedding.dim` |
 | `heading_paths` | `chunks.count`, `paths.non_empty` |
 
 To see them locally, install `opentelemetry-sdk` and configure a

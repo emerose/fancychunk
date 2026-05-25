@@ -246,6 +246,27 @@ and 3.13 on every push. Tests use the lightweight punctuation
 segmenter so CI doesn't need the SaT weights; set
 `FANCYCHUNK_TEST_USE_SAT=1` to exercise the real model.
 
+## Releases
+
+Tags of the form `vX.Y.Z` on `main` trigger the release workflow
+(`.github/workflows/release.yml`), which builds `sdist` + `wheel` and
+publishes to PyPI via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
+— no API tokens stored anywhere. The first publish has to be done
+manually (to reserve the project name on PyPI); subsequent releases
+ride the workflow.
+
+To cut a release:
+
+```bash
+# 1. Update the version (single source of truth is pyproject.toml).
+# 2. Update CHANGELOG.md.
+# 3. Tag and push:
+git tag -a v0.1.1 -m "Describe the release"
+git push origin v0.1.1
+```
+
+The `release` workflow takes over from there.
+
 ## Acknowledgments
 
 The three-stage pipeline (sentence → chunklet → chunk), the

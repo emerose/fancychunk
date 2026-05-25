@@ -1,0 +1,58 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# PyPI Trusted Publishing: this workflow's identity (repo + workflow
+# file + environment) is what PyPI authorizes, no API token stored
+# anywhere. Configure once at
+# https://pypi.org/manage/account/publishing/ — see README §Releases.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Show artifacts
+        run: ls -lh dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No ``with:`` token field — Trusted Publishing uses the
+        # workflow's OIDC identity instead. PyPI must have the
+        # corresponding "trusted publisher" configured pointing at
+        # this repo + workflow file + environment.

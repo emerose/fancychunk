@@ -12,6 +12,7 @@ from markdown_it import MarkdownIt
 from numpy.typing import NDArray
 
 from . import _constants as C
+from ._telemetry import get_tracer
 from ._typing import Matrix, Vector
 from .errors import (
     OversizedChunkletError,
@@ -41,40 +42,50 @@ def split_chunks(
             f"{len(chunklets)} entries"
         )
 
-    # SPEC-CHUNK-340 — empty input.
-    if not chunklets:
-        return [], []
+    with get_tracer().start_as_current_span("fancychunk.split_chunks") as span:
+        span.set_attribute("fancychunk.chunklets.count", len(chunklets))
+        span.set_attribute("fancychunk.max_size", max_size)
+        if emb.size:
+            span.set_attribute("fancychunk.embedding.dim", int(emb.shape[1]))
 
-    # SPEC-CHUNK-342 — zero-norm embedding.
-    norms = np.linalg.norm(emb, axis=1)
-    if np.any(norms == 0):
-        raise ZeroNormEmbeddingError(
-            "one or more chunklet embeddings have L2 norm 0"
-        )
+        # SPEC-CHUNK-340 — empty input.
+        if not chunklets:
+            span.set_attribute("fancychunk.chunks.count", 0)
+            span.set_attribute("fancychunk.short_circuit", "empty")
+            return [], []
 
-    # SPEC-CHUNK-341 — oversized chunklet.
-    lengths = [len(c) for c in chunklets]
-    for idx, ln in enumerate(lengths):
-        if ln > max_size:
-            raise OversizedChunkletError(
-                f"chunklet {idx} has length {ln} > max_size {max_size}"
+        # SPEC-CHUNK-342 — zero-norm embedding.
+        norms = np.linalg.norm(emb, axis=1)
+        if np.any(norms == 0):
+            raise ZeroNormEmbeddingError(
+                "one or more chunklet embeddings have L2 norm 0"
             )
 
-    # SPEC-CHUNK-340 — single chunklet.
-    if len(chunklets) == 1:
-        return [chunklets[0]], [emb]
+        # SPEC-CHUNK-341 — oversized chunklet.
+        lengths = [len(c) for c in chunklets]
+        for idx, ln in enumerate(lengths):
+            if ln > max_size:
+                raise OversizedChunkletError(
+                    f"chunklet {idx} has length {ln} > max_size {max_size}"
+                )
 
-    # SPEC-CHUNK-340 — total fits.
-    if sum(lengths) <= max_size:
-        return ["".join(chunklets)], [emb]
+        # SPEC-CHUNK-340 — single chunklet.
+        if len(chunklets) == 1:
+            span.set_attribute("fancychunk.chunks.count", 1)
+            span.set_attribute("fancychunk.short_circuit", "single_chunklet")
+            return [chunklets[0]], [emb]
 
-    sim = _partition_similarities(emb, chunklets, lengths)
-    chunks, splits = _solve_partition(chunklets, lengths, sim, max_size)
-    # Build chunk_embeddings from the original input rows.
-    chunk_embeddings: list[Matrix] = []
-    for a, b in splits:
-        chunk_embeddings.append(emb[a:b])
-    return chunks, chunk_embeddings
+        # SPEC-CHUNK-340 — total fits.
+        if sum(lengths) <= max_size:
+            span.set_attribute("fancychunk.chunks.count", 1)
+            span.set_attribute("fancychunk.short_circuit", "total_fits")
+            return ["".join(chunklets)], [emb]
+
+        sim = _partition_similarities(emb, chunklets, lengths)
+        chunks, splits = _solve_partition(chunklets, lengths, sim, max_size)
+        chunk_embeddings: list[Matrix] = [emb[a:b] for a, b in splits]
+        span.set_attribute("fancychunk.chunks.count", len(chunks))
+        return chunks, chunk_embeddings
 
 
 def _partition_similarities(

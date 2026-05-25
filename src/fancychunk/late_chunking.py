@@ -17,6 +17,7 @@ from typing import Protocol, Sequence
 import numpy as np
 
 from . import _constants as C
+from ._telemetry import get_tracer
 from ._typing import Matrix
 from .errors import SentenceExceedsContextError, ValidationError
 
@@ -57,80 +58,91 @@ def embed_with_late_chunking(
             f"max_tokens_per_segment ({max_tokens_per_segment}) exceeds "
             f"embedder.n_ctx ({n_ctx})"
         )
-    if not sentences:
-        return np.zeros((0, _infer_dim(embedder)), dtype=np.float64)
 
-    budget = max_tokens_per_segment if max_tokens_per_segment is not None else n_ctx
-    preamble_budget = math.floor(preamble_fraction * budget)
+    with get_tracer().start_as_current_span("fancychunk.embed_with_late_chunking") as span:
+        span.set_attribute("fancychunk.sentences.count", len(sentences))
+        span.set_attribute("fancychunk.preamble_fraction", preamble_fraction)
+        span.set_attribute("fancychunk.normalize", normalize)
+        span.set_attribute("fancychunk.embedder.n_ctx", n_ctx)
+        span.set_attribute("fancychunk.embedder", type(embedder).__name__)
 
-    # Pre-compute isolated tokenization counts (used for segment construction).
-    iso_token_counts = [len(embedder.tokenize(s)) for s in sentences]
-    # SPEC-CHUNK-451 — refuse early if any sentence exceeds n_ctx.
-    for idx, count in enumerate(iso_token_counts):
-        if count > n_ctx:
-            raise SentenceExceedsContextError(
-                f"sentence {idx} tokenizes to {count} tokens > embedder.n_ctx {n_ctx}"
-            )
+        if not sentences:
+            span.set_attribute("fancychunk.segments.count", 0)
+            return np.zeros((0, _infer_dim(embedder)), dtype=np.float64)
 
-    use_sentinel = _can_use_sentinel(sentences, sentinel)
+        budget = max_tokens_per_segment if max_tokens_per_segment is not None else n_ctx
+        preamble_budget = math.floor(preamble_fraction * budget)
+        span.set_attribute("fancychunk.budget", budget)
+        span.set_attribute("fancychunk.preamble_budget", preamble_budget)
 
-    segments = _build_segments(
-        iso_token_counts=iso_token_counts,
-        n_ctx=n_ctx,
-        budget=budget,
-        preamble_budget=preamble_budget,
-    )
+        iso_token_counts = [len(embedder.tokenize(s)) for s in sentences]
+        for idx, count in enumerate(iso_token_counts):
+            if count > n_ctx:
+                raise SentenceExceedsContextError(
+                    f"sentence {idx} tokenizes to {count} tokens > embedder.n_ctx {n_ctx}"
+                )
 
-    n = len(sentences)
-    dim = _infer_dim(embedder)
-    out = np.zeros((n, dim), dtype=np.float64)
-    filled = np.zeros(n, dtype=bool)
+        use_sentinel = _can_use_sentinel(sentences, sentinel)
+        span.set_attribute("fancychunk.sentinel_method", use_sentinel)
 
-    for seg in segments:
-        seg_start, content_start, seg_end = seg
-        seg_sentences = sentences[seg_start:seg_end]
-        joined, per_sentence_counts = _encode_segment(
-            embedder=embedder,
-            seg_sentences=seg_sentences,
-            sentinel=sentinel if use_sentinel else None,
+        segments = _build_segments(
+            iso_token_counts=iso_token_counts,
+            n_ctx=n_ctx,
+            budget=budget,
+            preamble_budget=preamble_budget,
         )
-        token_embeddings = embedder.embed(joined)
-        if token_embeddings.shape[0] != sum(per_sentence_counts):
-            per_sentence_counts = _largest_remainder(
-                token_embeddings.shape[0], per_sentence_counts
+        span.set_attribute("fancychunk.segments.count", len(segments))
+
+        n = len(sentences)
+        dim = _infer_dim(embedder)
+        out = np.zeros((n, dim), dtype=np.float64)
+        filled = np.zeros(n, dtype=bool)
+
+        for seg in segments:
+            seg_start, content_start, seg_end = seg
+            seg_sentences = sentences[seg_start:seg_end]
+            joined, per_sentence_counts = _encode_segment(
+                embedder=embedder,
+                seg_sentences=seg_sentences,
+                sentinel=sentinel if use_sentinel else None,
             )
-        cursor = 0
-        for local_idx, count in enumerate(per_sentence_counts):
-            sentence_global_idx = seg_start + local_idx
-            if count <= 0:
-                # SPEC-CHUNK-452 — raise on zero-allocation.
-                if not filled[sentence_global_idx]:
-                    raise ValidationError(
-                        f"sentence {sentence_global_idx} received zero "
-                        "tokens; cannot mean-pool"
-                    )
+            token_embeddings = embedder.embed(joined)
+            if token_embeddings.shape[0] != sum(per_sentence_counts):
+                per_sentence_counts = _largest_remainder(
+                    token_embeddings.shape[0], per_sentence_counts
+                )
+            cursor = 0
+            for local_idx, count in enumerate(per_sentence_counts):
+                sentence_global_idx = seg_start + local_idx
+                if count <= 0:
+                    if not filled[sentence_global_idx]:
+                        raise ValidationError(
+                            f"sentence {sentence_global_idx} received zero "
+                            "tokens; cannot mean-pool"
+                        )
+                    cursor += count
+                    continue
+                if (
+                    content_start <= sentence_global_idx < seg_end
+                    and not filled[sentence_global_idx]
+                ):
+                    pooled = token_embeddings[cursor : cursor + count].mean(axis=0)
+                    out[sentence_global_idx] = pooled
+                    filled[sentence_global_idx] = True
                 cursor += count
-                continue
-            if (
-                content_start <= sentence_global_idx < seg_end
-                and not filled[sentence_global_idx]
-            ):
-                pooled = token_embeddings[cursor : cursor + count].mean(axis=0)
-                out[sentence_global_idx] = pooled
-                filled[sentence_global_idx] = True
-            cursor += count
 
-    if not np.all(filled):
-        missing = np.where(~filled)[0].tolist()
-        raise ValidationError(
-            f"sentences {missing} did not receive content embeddings"
-        )
+        if not np.all(filled):
+            missing = np.where(~filled)[0].tolist()
+            raise ValidationError(
+                f"sentences {missing} did not receive content embeddings"
+            )
 
-    if normalize:
-        norms = np.linalg.norm(out, axis=1, keepdims=True)
-        norms = np.where(norms == 0, 1.0, norms)
-        out = out / norms
-    return out
+        if normalize:
+            norms = np.linalg.norm(out, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            out = out / norms
+        span.set_attribute("fancychunk.embedding.dim", dim)
+        return out
 
 
 def _infer_dim(embedder: TokenLevelEmbedder) -> int:

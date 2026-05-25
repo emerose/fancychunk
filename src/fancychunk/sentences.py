@@ -15,6 +15,7 @@ Internals:
 
 from __future__ import annotations
 
+import types
 from typing import Callable
 
 import numpy as np
@@ -23,10 +24,18 @@ from numpy.typing import NDArray
 from . import _constants as C
 from ._markdown import heading_spans
 from ._segmenter import SentenceSegmenter, make_segmenter
+from ._telemetry import get_tracer
 from ._typing import Vector
 from .errors import UnsplittableDocumentError, ValidationError
 
 _KnownArg = Vector | Callable[[str], Vector] | None
+
+
+def _describe_callable(obj: object) -> str:
+    """Best-effort human-readable name for a callable, used in trace attrs."""
+    if isinstance(obj, types.FunctionType):
+        return obj.__name__
+    return type(obj).__name__
 
 
 def split_sentences(
@@ -49,34 +58,52 @@ def split_sentences(
     if max_len is not None and max_len <= 0:
         raise ValidationError("max_len must be positive when set")
 
-    # SPEC-CHUNK-117 — empty document.
-    if not document:
-        return []
+    with get_tracer().start_as_current_span("fancychunk.split_sentences") as span:
+        span.set_attribute("fancychunk.document.length", len(document))
+        span.set_attribute("fancychunk.min_len", min_len)
+        if max_len is not None:
+            span.set_attribute("fancychunk.max_len", max_len)
+        resolved = make_segmenter(segmenter)
+        span.set_attribute("fancychunk.segmenter", _describe_callable(resolved))
 
-    # SPEC-CHUNK-101 — every sentence must contain a non-whitespace
-    # character. A document consisting only of whitespace cannot
-    # produce any conforming sentence, so it is treated the same as
-    # the empty document.
-    if not document.strip():
-        return []
+        # SPEC-CHUNK-117 — empty document.
+        if not document:
+            span.set_attribute("fancychunk.sentences.count", 0)
+            span.set_attribute("fancychunk.short_circuit", "empty")
+            return []
 
-    # SPEC-CHUNK-114 — short-circuit when document is no longer than min_len.
-    if len(document) <= min_len:
-        return [document]
+        # SPEC-CHUNK-101 — every sentence must contain a non-whitespace
+        # character. A document consisting only of whitespace cannot
+        # produce any conforming sentence, so it is treated the same as
+        # the empty document.
+        if not document.strip():
+            span.set_attribute("fancychunk.sentences.count", 0)
+            span.set_attribute("fancychunk.short_circuit", "whitespace_only")
+            return []
 
-    n = len(document)
-    predicted = np.asarray(make_segmenter(segmenter)(document), dtype=np.float64)
-    if predicted.shape != (n,):
-        raise ValidationError(
-            f"segmenter returned shape {predicted.shape}; expected ({n},)"
-        )
+        # SPEC-CHUNK-114 — short-circuit when document is no longer than min_len.
+        if len(document) <= min_len:
+            span.set_attribute("fancychunk.sentences.count", 1)
+            span.set_attribute("fancychunk.short_circuit", "below_min_len")
+            return [document]
 
-    known = _resolve_known(known_boundary_probas, document, n)
-    merged = _merge_known(predicted, known)
-    final = _whitespace_trailing(document, merged)
+        n = len(document)
+        predicted = np.asarray(resolved(document), dtype=np.float64)
+        if predicted.shape != (n,):
+            raise ValidationError(
+                f"segmenter returned shape {predicted.shape}; expected ({n},)"
+            )
 
-    boundaries = _dp_split(final, min_len=min_len, max_len=max_len)
-    return _slice(document, boundaries)
+        known = _resolve_known(known_boundary_probas, document, n)
+        merged = _merge_known(predicted, known)
+        final = _whitespace_trailing(document, merged)
+
+        boundaries = _dp_split(final, min_len=min_len, max_len=max_len)
+        out = _slice(document, boundaries)
+        span.set_attribute("fancychunk.sentences.count", len(out))
+        return out
+
+
 
 
 def _resolve_known(

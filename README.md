@@ -34,6 +34,45 @@ chunks, chunk_embeddings = split_chunks(chunklets, embeddings, max_size=2048)
 paths = heading_paths(chunks)
 ```
 
+## Observability
+
+Every public stage emits an OpenTelemetry span with attributes that
+describe input/output sizes and the option choices that affected the
+outcome. The library depends only on `opentelemetry-api`; spans are
+zero-cost no-ops until the host application configures an SDK and
+exporter.
+
+Span names are `fancychunk.<function>` (e.g.
+`fancychunk.split_sentences`). Attribute keys use the
+`fancychunk.<key>` namespace:
+
+| Stage | Attribute keys |
+|---|---|
+| `split_sentences` | `document.length`, `min_len`, `max_len`, `segmenter`, `sentences.count`, `short_circuit` |
+| `split_chunklets` | `sentences.count`, `max_size`, `custom_costs`, `chunklets.count`, `short_circuit` |
+| `split_chunks` | `chunklets.count`, `max_size`, `embedding.dim`, `chunks.count`, `short_circuit` |
+| `embed_with_late_chunking` | `sentences.count`, `embedder`, `embedder.n_ctx`, `budget`, `preamble_budget`, `preamble_fraction`, `normalize`, `sentinel_method`, `segments.count`, `embedding.dim` |
+| `heading_paths` | `chunks.count`, `paths.non_empty` |
+
+To see them locally, install `opentelemetry-sdk` and configure a
+console exporter:
+
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+
+provider = TracerProvider()
+provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+trace.set_tracer_provider(provider)
+
+# subsequent fancychunk calls now emit spans to stdout
+```
+
+The library also exposes a standard `logging.Logger` at
+`fancychunk` (currently silent by default; future versions may add
+INFO-level breadcrumbs at stage transitions).
+
 ## What it does
 
 Given a Markdown document, fancychunk partitions it into chunks where
@@ -109,6 +148,37 @@ fancychunk/
 │   └── errors.py                 # Exception hierarchy
 └── tests/                        # pytest suite covering every TV-*
 ```
+
+## Production readiness
+
+This is an alpha release (`0.1.x`). The behaviour the public API
+documents is fully spec-conforming and locked in by the 88-test
+suite; what's *not* yet promised:
+
+- **API stability.** Names and defaults are unlikely to change but
+  aren't yet contract-stable. SemVer applies once the version hits
+  `1.0.0`.
+- **SaT model on first run.** The default segmenter downloads ~408 MB
+  of weights from Hugging Face on first call. For production
+  deployment, either pre-warm the cache during image build or pass
+  `segmenter=punctuation_segmenter` if you can tolerate its quality.
+- **Thread safety.** The module-level SaT singleton and markdown-it
+  parser are reentrant for *read*; the library doesn't synchronise.
+  Concurrent calls from multiple threads work because every operation
+  reads-only. Concurrent first-time SaT loading from multiple threads
+  may load the model twice (harmless but wasteful) — pre-warm if
+  this matters.
+- **No global state writes.** No caches, no temp files, no logging
+  side effects. The library does not call `logging.basicConfig` and
+  attaches no handlers.
+- **Determinism.** Cross-run reproducibility is guaranteed for every
+  stage given a deterministic segmenter / embedder (see
+  SPEC-CHUNK-901 in the specs).
+
+CI runs `pyright` in strict mode and `pytest` against Python 3.12
+and 3.13 on every push. Tests use the lightweight punctuation
+segmenter so CI doesn't need the SaT weights; set
+`FANCYCHUNK_TEST_USE_SAT=1` to exercise the real model.
 
 ## Acknowledgments
 

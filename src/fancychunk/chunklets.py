@@ -13,6 +13,7 @@ from numpy.typing import NDArray
 
 from . import _constants as C
 from ._markdown import compute_line_starts, line_of_offset, openers_by_line
+from ._telemetry import get_tracer
 from ._typing import Vector
 from .errors import OversizedSentenceError, ValidationError
 
@@ -30,30 +31,41 @@ def split_chunklets(
     if max_size <= 0:
         raise ValidationError("max_size must be positive")
 
-    # SPEC-CHUNK-260 — empty input.
-    if not sentences:
-        return []
-    # SPEC-CHUNK-261 — single-sentence input passes through unchanged.
-    if len(sentences) == 1:
-        return [sentences[0]]
+    with get_tracer().start_as_current_span("fancychunk.split_chunklets") as span:
+        span.set_attribute("fancychunk.sentences.count", len(sentences))
+        span.set_attribute("fancychunk.max_size", max_size)
+        span.set_attribute(
+            "fancychunk.custom_costs",
+            boundary_cost is not None or statement_cost is not None,
+        )
 
-    # SPEC-CHUNK-263 — reject if any sentence alone exceeds max_size.
-    for idx, s in enumerate(sentences):
-        if len(s) > max_size:
-            raise OversizedSentenceError(
-                f"sentence {idx} has length {len(s)} > max_size {max_size}"
-            )
+        # SPEC-CHUNK-260 — empty input.
+        if not sentences:
+            span.set_attribute("fancychunk.chunklets.count", 0)
+            span.set_attribute("fancychunk.short_circuit", "empty")
+            return []
+        # SPEC-CHUNK-261 — single-sentence input passes through unchanged.
+        if len(sentences) == 1:
+            span.set_attribute("fancychunk.chunklets.count", 1)
+            span.set_attribute("fancychunk.short_circuit", "single_sentence")
+            return [sentences[0]]
 
-    bcost = boundary_cost if boundary_cost is not None else _default_boundary_cost
-    scost = statement_cost if statement_cost is not None else _default_statement_cost
+        # SPEC-CHUNK-263 — reject if any sentence alone exceeds max_size.
+        for idx, s in enumerate(sentences):
+            if len(s) > max_size:
+                raise OversizedSentenceError(
+                    f"sentence {idx} has length {len(s)} > max_size {max_size}"
+                )
 
-    # Per-sentence boundary probabilities from the joined document.
-    probas = _per_sentence_boundary_probas(sentences)
-    # Per-sentence statement counts.
-    statements = _statement_counts([_word_count(s) for s in sentences])
+        bcost = boundary_cost if boundary_cost is not None else _default_boundary_cost
+        scost = statement_cost if statement_cost is not None else _default_statement_cost
 
-    chunklets = _dp_partition(sentences, max_size, probas, statements, bcost, scost)
-    return chunklets
+        probas = _per_sentence_boundary_probas(sentences)
+        statements = _statement_counts([_word_count(s) for s in sentences])
+
+        chunklets = _dp_partition(sentences, max_size, probas, statements, bcost, scost)
+        span.set_attribute("fancychunk.chunklets.count", len(chunklets))
+        return chunklets
 
 
 def _default_boundary_cost(p: Vector) -> float:

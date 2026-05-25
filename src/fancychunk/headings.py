@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 
 from . import _constants as C
+from ._telemetry import get_tracer
 
 # Anchoring is done manually by the scanner (only call ``.match`` at
 # line-start positions), so this pattern does not include ``^``.
@@ -19,13 +20,19 @@ def heading_paths(chunks: list[str]) -> list[str]:
 
     Implements ``docs/specs/05-contextual-headings.md``.
     """
-    paths: list[str] = []
-    stack: list[str | None] = [None] * C.MAX_HEADING_LEVELS
+    with get_tracer().start_as_current_span("fancychunk.heading_paths") as span:
+        span.set_attribute("fancychunk.chunks.count", len(chunks))
+        paths: list[str] = []
+        stack: list[str | None] = [None] * C.MAX_HEADING_LEVELS
 
-    for chunk in chunks:
-        paths.append(_render_path(stack))
-        _scan_and_update(chunk, stack)
-    return paths
+        for chunk in chunks:
+            paths.append(_render_path(stack))
+            _scan_and_update(chunk, stack)
+        span.set_attribute(
+            "fancychunk.paths.non_empty",
+            sum(1 for p in paths if p),
+        )
+        return paths
 
 
 def _scan_and_update(chunk: str, stack: list[str | None]) -> None:

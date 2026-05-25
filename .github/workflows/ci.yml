@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-${{ matrix.python-version }}-
+
+      - name: Install package + dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pyright "opentelemetry-sdk>=1.20"
+
+      - name: Type-check (pyright strict)
+        run: pyright src/fancychunk
+
+      - name: Test (without SaT — segmenter swapped to punctuation via conftest)
+        run: pytest -q
+
+      # SaT model is 408 MB. Don't fetch it in CI by default; a manual
+      # workflow run can flip ``FANCYCHUNK_TEST_USE_SAT=1`` if needed.

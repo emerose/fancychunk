@@ -70,7 +70,7 @@ SPEC-CHUNK-202.
 ```python
 def split_chunks(
     chunklets: list[str],
-    chunklet_embeddings: Matrix | None = None,
+    embedder: ChunkletEmbedder | None = None,
     max_size: int = 2048,
 ) -> tuple[list[str], list[Matrix]]
 ```
@@ -80,7 +80,7 @@ Implements [spec 03](../03-semantic-chunking.md).
 | Parameter | Default | Contract |
 |-----------|---------|----------|
 | `chunklets` | — | Ordered list of chunklets. |
-| `chunklet_embeddings` | — | Matrix `[N, D]`. One row per chunklet, in order. All rows must have nonzero L2 norm. |
+| `embedder` | implementation-defined recommended default when `None` (typically the bundled "default" embedder for the current hardware) | Caller-supplied object exposing `embed_chunklets(chunklets) -> Matrix[N, D]`. Each returned row must have nonzero L2 norm. Pass a constant-output embedder (e.g. `fancychunk.embedders.noop()`) for a no-model-download structural-only split. |
 | `max_size` | `2048` | Hard upper bound on chunk length in characters. |
 
 Returns `(chunks, chunk_embeddings)` satisfying SPEC-CHUNK-300
@@ -131,7 +131,7 @@ satisfying SPEC-CHUNK-500 through SPEC-CHUNK-502.
 Common downstream use:
 
 ```python
-chunks, _ = split_chunks(chunklets, embeddings)
+chunks, _ = split_chunks(chunklets)
 paths = heading_paths(chunks)
 texts_for_embedding = [
     (p + "\n" + c) if p else c
@@ -153,8 +153,9 @@ Example:
 ```python
 sentences = split_sentences(doc, max_len=2048)
 chunklets = split_chunklets(sentences, max_size=2048)
-embeddings = my_embedder(chunklets)
-chunks, chunk_embeddings = split_chunks(chunklets, embeddings, max_size=2048)
+chunks, chunk_embeddings = split_chunks(chunklets, max_size=2048)
+# `split_chunks` resolves its `embedder` argument to an
+# implementation-defined recommended default when omitted.
 ```
 
 ## Error contract

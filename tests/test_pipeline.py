@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import NDArray
 
 from fancychunk import (
     heading_paths,
@@ -10,6 +11,20 @@ from fancychunk import (
     split_chunks,
     split_sentences,
 )
+from fancychunk.embedders import noop
+
+
+class _PreCookedEmbedder:
+    """Wraps a precomputed matrix to satisfy ChunkletEmbedder."""
+
+    def __init__(self, matrix: NDArray[np.floating]) -> None:
+        self.matrix = np.asarray(matrix, dtype=np.float64)
+
+    def embed_chunklets(
+        self, chunklets: list[str]
+    ) -> NDArray[np.float64]:
+        assert len(chunklets) == self.matrix.shape[0]
+        return self.matrix
 
 
 # SPEC-CHUNK-900 — concatenation round-trip through all three stages.
@@ -34,7 +49,9 @@ def test_concatenation_round_trip_all_stages() -> None:
     emb = rng.normal(size=(len(chunklets), 8))
     # Make sure no row has near-zero norm.
     emb = emb + 0.01 * np.sign(emb)
-    chunks, chunk_embeddings = split_chunks(chunklets, emb, max_size=2048)
+    chunks, chunk_embeddings = split_chunks(
+        chunklets, _PreCookedEmbedder(emb), max_size=2048
+    )
     assert "".join(chunks) == "".join(chunklets)
     rows = np.vstack(chunk_embeddings)
     assert np.array_equal(rows, emb)
@@ -61,8 +78,8 @@ def test_trivial_input_short_circuits() -> None:
     # Stage 1.
     assert split_sentences("") == []
     assert split_sentences("ab") == ["ab"]
-    # Stage 3.
-    chunks, emb = split_chunks([], np.zeros((0, 4)))
+    # Stage 3 — empty input still short-circuits before any embedder call.
+    chunks, emb = split_chunks([])
     assert chunks == [] and emb == []
 
 
@@ -74,7 +91,19 @@ def test_heading_paths_consistent_with_pipeline() -> None:
     chunklets = split_chunklets(sentences, max_size=2048)
     rng = np.random.default_rng(0)
     emb = rng.normal(size=(len(chunklets), 8)) + 0.01
-    chunks, _ = split_chunks(chunklets, emb, max_size=2048)
+    chunks, _ = split_chunks(chunklets, _PreCookedEmbedder(emb), max_size=2048)
     paths = heading_paths(chunks)
     assert len(paths) == len(chunks)
     assert paths[0] == ""
+
+
+# Pipeline composes cleanly through noop() for a no-model-download path.
+def test_pipeline_with_noop_embedder() -> None:
+    document = (
+        "# Top\n\nFirst paragraph. Second sentence.\n\n"
+        "## Sub\n\nMore body text here.\n"
+    )
+    sentences = split_sentences(document, max_len=2048)
+    chunklets = split_chunklets(sentences, max_size=2048)
+    chunks, _ = split_chunks(chunklets, noop(), max_size=2048)
+    assert "".join(chunks) == "".join(chunklets)

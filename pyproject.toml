@@ -27,13 +27,9 @@ dependencies = [
     # Tracing/observability — API only, no SDK. Calls are no-ops
     # until the caller's application configures an SDK.
     "opentelemetry-api>=1.20",
-]
-
-[project.optional-dependencies]
-# ``pip install fancychunk[embedders]`` installs the deps for the
-# bundled fancychunk.embedders module (fastest / fast / medium / high).
-# Skip this extra if you BYO embedder.
-embedders = [
+    # Bundled embedders (fancychunk.embedders). TODO: split these
+    # back into an optional extra once the install-size story is
+    # worked out — torch alone is ~1 GB and not everyone needs it.
     "torch>=2.0",
     "transformers>=4.40",
     # MLX backend on Apple Silicon — 2-4× faster than torch + MPS for

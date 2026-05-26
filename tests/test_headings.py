@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fancychunk import heading_paths
+from fancychunk import enrich_with_headings, heading_paths
 
 
 # TV-501 / SPEC-CHUNK-540 — empty input.
@@ -90,3 +90,34 @@ def test_tv_509_prepended_path_is_valid_markdown() -> None:
 def test_determinism() -> None:
     chunks = ["# A\n\nText.\n", "More.\n"]
     assert heading_paths(chunks) == heading_paths(chunks)
+
+
+# enrich_with_headings — convenience that prepends the heading path
+# onto each chunk in one call. Chunks whose path is empty pass through
+# unchanged; chunks with a path get the path + "\n" prefix.
+def test_enrich_with_headings_prepends_path() -> None:
+    chunks = [
+        "# Intro\n\nOpening text.\n",
+        "Continuation.\n",
+        "## Methods\n\nDetails.\n",
+    ]
+    enriched = enrich_with_headings(chunks)
+    assert len(enriched) == 3
+    # First chunk: heading is inside the chunk itself; path at chunk
+    # start is empty, so the chunk is returned unchanged.
+    assert enriched[0] == chunks[0]
+    # Second chunk: lives under "# Intro\n", path is non-empty.
+    assert enriched[1].startswith("# Intro")
+    assert enriched[1].endswith(chunks[1])
+    # Third chunk: same — path at its start is "# Intro\n".
+    assert enriched[2].startswith("# Intro")
+    assert enriched[2].endswith(chunks[2])
+
+
+def test_enrich_with_headings_empty_input() -> None:
+    assert enrich_with_headings([]) == []
+
+
+def test_enrich_with_headings_no_headings_passthrough() -> None:
+    chunks = ["First.\n", "Second.\n", "Third.\n"]
+    assert enrich_with_headings(chunks) == chunks

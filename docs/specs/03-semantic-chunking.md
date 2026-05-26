@@ -18,7 +18,7 @@ that idea.
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `chunklets` | list of strings | yes | — | An ordered sequence of chunklets, typically from stage 2. |
-| `chunklet_embeddings` | matrix `[N, D]` of floats, or `None` | no | `None` | One row per chunklet, in the same order. Each row must have nonzero L2 norm. When omitted, the cosine-similarity term is dropped and the partition similarity is uniformly `1.0` for every candidate split (see SPEC-CHUNK-320 §No-embeddings path). |
+| `embedder` | `ChunkletEmbedder` (object exposing `embed_chunklets(chunklets) -> matrix[N, D]`), or `None` | no | `None` → resolves lazily to an implementation-defined recommended default | Caller-supplied embedder that produces one pooled vector per chunklet. The stage calls `embedder.embed_chunklets(chunklets)` exactly once to obtain the matrix that drives the cosine signal. Each returned row must have nonzero L2 norm (SPEC-CHUNK-342). For a no-model-download structural-only split, pass an embedder that returns identical constant vectors (the Python implementation ships such an embedder as `fancychunk.embedders.noop()`); the cosine-similarity term then collapses uniformly and only heading-aware boundaries shape the split. |
 | `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunk length in characters. (Same default as stage 2; see Spec 02 for the rationale.) |
 
 ## Outputs
@@ -28,18 +28,20 @@ A tuple of two values:
 1. `chunks` — list of strings. Each chunk is the concatenation of one
    or more contiguous input chunklets.
 2. `chunk_embeddings` — list of matrices. The `i`-th matrix has one
-   row per chunklet inside the `i`-th chunk, taken from
-   `chunklet_embeddings` in the same row order.
+   row per chunklet inside the `i`-th chunk, taken from the
+   embedder's output in the same row order. Empty list when
+   `chunklets` is empty (the embedder is not invoked).
 
 Invariants:
 
 - **SPEC-CHUNK-300** — `"".join(chunks) == "".join(chunklets)`.
 - **SPEC-CHUNK-301** — Every chunk is at most `max_size` characters.
-- **SPEC-CHUNK-302** — The rows of `chunklet_embeddings`, concatenated
-  across `chunk_embeddings` in order, equal `chunklet_embeddings`.
-  The returned rows are the *original* input rows; the
-  unit-normalized and discourse-corrected forms used internally
-  during partition similarity construction are not exposed.
+- **SPEC-CHUNK-302** — Let `E = embedder.embed_chunklets(chunklets)`.
+  The rows of the matrices in `chunk_embeddings`, concatenated in
+  order, equal `E`. The returned rows are the *original* embedder
+  output; the unit-normalized and discourse-corrected forms used
+  internally during partition similarity construction are not
+  exposed.
 
 ## Behavior
 
@@ -114,17 +116,20 @@ similarity value.
 **Step 4 — Heading-aware modification (SPEC-CHUNK-322).** Adjust
 `sim[i]` for partition points adjacent to heading chunklets.
 
-**No-embeddings path.** When `chunklet_embeddings` is omitted, steps
-1-3 are skipped: ``sim[i] = 1.0`` for every partition point, the
-discourse-vector step (SPEC-CHUNK-321) does not run, and the
-heading-aware modification of step 4 still applies. The resulting
-DP minimizes the number of selected partition points subject to the
-covering constraint (SPEC-CHUNK-311), with heading-before splits
-preferred (their `sim` is divided by `HEADING_SPLIT_BEFORE_DIVISOR`)
-and heading-after splits forbidden (`HEADING_SPLIT_AFTER_FORBID`).
-This is the "structural-only" mode — useful as a no-dependency
-default and as the fallback when the caller hasn't yet computed
-embeddings.
+**Structural-only mode.** When the caller wants chunking driven only
+by Markdown structure and size — no embedder model loaded — they
+pass an embedder that returns identical constant vectors (e.g.
+`fancychunk.embedders.noop()` in the Python implementation). All
+adjacent-chunklet cosines then equal `1`, the discourse-vector step
+projects the rows to zero and skips per its second skip check
+(SPEC-CHUNK-321 step 6), and the base similarities all settle at
+`sim[i] = 1.0`. The heading-aware modification of step 4 still
+applies, so the DP minimizes the number of selected partition
+points subject to the covering constraint (SPEC-CHUNK-311), with
+heading-before splits preferred (their `sim` is divided by
+`HEADING_SPLIT_BEFORE_DIVISOR`) and heading-after splits forbidden
+(`HEADING_SPLIT_AFTER_FORBID`). This is the fallback when no
+semantic signal is wanted or available.
 
 ### SPEC-CHUNK-321 — Discourse-vector removal
 
@@ -310,23 +315,32 @@ choices.
 
 ### SPEC-CHUNK-340 — Short-circuit: trivial input
 
-- If `chunklets == []`, return `([], [])`.
-- If `len(chunklets) == 1`, return
-  `([chunklets[0]], [chunklet_embeddings])` — one chunk equal to the
-  sole input chunklet, paired with the full input embedding matrix.
-- Otherwise, if `sum(len(c) for c in chunklets) <= max_size`, return
-  `(["".join(chunklets)], [chunklet_embeddings])` — one chunk that
-  concatenates all `N` chunklets, paired with the full input
-  embedding matrix as a single element of the outer list. (The inner
-  matrix has all `N` rows in their original order; concatenating
-  across the single-element outer list yields the original
-  `chunklet_embeddings` unchanged, satisfying SPEC-CHUNK-302.)
+- If `chunklets == []`, return `([], [])`. The embedder is **not**
+  invoked — empty input is recognized before any model load.
+- If `len(chunklets) == 1`, the embedder *is* invoked exactly once to
+  obtain `E = embedder.embed_chunklets(chunklets)`, then return
+  `([chunklets[0]], [E])` — one chunk equal to the sole input
+  chunklet, paired with the full embedder-output matrix.
+- Otherwise, if `sum(len(c) for c in chunklets) <= max_size`, the
+  embedder is invoked once to obtain `E` and the return is
+  `(["".join(chunklets)], [E])` — one chunk concatenating all `N`
+  chunklets, paired with the full embedder output as a single
+  element of the outer list. (The inner matrix has all `N` rows in
+  their original order; concatenating across the single-element
+  outer list yields `E` unchanged, satisfying SPEC-CHUNK-302.)
 
-In all three cases no optimization is performed and the
-heading-aware modification of SPEC-CHUNK-322 is skipped, even if
-the input contains heading chunklets. This is intentional: the
-covering constraint is trivially satisfied, so there is no
-similarity-driven split to bias.
+The single-chunklet and total-fits cases call the embedder so that
+SPEC-CHUNK-302 holds uniformly across all return paths and SPEC-
+CHUNK-342 (zero-norm validation) still gets a chance to fire. No
+partition optimization runs and the heading-aware modification of
+SPEC-CHUNK-322 is skipped, even if the input contains heading
+chunklets — the covering constraint is trivially satisfied, so
+there is no similarity-driven split to bias. An implementation
+that wants to avoid the embedder call for these cases (e.g.,
+because the caller is using `noop()` and doesn't care about the
+return matrix) may do so as long as it returns matrices satisfying
+SPEC-CHUNK-302 — typically by synthesizing a placeholder matrix of
+the correct shape.
 
 ### SPEC-CHUNK-341 — Chunklet exceeds `max_size`
 
@@ -336,8 +350,10 @@ validation error before optimization begins.
 
 ### SPEC-CHUNK-342 — Zero-norm embedding
 
-If any chunklet embedding has L2 norm `0`, the implementation raises a
-validation error before optimization begins.
+If any row of `embedder.embed_chunklets(chunklets)` has L2 norm `0`,
+the implementation raises a validation error before optimization
+begins. The check runs against the embedder's output, not the
+input — a faulty embedder is the most likely source.
 
 ### SPEC-CHUNK-343 — Optimization failure
 
@@ -370,5 +386,11 @@ that partition optimization failed.
 
 ## Unspecified behavior
 
-- Behavior when the embedding matrix has fewer or more rows than the
-  chunklets list. The implementation should validate and raise.
+- Behavior when the embedder's output has a row count different from
+  `len(chunklets)`. The implementation should validate and raise
+  before optimization begins.
+- The specific default embedder chosen when `embedder` is `None`.
+  Implementations are free to ship a hardware-aware recommended
+  default (the Python implementation uses
+  `fancychunk.embedders.default()`), or to reject `None` and require
+  an explicit embedder argument.

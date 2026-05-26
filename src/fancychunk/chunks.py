@@ -6,6 +6,7 @@ Public entry point: ``split_chunks``.
 from __future__ import annotations
 
 import math
+from typing import Protocol
 
 import numpy as np
 from markdown_it import MarkdownIt
@@ -21,23 +22,40 @@ from .errors import (
 )
 
 
+class ChunkletEmbedder(Protocol):
+    """Caller-supplied object producing one pooled vector per chunklet.
+
+    Used by :func:`split_chunks` to compute the cosine signal driving
+    the semantic-split decision. Independent of the
+    :class:`SegmentEmbedder` protocol (used by
+    :func:`embed_with_late_chunking`); a concrete class may satisfy
+    both — the bundled embedders do.
+
+    Methods
+    -------
+    embed_chunklets(chunklets) -> Matrix
+        Return a 2-D matrix with one row per chunklet, in order.
+        Each row must have nonzero L2 norm (SPEC-CHUNK-342).
+    """
+
+    def embed_chunklets(self, chunklets: list[str]) -> Matrix: ...
+
+
 def split_chunks(
     chunklets: list[str],
-    chunklet_embeddings: Matrix | None = None,
+    embedder: ChunkletEmbedder | None = None,
     max_size: int = C.DEFAULT_MAX_SIZE_CHARS,
 ) -> tuple[list[str], list[Matrix]]:
-    """Partition ``chunklets`` (optionally with embeddings) into chunks.
+    """Partition ``chunklets`` into chunks.
 
     Implements ``docs/specs/03-semantic-chunking.md``.
 
-    When ``chunklet_embeddings`` is ``None``, the cosine-similarity term
-    is omitted — partition similarity is uniformly ``1.0`` for every
-    candidate split, the discourse-vector step is skipped, and the
-    heading-aware modification (SPEC-CHUNK-322) is the only signal
-    shaping where splits land. The DP then minimizes the number of
-    splits subject to the ``max_size`` covering constraint, preferring
-    positions immediately before a heading. The returned
-    ``chunk_embeddings`` list is empty in this case.
+    ``embedder`` defaults to ``embedders.default()`` — the hardware-
+    appropriate recommended embedder, a process-wide singleton.
+    Override with any object satisfying the :class:`ChunkletEmbedder`
+    protocol; pass ``embedder=embedders.noop()`` for a
+    no-model-download structural-only split (uniform cosine signal,
+    heading-aware boundaries only).
     """
     if max_size <= 0:
         raise ValidationError("max_size must be positive")
@@ -46,13 +64,14 @@ def split_chunks(
         span.set_attribute("fancychunk.chunklets.count", len(chunklets))
         span.set_attribute("fancychunk.max_size", max_size)
 
-        # SPEC-CHUNK-340 — empty input.
+        # SPEC-CHUNK-340 — empty input. No embedder call.
         if not chunklets:
             span.set_attribute("fancychunk.chunks.count", 0)
             span.set_attribute("fancychunk.short_circuit", "empty")
             return [], []
 
-        # SPEC-CHUNK-341 — oversized chunklet.
+        # SPEC-CHUNK-341 — oversized chunklet (validate before embed
+        # so a bad input doesn't trigger a model load).
         lengths = [len(c) for c in chunklets]
         for idx, ln in enumerate(lengths):
             if ln > max_size:
@@ -60,79 +79,51 @@ def split_chunks(
                     f"chunklet {idx} has length {ln} > max_size {max_size}"
                 )
 
-        # Validate embeddings if supplied.
-        emb: Matrix | None = None
-        if chunklet_embeddings is not None:
-            emb = np.asarray(chunklet_embeddings)
-            if emb.ndim != 2:
-                raise ValidationError(
-                    "chunklet_embeddings must be a 2-D matrix"
-                )
-            if emb.shape[0] != len(chunklets):
-                raise ValidationError(
-                    f"chunklet_embeddings has {emb.shape[0]} rows but "
-                    f"chunklets has {len(chunklets)} entries"
-                )
-            # SPEC-CHUNK-342 — zero-norm embedding.
-            if np.any(np.linalg.norm(emb, axis=1) == 0):
-                raise ZeroNormEmbeddingError(
-                    "one or more chunklet embeddings have L2 norm 0"
-                )
-            span.set_attribute("fancychunk.embedding.dim", int(emb.shape[1]))
-        else:
-            span.set_attribute("fancychunk.structural_only", True)
+        # Resolve the embedder lazily so module import doesn't depend on
+        # the bundled embedders package.
+        if embedder is None:
+            from .embedders import default
+
+            embedder = default()
+
+        # Embed once, then validate.
+        emb = np.asarray(embedder.embed_chunklets(chunklets))
+        if emb.ndim != 2:
+            raise ValidationError(
+                "embedder.embed_chunklets must return a 2-D matrix"
+            )
+        if emb.shape[0] != len(chunklets):
+            raise ValidationError(
+                f"embedder returned {emb.shape[0]} rows but chunklets has "
+                f"{len(chunklets)} entries"
+            )
+        # SPEC-CHUNK-342 — zero-norm embedding.
+        if np.any(np.linalg.norm(emb, axis=1) == 0):
+            raise ZeroNormEmbeddingError(
+                "one or more chunklet embeddings have L2 norm 0"
+            )
+        span.set_attribute("fancychunk.embedding.dim", int(emb.shape[1]))
 
         # SPEC-CHUNK-340 — single chunklet.
         if len(chunklets) == 1:
             span.set_attribute("fancychunk.chunks.count", 1)
             span.set_attribute("fancychunk.short_circuit", "single_chunklet")
-            return [chunklets[0]], [emb] if emb is not None else []
+            return [chunklets[0]], [emb]
 
         # SPEC-CHUNK-340 — total fits.
         if sum(lengths) <= max_size:
             span.set_attribute("fancychunk.chunks.count", 1)
             span.set_attribute("fancychunk.short_circuit", "total_fits")
-            return (
-                ["".join(chunklets)],
-                [emb] if emb is not None else [],
-            )
+            return ["".join(chunklets)], [emb]
 
         tracer = get_tracer()
         with tracer.start_as_current_span("fancychunk.chunks.partition_similarities"):
-            if emb is None:
-                sim = _structural_similarities(chunklets)
-            else:
-                sim = _partition_similarities(emb, chunklets, lengths)
+            sim = _partition_similarities(emb, chunklets, lengths)
         with tracer.start_as_current_span("fancychunk.chunks.dp"):
             chunks, splits = _solve_partition(chunklets, lengths, sim, max_size)
-        chunk_embeddings: list[Matrix] = (
-            [emb[a:b] for a, b in splits] if emb is not None else []
-        )
+        chunk_embeddings: list[Matrix] = [emb[a:b] for a, b in splits]
         span.set_attribute("fancychunk.chunks.count", len(chunks))
         return chunks, chunk_embeddings
-
-
-def _structural_similarities(chunklets: list[str]) -> Vector:
-    """Build a ``sim`` vector for the no-embeddings path.
-
-    Every partition point starts at ``1.0`` (the maximum, so the DP
-    treats them as equally expensive to split at). The SPEC-CHUNK-322
-    heading-aware modification then lowers ``sim`` for splits *before*
-    a heading (cheap) and pins it to ``1.0`` for splits *after* a
-    heading (effectively forbidden — equivalent to the
-    ``HEADING_SPLIT_AFTER_FORBID`` ceiling). With this distribution the
-    DP minimizes the number of splits subject to the covering
-    constraint, preferring positions immediately before a heading.
-    """
-    n = len(chunklets)
-    sim = np.ones(n - 1, dtype=np.float64)
-    # Use sqrt(epsilon) as the floor — same value used by the
-    # similarity path, for consistency with the heading-aware
-    # modification's ``max(..., floor)`` guard.
-    epsilon = float(np.finfo(np.float64).eps)
-    floor = math.sqrt(epsilon)
-    _apply_heading_modification_inplace(sim, chunklets, floor)
-    return sim
 
 
 def _partition_similarities(

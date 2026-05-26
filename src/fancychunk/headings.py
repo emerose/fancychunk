@@ -1,6 +1,8 @@
 """Stage 5 — contextual chunk headings (SPEC-CHUNK-5xx).
 
-Public entry point: ``heading_paths``.
+Public entry points: ``heading_paths`` (the underlying primitive,
+returning the per-chunk path strings) and ``enrich_with_headings``
+(convenience that prepends the path onto each chunk in one call).
 """
 
 from __future__ import annotations
@@ -88,3 +90,31 @@ def _render_path(stack: list[str | None]) -> str:
     if not parts:
         return ""
     return C.HEADING_PATH_SEPARATOR.join(parts)
+
+
+def enrich_with_headings(chunks: list[str]) -> list[str]:
+    """Return ``chunks`` with each one prepended by its Markdown
+    heading path (per :func:`heading_paths`), separated by a blank
+    line. Chunks whose path is empty are returned unchanged.
+
+    The output preserves ``len(chunks)``; the i-th output element
+    corresponds to the i-th input element.
+
+    Implements SPEC-CHUNK-520. ``"".join(enrich_with_headings(chunks))
+    == "".join(chunks)`` does **not** hold — this helper deliberately
+    breaks the concatenation round-trip in exchange for embedding-
+    time outline context.
+    """
+    with get_tracer().start_as_current_span(
+        "fancychunk.enrich_with_headings"
+    ) as span:
+        span.set_attribute("fancychunk.chunks.count", len(chunks))
+        paths = heading_paths(chunks)
+        out = [
+            (p + "\n" + c) if p else c for p, c in zip(paths, chunks)
+        ]
+        span.set_attribute(
+            "fancychunk.paths.non_empty",
+            sum(1 for p in paths if p),
+        )
+        return out

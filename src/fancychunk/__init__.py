@@ -8,8 +8,9 @@ in ``docs/specs/contracts/public-api.md``.
 from __future__ import annotations
 
 from . import _constants as constants
+from . import embedders
 from .chunklets import split_chunklets
-from .chunks import split_chunks
+from .chunks import ChunkletEmbedder, split_chunks
 from .errors import (
     FancyChunkError,
     OptimizationFailedError,
@@ -21,7 +22,7 @@ from .errors import (
     ValidationError,
     ZeroNormEmbeddingError,
 )
-from .headings import heading_paths
+from .headings import enrich_with_headings, heading_paths
 from .late_chunking import SegmentEmbedder, embed_with_late_chunking
 from ._segmenter import SaTSegmenter, SentenceSegmenter, punctuation_segmenter
 from .sentences import split_sentences
@@ -30,8 +31,10 @@ __all__ = [
     "split_sentences",
     "split_chunklets",
     "split_chunks",
+    "ChunkletEmbedder",
     "embed_with_late_chunking",
     "heading_paths",
+    "enrich_with_headings",
     "SaTSegmenter",
     "SentenceSegmenter",
     "punctuation_segmenter",
@@ -46,6 +49,7 @@ __all__ = [
     "OptimizationFailedError",
     "SegmenterError",
     "constants",
+    "embedders",
 ]
 
 try:

@@ -1,5 +1,7 @@
-"""PooledSegmentEmbedder — backs ``fancychunk.embedders.{fastest,
-fast, medium, high}``.
+"""PooledSegmentEmbedder — backs ``fancychunk.embedders``'s
+model-named (``bge_m3`` / ``qwen3_600m`` / ``qwen3_4b`` /
+``qwen3_8b``) and tier-named (``default`` / ``fastest`` / ``fast`` /
+``medium`` / ``high``) factories.
 
 Loads a HuggingFace transformer (or an MLX-format build via
 ``mlx_embeddings``) once, then serves three use cases:
@@ -144,8 +146,10 @@ class PooledSegmentEmbedder:
             )
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError(
-                "fancychunk.embedders requires the [embedders] extra. "
-                "Install with: pip install 'fancychunk[embedders]'"
+                "fancychunk.embedders requires torch + transformers. "
+                "They're declared as required dependencies; if you're "
+                "seeing this, the install was incomplete — try "
+                "reinstalling fancychunk."
             ) from e
 
         self._device = self._pick_torch_device()
@@ -160,8 +164,9 @@ class PooledSegmentEmbedder:
             from mlx_embeddings.utils import load  # type: ignore[import-untyped]
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError(
-                "MLX backend requires mlx_embeddings; install with "
-                "pip install 'fancychunk[embedders]' on macOS."
+                "MLX backend requires mlx_embeddings, which fancychunk "
+                "depends on automatically on Apple Silicon. If you're "
+                "seeing this on macOS arm64, try reinstalling fancychunk."
             ) from e
 
         self._model, tokenizer_wrapper = load(self.model_id)

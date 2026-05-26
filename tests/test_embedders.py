@@ -21,11 +21,18 @@ import pytest
 
 # Importing the embedders module is cheap (lazy model load).
 from fancychunk.embedders import (
+    NoopSegmentEmbedder,
     PooledSegmentEmbedder,
+    bge_m3,
+    default,
     fast,
     fastest,
     high,
     medium,
+    noop,
+    qwen3_4b,
+    qwen3_8b,
+    qwen3_600m,
 )
 
 
@@ -34,7 +41,25 @@ from fancychunk.embedders import (
 # ---------------------------------------------------------------------------
 
 
-def test_factories_return_pooled_segment_embedder() -> None:
+def _mlx_available() -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        import mlx_embeddings  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def test_model_named_factories_return_pooled_segment_embedder() -> None:
+    assert isinstance(bge_m3(), PooledSegmentEmbedder)
+    assert isinstance(qwen3_600m(), PooledSegmentEmbedder)
+    assert isinstance(qwen3_4b(), PooledSegmentEmbedder)
+    assert isinstance(qwen3_8b(), PooledSegmentEmbedder)
+
+
+def test_tier_named_factories_return_pooled_segment_embedder() -> None:
+    assert isinstance(default(), PooledSegmentEmbedder)
     assert isinstance(fastest(), PooledSegmentEmbedder)
     assert isinstance(fast(), PooledSegmentEmbedder)
     assert isinstance(medium(), PooledSegmentEmbedder)
@@ -42,62 +67,147 @@ def test_factories_return_pooled_segment_embedder() -> None:
 
 
 def test_factories_pick_correct_pooling() -> None:
-    assert fastest().pooling == "cls"
-    assert fast().pooling == "last_token"
-    assert medium().pooling == "last_token"
-    assert high().pooling == "last_token"
+    assert bge_m3().pooling == "cls"
+    assert qwen3_600m().pooling == "last_token"
+    assert qwen3_4b().pooling == "last_token"
+    assert qwen3_8b().pooling == "last_token"
 
 
-def test_factories_use_mlx_on_apple_silicon_with_mlx_embeddings() -> None:
-    try:
-        import mlx_embeddings  # noqa: F401
-
-        mlx_available = True
-    except ImportError:
-        mlx_available = False
-    on_apple_silicon = sys.platform == "darwin"
-
-    if on_apple_silicon and mlx_available:
-        assert fastest().model_id.startswith("mlx-community/")
-        assert fast().model_id.startswith("mlx-community/")
-        assert medium().model_id.startswith("mlx-community/")
-        assert high().model_id.startswith("mlx-community/")
+def test_model_factories_pick_mlx_on_apple_silicon() -> None:
+    if _mlx_available():
+        assert bge_m3().model_id.startswith("mlx-community/")
+        assert qwen3_600m().model_id.startswith("mlx-community/")
+        assert qwen3_4b().model_id.startswith("mlx-community/")
+        assert qwen3_8b().model_id.startswith("mlx-community/")
     else:
-        assert fastest().model_id == "BAAI/bge-m3"
-        assert fast().model_id == "Qwen/Qwen3-Embedding-0.6B"
-        assert medium().model_id == "Qwen/Qwen3-Embedding-4B"
-        assert high().model_id == "Qwen/Qwen3-Embedding-8B"
+        assert bge_m3().model_id == "BAAI/bge-m3"
+        assert qwen3_600m().model_id == "Qwen/Qwen3-Embedding-0.6B"
+        assert qwen3_4b().model_id == "Qwen/Qwen3-Embedding-4B"
+        assert qwen3_8b().model_id == "Qwen/Qwen3-Embedding-8B"
 
 
-def test_medium_defaults_to_1024_dim() -> None:
-    assert medium().output_dim == 1024
-    assert medium(dim=512).output_dim == 512
-    assert medium(dim=2560).output_dim == 2560
+def test_qwen_models_default_to_native_dim() -> None:
+    """Native dim by default; MRL truncation only when explicitly requested."""
+    assert qwen3_600m().output_dim is None  # native 1024
+    assert qwen3_4b().output_dim is None  # native 2560
+    assert qwen3_8b().output_dim is None  # native 4096
 
 
-def test_medium_rejects_out_of_range_dim() -> None:
+def test_qwen_models_accept_mrl_dim() -> None:
+    assert qwen3_4b(dim=1024).output_dim == 1024
+    assert qwen3_4b(dim=2560).output_dim == 2560
+    assert qwen3_8b(dim=1024).output_dim == 1024
+    assert qwen3_8b(dim=4096).output_dim == 4096
+
+
+def test_qwen3_4b_rejects_out_of_range_dim() -> None:
     with pytest.raises(ValueError):
-        medium(dim=0)
+        qwen3_4b(dim=0)
     with pytest.raises(ValueError):
-        medium(dim=4096)  # > native 2560 for the 4B model
+        qwen3_4b(dim=4096)  # > native 2560 for the 4B model
 
 
-def test_high_defaults_to_1024_dim() -> None:
-    assert high().output_dim == 1024
-    assert high(dim=512).output_dim == 512
-    assert high(dim=4096).output_dim == 4096
-
-
-def test_high_rejects_out_of_range_dim() -> None:
+def test_qwen3_8b_rejects_out_of_range_dim() -> None:
     with pytest.raises(ValueError):
-        high(dim=0)
+        qwen3_8b(dim=0)
     with pytest.raises(ValueError):
-        high(dim=8192)  # > native 4096 for the 8B model
+        qwen3_8b(dim=8192)  # > native 4096 for the 8B model
 
 
-def test_fastest_and_fast_have_no_mrl_truncation() -> None:
-    assert fastest().output_dim is None
-    assert fast().output_dim is None
+def test_bge_m3_and_qwen3_600m_have_no_mrl_truncation() -> None:
+    assert bge_m3().output_dim is None
+    assert qwen3_600m().output_dim is None
+
+
+# ----- tier-named factory dispatch -----
+
+
+def test_default_picks_qwen3_600m_on_mlx_qwen3_8b_on_torch() -> None:
+    """SPEC: default() picks the hardware-appropriate model.
+
+    * MLX → qwen3_600m at native 1024-dim.
+    * torch → qwen3_8b with MRL truncation to 1024-dim.
+    """
+    embedder = default()
+    if _mlx_available():
+        assert embedder.model_id.endswith("Qwen3-Embedding-0.6B-mxfp8")
+        assert embedder.output_dim is None  # native 1024
+    else:
+        assert embedder.model_id == "Qwen/Qwen3-Embedding-8B"
+        assert embedder.output_dim == 1024
+
+
+def test_fastest_picks_qwen3_600m_on_mlx_bge_m3_on_torch() -> None:
+    embedder = fastest()
+    if _mlx_available():
+        assert embedder.model_id.endswith("Qwen3-Embedding-0.6B-mxfp8")
+    else:
+        assert embedder.model_id == "BAAI/bge-m3"
+
+
+def test_fast_is_qwen3_600m_everywhere() -> None:
+    embedder = fast()
+    if _mlx_available():
+        assert embedder.model_id.endswith("Qwen3-Embedding-0.6B-mxfp8")
+    else:
+        assert embedder.model_id == "Qwen/Qwen3-Embedding-0.6B"
+    assert embedder.pooling == "last_token"
+
+
+def test_medium_aliases_qwen3_4b_with_native_dim_default() -> None:
+    assert medium().output_dim is None  # native 2560
+    assert medium(dim=1024).output_dim == 1024
+
+
+def test_high_aliases_qwen3_8b_with_native_dim_default() -> None:
+    assert high().output_dim is None  # native 4096
+    assert high(dim=1024).output_dim == 1024
+
+
+# ----- noop -----
+
+
+def test_noop_returns_noop_segment_embedder() -> None:
+    assert isinstance(noop(), NoopSegmentEmbedder)
+
+
+def test_noop_embed_chunklets_constant_unit_vectors() -> None:
+    e = noop()
+    chunklets = ["alpha", "beta gamma", "delta"]
+    emb = e.embed_chunklets(chunklets)
+    assert emb.shape == (3, e.embedding_dim)
+    # All rows identical.
+    assert np.allclose(emb[0], emb[1])
+    assert np.allclose(emb[1], emb[2])
+    # Unit norm — satisfies SPEC-CHUNK-342.
+    norms = np.linalg.norm(emb, axis=1)
+    assert np.allclose(norms, 1.0, atol=1e-9)
+
+
+def test_noop_embed_segment_satisfies_row_conservation() -> None:
+    e = noop()
+    sentences = ["one", "two three", "four five six seven"]
+    mat, counts = e.embed_segment(sentences)
+    assert mat.shape[1] == e.embedding_dim
+    assert sum(counts) == mat.shape[0]
+    assert len(counts) == len(sentences)
+
+
+def test_noop_with_split_chunks_structural_only() -> None:
+    """Passing noop() to split_chunks reproduces the structural-only
+    path: every chunklet has the same vector, so the cosine signal
+    is uniform and only the heading-aware modification affects where
+    splits land."""
+    from fancychunk import split_chunks
+
+    chunklets = [
+        "# Heading\n",
+        "First paragraph.\n",
+        "Second paragraph.\n",
+        "Third paragraph.\n",
+    ]
+    chunks, _ = split_chunks(chunklets, noop(), max_size=2048)
+    assert "".join(chunks) == "".join(chunklets)
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +239,14 @@ SAMPLE_SENTENCES = [
 @pytest.mark.parametrize(
     "factory,expected_dim",
     [
-        (fastest, 1024),
-        (fast, 1024),
-        (lambda: medium(dim=1024), 1024),
-        (lambda: medium(dim=512), 512),
-        (lambda: high(dim=1024), 1024),
+        (bge_m3, 1024),
+        (qwen3_600m, 1024),
+        (qwen3_4b, 2560),
+        (lambda: qwen3_4b(dim=1024), 1024),
+        (lambda: qwen3_4b(dim=512), 512),
+        (qwen3_8b, 4096),
+        (lambda: qwen3_8b(dim=1024), 1024),
+        (default, 1024),
     ],
 )
 def test_embed_chunklets_shape_and_norm(factory, expected_dim: int) -> None:
@@ -145,13 +258,13 @@ def test_embed_chunklets_shape_and_norm(factory, expected_dim: int) -> None:
 
 @_requires_models
 def test_embed_chunklets_handles_empty_list() -> None:
-    embedder = fast()
+    embedder = qwen3_600m()
     emb = embedder.embed_chunklets([])
     assert emb.shape == (0, embedder.embedding_dim)
 
 
 @_requires_models
-@pytest.mark.parametrize("factory", [fastest, fast, lambda: medium()])
+@pytest.mark.parametrize("factory", [bge_m3, qwen3_600m, qwen3_4b])
 def test_embedders_implement_segment_embedder_protocol(factory) -> None:
     embedder = factory()
     counts = embedder.count_tokens(SAMPLE_SENTENCES)
@@ -164,25 +277,24 @@ def test_embedders_implement_segment_embedder_protocol(factory) -> None:
 
 
 @_requires_models
-def test_fast_end_to_end_with_split_chunks() -> None:
+def test_qwen3_600m_end_to_end_with_split_chunks() -> None:
     from fancychunk import split_chunklets, split_chunks, split_sentences
     from fancychunk._segmenter import punctuation_segmenter
 
-    embedder = fast()
+    embedder = qwen3_600m()
     doc = "\n\n".join(["# Heading\n", "First paragraph. ", "Second paragraph."])
     sentences = split_sentences(doc, max_len=2048, segmenter=punctuation_segmenter)
     chunklets = split_chunklets(sentences, max_size=2048)
-    embeddings = embedder.embed_chunklets(chunklets)
-    chunks, _ = split_chunks(chunklets, embeddings, max_size=2048)
+    chunks, _ = split_chunks(chunklets, embedder, max_size=2048)
     assert "".join(chunks) == "".join(chunklets)
 
 
 @_requires_models
-def test_fast_end_to_end_with_late_chunking() -> None:
+def test_qwen3_600m_end_to_end_with_late_chunking() -> None:
     from fancychunk import embed_with_late_chunking, split_sentences
     from fancychunk._segmenter import punctuation_segmenter
 
-    embedder = fast()
+    embedder = qwen3_600m()
     doc = "# Heading\n\nFirst sentence. Second sentence. Third sentence.\n"
     sentences = split_sentences(doc, max_len=2048, segmenter=punctuation_segmenter)
     emb = embed_with_late_chunking(sentences, embedder)
@@ -191,9 +303,9 @@ def test_fast_end_to_end_with_late_chunking() -> None:
 
 
 @_requires_models
-def test_medium_mrl_truncation_changes_output() -> None:
-    full = medium(dim=2560)
-    truncated = medium(dim=512)
+def test_qwen3_4b_mrl_truncation_changes_output() -> None:
+    full = qwen3_4b()  # native 2560
+    truncated = qwen3_4b(dim=512)
     full_out = full.embed_chunklets(SAMPLE_CHUNKLETS)
     trunc_out = truncated.embed_chunklets(SAMPLE_CHUNKLETS)
     assert full_out.shape == (len(SAMPLE_CHUNKLETS), 2560)

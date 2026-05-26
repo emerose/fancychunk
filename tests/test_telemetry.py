@@ -95,9 +95,19 @@ def test_split_chunklets_emits_span(captured_spans) -> None:
     assert "fancychunk.chunklets.count" in attrs
 
 
+class _FixedEmbedder:
+    def __init__(self, matrix: np.ndarray) -> None:
+        self.matrix = matrix
+
+    def embed_chunklets(self, chunklets: list[str]) -> np.ndarray:
+        return self.matrix
+
+
 def test_split_chunks_emits_span(captured_spans) -> None:
     exporter, provider = captured_spans
-    chunks, _ = split_chunks(["a chunklet."], np.array([[1.0, 0.0]]))
+    chunks, _ = split_chunks(
+        ["a chunklet."], _FixedEmbedder(np.array([[1.0, 0.0]]))
+    )
     provider.force_flush()
     span = next(
         s

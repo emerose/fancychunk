@@ -6,6 +6,25 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- ``split_chunks`` accepts an optional ``chunklet_embeddings`` argument
+  (now ``None`` by default). The structural-only fallback uses uniform
+  ``sim = 1.0`` + the SPEC-CHUNK-322 heading-aware modification, so
+  the three-stage pipeline runs end-to-end with no embedder at all.
+  SPEC-CHUNK-320 grew a "No-embeddings path" paragraph; the public
+  API contract reflects the new default.
+- ``fancychunk.embedders`` module with three opinionated defaults
+  behind the ``[embedders]`` extra:
+  - ``default()`` → Qwen3-Embedding-0.6B (last-token pooling).
+  - ``fast()`` → BGE-M3 (CLS pooling), ~2.5× faster.
+  - ``high_quality(dim=1024)`` → Qwen3-Embedding-4B with Matryoshka
+    truncation to ``dim`` (default 1024 to match the others' width).
+  All three return a ``PooledSegmentEmbedder`` implementing the
+  ``SegmentEmbedder`` protocol (for late chunking) plus an
+  ``embed_chunklets()`` convenience for pooled per-chunklet
+  embeddings. Lazy model loading; pick a device automatically (mps /
+  cuda / cpu).
+
 ### Changed (breaking — pre-1.0)
 - `embed_with_late_chunking` now takes a `SegmentEmbedder` instead of
   `TokenLevelEmbedder`. The new protocol is two methods + one

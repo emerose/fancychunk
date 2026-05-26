@@ -14,33 +14,25 @@ including a recursive separator list to dodge the worst cuts. This
 is fast and efficient, but can lead to awkward breaks and chunks
 that don't capture a particular idea well.  Other chunkers use an 
 LLM to find meaningful semantic boundaries, but this is slow and
-expensive.
+expensive, and can be inconsistent.
 
 fancychunk attempts to find a middle ground, producing meaningful
-chunks quickly.
+chunks reasonbly quickly. It uses markdown structure alongside
+multiple small, local models to produce meaningful, correctly-sized
+chunks that capture the underlying text's semantic value well.
 
-fancychunk treats
-chunking as three separable problems, each solved by its own
-optimization against its own signal:
+[insert benchmark results: MB/sec throughput and example 
+NDCG@10/Recall@10/MRR@10 stats from ragkit.  compare: 
+- simple token-count splitter from langchain
+- chonkie's recursive splitter
+- chonkie semantic splitter
+- fancychunk]
 
-|                                | char/token splitter | recursive (`\n\n`, `\n`, …) | sentence-N grouping | semantic chunking | **fancychunk** |
-|--------------------------------|:--:|:--:|:--:|:--:|:--:|
-| Never cuts mid-sentence        | ✗ | ~  | ✓ | ✓ | **✓** |
-| Honors Markdown structure      | ✗ | ~  | ✗ | ✗ | **✓** |
-| Detects topic shifts           | ✗ | ✗  | ✗ | ✓ | **opt-in** |
-| Bounded chunk size guarantee   | ✓ | ✓  | ~ | ~ | **✓** |
-| Multi-stage (sentence→group→topic) | ✗ | ✗ | partial | ✗ | **✓** |
-| Contextual heading paths       | ✗ | ✗  | ✗ | ✗ | **✓** |
-| Late chunking (context-aware embeddings) | ✗ | ✗ | ✗ | ✗ | **opt-in** |
-
-Most importantly: fancychunk **doesn't pick one signal** and ride it
-into the ground. Sentences come from punctuation + a learned
-segmenter; chunklet groupings come from Markdown structure and a
-"statement density" measure; final chunks come from embedding
-similarity between adjacent groups. Each stage's output is the next
-stage's input, so a bad call at any one level is contained.
 
 ## What it does
+
+fancychunk treats chunking as three separable problems, each solved 
+by its own optimization against its own signal:
 
 ```
 document  →  split_sentences  →  split_chunklets  →  split_chunks  →  chunks
@@ -49,10 +41,18 @@ document  →  split_sentences  →  split_chunklets  →  split_chunks  →  ch
                                                          discourse-corrected)
 ```
 
-Three stages, three signals, three DPs that each maximize a defined
-cost function rather than guessing with heuristics. Every stage is
-deterministic, fully spec'd, and exhaustively tested
-([93 tests](tests/) against [normative test vectors](docs/specs/test-vectors/)).
+[short explanation of split_sentences with SaT paper reference]
+
+[short explanation of split_chunklets]
+
+[short explanation of split_chunks with paper reference]
+
+
+It then enhances those chunks with two optional steps:
+
+[short explanation of heading path context]
+
+[short explanation of late-chunking]
 
 ## Quick start
 
@@ -72,19 +72,22 @@ chunks, _  = split_chunks(chunklets, max_size=2048)   # structural-only
 paths      = heading_paths(chunks)                    # ["# Top\n## Sub\n", ...]
 ```
 
-For semantic topic-shift splitting, pass an embedding matrix (one row
-per chunklet) as the second argument:
+For semantic topic-shift splitting, supply a chunklet-embedding
+matrix. Either BYO embedder, or use one of the bundled defaults
+(`pip install 'fancychunk[embedders]'`):
 
 ```python
-embeddings = my_embedder(chunklets)
-chunks, _  = split_chunks(chunklets, embeddings, max_size=2048)
+from fancychunk.embedders import default
+
+embedder    = default()                               # Qwen3-Embedding-0.6B
+embeddings  = embedder.embed_chunklets(chunklets)
+chunks, _   = split_chunks(chunklets, embeddings, max_size=2048)
 ```
 
-Without embeddings the splitter still respects sentence boundaries,
-chunklet groupings, Markdown structure, and the heading-aware
-modification — just with no topic-shift signal. With embeddings the
-splitter also detects topic shifts via cosine similarity between
-adjacent chunklets.
+Three bundled choices: `default()` (best quality at 600M tier),
+`fast()` (BGE-M3, ~2.5× faster), `high_quality(dim=1024)` (Qwen3-4B
+with Matryoshka truncation). Skip the install if you BYO embedder —
+the protocol is two methods.
 
 The first call lazily downloads
 [SaT](https://arxiv.org/abs/2406.16678) (408 MB) for sentence

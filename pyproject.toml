@@ -29,6 +29,15 @@ dependencies = [
     "opentelemetry-api>=1.20",
 ]
 
+[project.optional-dependencies]
+# ``pip install fancychunk[embedders]`` installs the deps for the
+# bundled fancychunk.embedders module (default / fast / high_quality).
+# Skip this extra if you BYO embedder.
+embedders = [
+    "torch>=2.0",
+    "transformers>=4.40",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
@@ -51,5 +60,8 @@ target-version = "py312"
 
 [tool.pyright]
 include = ["src/fancychunk"]
+# Bundled embedders subpackage uses HuggingFace transformers, which
+# ships no strict type stubs — drop to standard mode for that path.
+exclude = ["src/fancychunk/embedders"]
 typeCheckingMode = "strict"
 pythonVersion = "3.12"

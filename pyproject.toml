@@ -27,13 +27,25 @@ dependencies = [
     # Tracing/observability — API only, no SDK. Calls are no-ops
     # until the caller's application configures an SDK.
     "opentelemetry-api>=1.20",
-    # Bundled embedders (fancychunk.embedders). TODO: split these
-    # back into an optional extra once the install-size story is
-    # worked out — torch alone is ~1 GB and not everyone needs it.
+]
+
+# Backend extras for the bundled embedders. Pick at least one if
+# you want the real embedders (qwen3_600m, bge_m3, qwen3_4b,
+# qwen3_8b). The base install supports structural-only chunking via
+# embedders.noop(); the heavy ML deps stay opt-in.
+[project.optional-dependencies]
+torch = [
     "torch>=2.0",
     "transformers>=4.40",
-    # MLX backend on Apple Silicon — 2-4× faster than torch + MPS for
-    # the Qwen3 family. Skipped on Linux/Windows via PEP 508 marker.
+]
+mlx = [
+    # macOS arm64 only — PEP 508 markers no-op on other platforms.
+    "mlx>=0.30; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-embeddings>=0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+all = [
+    "torch>=2.0",
+    "transformers>=4.40",
     "mlx>=0.30; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "mlx-embeddings>=0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
@@ -45,6 +57,14 @@ dev = [
     "pyright>=1.1",
     # SDK is dev-only: tests assert spans via the in-memory exporter.
     "opentelemetry-sdk>=1.20",
+    # Pull the full embedder stack in for development so integration
+    # tests (FANCYCHUNK_TEST_USE_EMBEDDERS=1) and ad-hoc work hit
+    # both backends without a separate install step. End users
+    # install via the [torch] / [mlx] / [all] extras above.
+    "torch>=2.0",
+    "transformers>=4.40",
+    "mlx>=0.30; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-embeddings>=0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [tool.hatch.build.targets.wheel]

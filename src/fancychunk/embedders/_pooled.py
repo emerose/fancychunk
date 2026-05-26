@@ -146,10 +146,13 @@ class PooledSegmentEmbedder:
             )
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError(
-                "fancychunk.embedders requires torch + transformers. "
-                "They're declared as required dependencies; if you're "
-                "seeing this, the install was incomplete — try "
-                "reinstalling fancychunk."
+                "This embedder needs the torch backend, which isn't "
+                "installed. Add the [torch] extra:\n"
+                "    pip install 'fancychunk[torch]'\n"
+                "or for both backends:\n"
+                "    pip install 'fancychunk[all]'\n"
+                "(On Apple Silicon, 'fancychunk[mlx]' gives you the same "
+                "models via Apple MLX, ~2-4× faster than torch+MPS.)"
             ) from e
 
         self._device = self._pick_torch_device()
@@ -164,9 +167,10 @@ class PooledSegmentEmbedder:
             from mlx_embeddings.utils import load  # type: ignore[import-untyped]
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError(
-                "MLX backend requires mlx_embeddings, which fancychunk "
-                "depends on automatically on Apple Silicon. If you're "
-                "seeing this on macOS arm64, try reinstalling fancychunk."
+                "MLX backend requires the [mlx] extra (macOS arm64 only):\n"
+                "    pip install 'fancychunk[mlx]'\n"
+                "On other platforms, use the torch backend instead:\n"
+                "    pip install 'fancychunk[torch]'"
             ) from e
 
         self._model, tokenizer_wrapper = load(self.model_id)

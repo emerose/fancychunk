@@ -4,8 +4,15 @@
 > meaningful chunks while remaining reasonably fast and efficient.
 
 ```bash
-pip install fancychunk
+pip install 'fancychunk[torch]'     # most users: qwen3, bge_m3 via torch + transformers
+pip install 'fancychunk[mlx]'       # macOS arm64: same models via Apple MLX (~2-4× faster)
+pip install 'fancychunk[all]'       # both backends
+pip install fancychunk              # no backend: structural-only chunking via noop()
 ```
+
+The base install is ~180 MB; `[torch]` adds ~750 MB on CPU Linux,
+~2.5 GB on CUDA Linux, ~80 MB on macOS; `[mlx]` adds ~40 MB on
+Apple Silicon (no-op elsewhere). Pick the backend you need.
 
 ## How it compares
 
@@ -245,11 +252,14 @@ quality (MTEB Multilingual 64.33, the sub-1B leader), modest
 memory (~0.5 GB on MLX-mxfp8, ~1 GB on torch), and fast enough to
 keep interactive workflows responsive.
 
-The MLX backend is auto-selected on Apple Silicon when
-`mlx_embeddings` is installed (skipped via PEP 508 marker on
-Linux/Windows); the factories transparently pick the
-MLX-community build of each model. MTEB scores are from each
-model's published tables; throughput is measured on this machine.
+The factories live in `fancychunk.embedders` and require one of
+the install extras above (`[torch]` or `[mlx]`). Calling
+`qwen3_600m()` without the right backend installed raises an
+`ImportError` with the install hint baked in. The MLX backend is
+auto-selected on Apple Silicon when `mlx_embeddings` is importable;
+elsewhere the factories fall back to torch (which requires
+`[torch]`). MTEB scores are from each model's published tables;
+throughput is measured on this machine.
 
 Apple Silicon, MLX path (M2 MacBook Air):
 
@@ -342,17 +352,17 @@ entirely.
 
 ## TODO
 
-- **Make heavy dependencies optional again.** Torch alone is ~1 GB
-  and not everyone needs it — BYO-embedder users in particular pay
-  the cost for nothing. Revisit splitting the bundled embedders
-  back into an extra (probably one per backend: `[torch]`,
-  `[mlx]`), with the base install carrying only the structural
-  pipeline + `noop()`. Tracking issue TBD.
 - **Reference adapters could implement `embed_chunklets`.** The
   three example adapters in `examples/embedders/` currently
   implement only the late-chunking half of the protocol (n_ctx +
   count_tokens + embed_segment). Adding a thin `embed_chunklets`
   pass would make them usable as `chunk_document` embedders.
+- **CPU-only torch on Linux** still pulls the CUDA wheel (~2.5 GB)
+  via `pip install 'fancychunk[torch]'`. Users who don't have a
+  GPU and want to skip the CUDA bundle have to install torch
+  themselves first with `pip install torch --index-url
+  https://download.pytorch.org/whl/cpu`. PyPI extras can't express
+  this — document it more prominently or wait for upstream to fix.
 
 ## Acknowledgments
 

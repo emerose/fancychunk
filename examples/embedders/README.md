@@ -1,11 +1,24 @@
-# Reference SegmentEmbedder adapters
+# Reference Embedder adapters
 
-The fancychunk library doesn't host any embedding models — the
-`embed_with_late_chunking` function takes a caller-supplied
-`SegmentEmbedder` (see [spec 04 §Embedder contract](../../docs/specs/04-late-chunking.md#embedder-contract)).
+fancychunk ships its own bundled embedders (`qwen3_600m`,
+`bge_m3`, `qwen3_4b`, `qwen3_8b`, `noop`) — see the main
+[Models](../../README.md#models) section. These adapters are for
+when you need to wire in a different backend: a model the library
+doesn't ship, a custom inference stack, or a remote service.
 
-This directory contains reference adapters covering the three common
-deployment shapes. Each file is self-contained and runnable.
+Each adapter implements the full `Embedder` protocol:
+
+* `embed_segment(texts) → (matrix, counts)` + `count_tokens(texts)`
+  + `n_ctx` — the token-level half, used by
+  `embed_with_late_chunking`.
+* `embed_chunklets(chunklets) → matrix` — the pooled half, used by
+  `split_chunks` (and therefore `chunk_document`).
+
+A single class can implement both; the bundled embedders do, and so
+do the three adapters here.
+
+This directory contains reference adapters covering the three
+common deployment shapes. Each file is self-contained and runnable.
 
 | File | Backend | Best for |
 |---|---|---|
@@ -55,7 +68,7 @@ into the last text's count — the conforming "option (b)" from the
 spec. Choosing option (a) (an `embed_segment` that excludes specials
 from its output) is also conforming if your embedder supports it.
 
-## Skeleton: anatomy of a SegmentEmbedder
+## Skeleton: anatomy of an Embedder
 
 ```python
 class MyEmbedder:
@@ -74,9 +87,16 @@ class MyEmbedder:
         # 3. Compute per-text counts that conserve the row count.
         # 4. Return (matrix, counts).
         return matrix, counts
+
+    def embed_chunklets(self, chunklets: list[str]) -> NDArray:
+        # 1. Tokenize each chunklet (batched is fine).
+        # 2. Run the model, get last_hidden_state.
+        # 3. Pool per the model's training: CLS / mean / last_token.
+        # 4. L2-normalize each row (SPEC-CHUNK-342 requires nonzero).
+        return pooled
 ```
 
-That's it. Twenty lines of glue per backend; the rest is the
+That's it. ~30 lines of glue per backend; the rest is the
 algorithm, which lives in fancychunk.
 
 ## Performance notes

@@ -39,7 +39,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import torch  # type: ignore[import-untyped]
@@ -47,19 +47,37 @@ from numpy.typing import NDArray
 from transformers import AutoModel, AutoTokenizer  # type: ignore[import-untyped]
 
 
+PoolingMethod = Literal["cls", "mean", "last_token"]
+
+
 class HFOffsetEmbedder:
-    """Late-chunking adapter for HuggingFace transformers with offset mapping."""
+    """Late-chunking + pooled-chunklet adapter for HuggingFace
+    transformers with offset mapping.
+
+    Pooling for ``embed_chunklets`` is configurable since each
+    HuggingFace model has its own intended strategy:
+
+    * BERT-family (BGE-M3, mBERT, etc.) → ``"cls"``
+    * Sentence-Transformers MPNet/MiniLM → ``"mean"``
+    * Decoder embedders (Qwen3-Embedding via transformers) →
+      ``"last_token"``
+
+    Pick the right one for your model — pooling other than what
+    the model was trained with gives random-looking embeddings.
+    """
 
     def __init__(
         self,
         model_name: str,
         n_ctx: int | None = None,
         device: str = "cpu",
+        pooling: PoolingMethod = "cls",
     ) -> None:
         self._tok: Any = AutoTokenizer.from_pretrained(model_name)
         self._model: Any = AutoModel.from_pretrained(model_name)
         self._model.eval()
         self._device = device
+        self.pooling: PoolingMethod = pooling
         if device != "cpu":
             self._model = self._model.to(device)
         # n_ctx defaults to the tokenizer's model_max_length, clipped
@@ -69,6 +87,11 @@ class HFOffsetEmbedder:
             mml = int(getattr(self._tok, "model_max_length", 4096))
             n_ctx = min(mml, 4096) if mml > 0 else 4096
         self.n_ctx = n_ctx
+
+    @property
+    def embedding_dim(self) -> int:
+        """Native hidden size of the loaded model."""
+        return int(self._model.config.hidden_size)
 
     # ----- SegmentEmbedder contract -----
 
@@ -134,25 +157,74 @@ class HFOffsetEmbedder:
 
         return mat, counts
 
+    # ----- ChunkletEmbedder contract -----
+
+    def embed_chunklets(
+        self, chunklets: list[str]
+    ) -> NDArray[np.float64]:
+        """Pooled per-chunklet embeddings — used by ``split_chunks``
+        and ``chunk_document`` to drive the partition decision.
+
+        Batches all chunklets into a single padded forward pass, then
+        applies the pooling strategy this adapter was constructed
+        with (``cls`` / ``mean`` / ``last_token``). Output is
+        L2-normalized; SPEC-CHUNK-342 requires nonzero rows.
+        """
+        if not chunklets:
+            return np.zeros((0, self.embedding_dim), dtype=np.float64)
+
+        enc = self._tok(
+            chunklets,
+            padding=True,
+            truncation=True,
+            max_length=self.n_ctx,
+            return_tensors="pt",
+        )
+        input_ids = enc["input_ids"]
+        attention_mask = enc["attention_mask"]
+        if self._device != "cpu":
+            input_ids = input_ids.to(self._device)
+            attention_mask = attention_mask.to(self._device)
+
+        with torch.no_grad():
+            h = self._model(
+                input_ids=input_ids, attention_mask=attention_mask
+            ).last_hidden_state
+
+        if self.pooling == "cls":
+            pooled = h[:, 0]
+        elif self.pooling == "mean":
+            mask = attention_mask.unsqueeze(-1).to(h.dtype)
+            pooled = (h * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+        elif self.pooling == "last_token":
+            # Index of the last non-padding token per row.
+            seq_lens = attention_mask.sum(dim=1) - 1
+            seq_lens = seq_lens.clamp(min=0)
+            idx = torch.arange(h.shape[0], device=h.device)
+            pooled = h[idx, seq_lens]
+        else:  # pragma: no cover - validated by Literal type
+            raise ValueError(f"unknown pooling: {self.pooling!r}")
+
+        pooled = torch.nn.functional.normalize(pooled, p=2.0, dim=1)
+        return cast(
+            NDArray[np.float64], pooled.float().cpu().numpy()
+        ).astype(np.float64)
+
 
 if __name__ == "__main__":
-    from fancychunk import (
-        embed_with_late_chunking,
-        split_chunklets,
-        split_chunks,
-        split_sentences,
-    )
-    from fancychunk.embedders import noop
+    # End-to-end smoke test via chunk_document. BERT-family models
+    # use CLS pooling; for BGE-M3 also pass `pooling="cls"`. Use
+    # `pooling="mean"` for Sentence-Transformers MPNet/MiniLM
+    # families, `pooling="last_token"` for Qwen3-Embedding-* via
+    # transformers.
+    from fancychunk import chunk_document
 
     doc = (
         "# Sorting\n\nQuicksort uses a pivot. It partitions around the pivot.\n\n"
         "## Random pivots\n\nThey give expected O(n log n) time.\n"
     )
-    sents = split_sentences(doc, max_len=2048)
-    chunklets = split_chunklets(sents, max_size=2048)
-    chunks = split_chunks(chunklets, noop(), max_size=2048)
+    emb = HFOffsetEmbedder("bert-base-multilingual-cased", pooling="cls")
+    chunks, vectors = chunk_document(doc, emb)
     print(f"chunks: {len(chunks)}")
-    emb = HFOffsetEmbedder("bert-base-multilingual-cased")
-    out = embed_with_late_chunking(chunks, emb)
-    print(f"output shape: {out.shape}")
-    print(f"norms: {np.linalg.norm(out, axis=1).round(4)}")
+    print(f"output shape: {vectors.shape}")
+    print(f"norms: {np.linalg.norm(vectors, axis=1).round(4)}")

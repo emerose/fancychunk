@@ -46,16 +46,6 @@ chunks, vectors = chunk_document(open("my-document.md").read(), embedder)
 # chunks[i] ⇄ vectors[i] — drop straight into your vector store.
 ```
 
-That's it. `chunk_document` runs the full pipeline — semantic
-topic-shift chunking, then late chunking to produce one
-context-aware vector per chunk with the document's heading stack
-folded into the embedding context. The same embedder instance is
-used for the partition decision and the late-chunking pass, so the
-model loads exactly once.
-
-`qwen3_600m()` is the recommended default for most workloads
-(~596M params, native 1024-dim, MTEB Multilingual 64.33 — the
-leader at sub-1B). For other choices see [Models](#models) below.
 
 ### Building blocks
 
@@ -81,34 +71,7 @@ sentences = split_sentences(doc, max_len=2048)
 chunklets = split_chunklets(sentences, max_size=2048)
 chunks    = split_chunks(chunklets, embedder, max_size=2048)
 vectors   = embed_with_late_chunking(chunks, embedder)
-
-# Optional: decorate the *stored* chunk text with its heading path
-# as a retrieval-time breadcrumb. `enrich_with_headings` does NOT
-# affect `vectors` — late chunking already saw the in-document
-# headings via its per-segment heading prepend.
-chunks = enrich_with_headings(chunks)
 ```
-
-For a no-model-download structural split, swap the embedder for
-`embedders.noop()`:
-
-```python
-from fancychunk.embedders import noop
-chunks = split_chunks(chunklets, noop(), max_size=2048)
-```
-
-`noop()` returns constant per-chunklet vectors, which collapses
-the semantic-similarity term and leaves heading-aware boundaries
-as the only signal — the same shape the old "no embeddings
-supplied" path produced.
-
-**Lifecycle.** Each call to `qwen3_600m()` (or any factory)
-returns a fresh embedder instance. The model weights load lazily
-on first use of `embed_chunklets` / `embed_segment`. Hold the
-embedder reference while you need it; drop it to free its memory.
-Two separate factory calls = two independent instances and two
-model loads — pass one instance everywhere when you want to share
-weights, which is what `chunk_document` does internally.
 
 ## What it does
 
@@ -156,7 +119,7 @@ context into each chunk's output. **Both are baked into
 `chunk_document`** with sensible defaults; the building-blocks form
 exposes them as separate primitives.
 
-### Late chunking (does the heavy lifting)
+### Late chunking
 
 `embed_with_late_chunking(chunks, embedder)` produces one
 context-aware vector per chunk. Instead of embedding each chunk in
@@ -172,57 +135,17 @@ embedding already incorporates heading context** — there's no need
 to also prepend headings to the chunk text before embedding.
 `enrich_with_headings` is for the *stored* text only (see below).
 
-The bundled embedders all satisfy the token-level contract late
-chunking requires. Cloud APIs that only return one vector per input
-do not.
 
-### Heading-path enrichment (display only)
+### Heading-path enrichment
 
 `enrich_with_headings(chunks)` returns each chunk with the Markdown
 heading stack in scope at its start prepended (e.g.
-`"# Top\n## Sub\n\n<chunk text>"`). The use case is **stored-text
-breadcrumbs**: when a chunk gets surfaced back to the user from a
-vector store, the prepended heading shows where in the document it
-came from.
+`"# Top\n## Sub\n\n<chunk text>"`). This is useful to add context
+to chunks that might otherwise lack it; for more information, see
+[Out-of-Context Chunk Problem](https://d-star.ai/solving-the-out-of-context-chunk-problem-for-rag).
+Note that the late chunking mode already includes this context;
+only use this method if you're not using late chunking.
 
-Apply it *after* embedding (the Quick start's building-blocks form
-shows this) so the breadcrumb doesn't double up on the heading
-context the vectors already carry. If you're not using late
-chunking — e.g., you swapped in a BYO embedder that doesn't expose
-per-token outputs — you can apply `enrich_with_headings` before
-embedding instead, to push outline context into the vector that
-way; that's the d-star.ai
-[Out-of-Context Chunk Problem](https://d-star.ai/solving-the-out-of-context-chunk-problem-for-rag)
-trick. With late chunking that mode is redundant.
-
-### Bring your own embedder
-
-fancychunk ships four bundled embedders (see [Models](#models)).
-If you need your own — different backend, custom model, remote
-service — implement the protocol:
-
-```python
-class Embedder(Protocol):
-    n_ctx: int
-    def count_tokens(self, texts: list[str]) -> list[int]: ...
-    def embed_segment(
-        self, texts: list[str]
-    ) -> tuple[NDArray, list[int]]: ...
-    def embed_chunklets(self, chunklets: list[str]) -> NDArray: ...
-```
-
-`embed_chunklets` is the pooled per-chunklet path for `split_chunks`;
-`embed_segment` + `count_tokens` are the token-level path for
-`embed_with_late_chunking`. A single class implements both — the
-bundled embedders do.
-
-Three runnable reference adapters in
-[`examples/embedders/`](examples/embedders/): MLX + Qwen3-Embedding,
-HuggingFace transformers, and a remote HTTP client. They currently
-implement just the late-chunking half of the protocol; add a
-`embed_chunklets` method (one batched forward pass over each
-chunklet, pooled the same way the model was trained) to use them
-with `split_chunks` or `chunk_document`.
 
 ## Models
 
@@ -260,6 +183,21 @@ auto-selected on Apple Silicon when `mlx_embeddings` is importable;
 elsewhere the factories fall back to torch (which requires
 `[torch]`). MTEB scores are from each model's published tables;
 throughput is measured on this machine.
+
+> **Note on CPU-only torch (Linux).** `pip install 'fancychunk[torch]'`
+> pulls the default torch wheel, which on Linux is the CUDA-bundled
+> build (~2.5 GB) even if you don't have a GPU. If you only need CPU
+> inference, install the CPU wheel first, then add fancychunk:
+>
+> ```bash
+> pip install torch --index-url https://download.pytorch.org/whl/cpu
+> pip install 'fancychunk[torch]'  # picks up the already-installed torch
+> ```
+>
+> PyPI extras can't express the `--index-url` redirect, so this
+> two-step is the workaround until upstream torch ships size-tagged
+> variants on standard PyPI. macOS torch wheels are already small
+> (~80 MB, no CUDA bundle) — this is a Linux-only concern.
 
 Apple Silicon, MLX path (M2 MacBook Air):
 
@@ -299,31 +237,36 @@ on Linux 6.17 with PyTorch 2.12.0 + bundled CUDA 13.0 wheels (Python
 weights live on VRAM. Same 3-chunklet `bench_factories.py` batch as
 the Mac measurements.
 
-A few things worth knowing:
 
-- **MTEB-Multi deltas:** `qwen3_600m` beats `bge_m3` by ~5 points (a
-  meaningful gap on multilingual retrieval); `qwen3_4b` beats
-  `qwen3_600m` by another ~5 points at ~6× the latency; `qwen3_8b`
-  adds another ~1 point on top.
-- **Speed vs quality by backend:** on MLX, `qwen3_600m` at mxfp8
-  actually outruns `bge_m3` at fp16 — Apple Silicon's the one place
-  the decoder model wins on throughput too. On torch (MPS or CUDA)
-  the encoder-vs-decoder architectural gap reasserts itself: BGE-M3
-  is the throughput king, and on an RTX 3090 it's ~2.3× faster than
-  Qwen3-0.6B. The spread across all four models compresses to ~3×
-  on CUDA vs ~12× on MLX — a discrete GPU hides the per-pass
-  overhead that dominates the small-batch MLX path.
-- **`noop()`** is the fifth bundled embedder: zero downloads,
-  returns constant per-chunklet vectors. Use it for a
-  structural-only split via `split_chunks(chunklets, noop())`.
-- **8B on a 24 GB Mac is tight.** `qwen3_8b()` runs at ~7 GB
-  resident and shares unified memory with everything else; expect
-  thermal throttling on sustained workloads on an Air. Stick with
-  `qwen3_600m()` (the recommended default) unless you've measured
-  the quality gain matters for your retrieval task.
-- **None of the above:** implement the BYO protocol from
-  [Bring your own embedder](#bring-your-own-embedder) above — three
-  methods plus an attribute, ~50 lines of glue.
+### Bring your own embedder
+
+fancychunk ships four bundled embedders (see [Models](#models)).
+If you need your own — different backend, custom model, remote
+service — implement the protocol:
+
+```python
+class Embedder(Protocol):
+    n_ctx: int
+    def count_tokens(self, texts: list[str]) -> list[int]: ...
+    def embed_segment(
+        self, texts: list[str]
+    ) -> tuple[NDArray, list[int]]: ...
+    def embed_chunklets(self, chunklets: list[str]) -> NDArray: ...
+```
+
+`embed_chunklets` is the pooled per-chunklet path for `split_chunks`;
+`embed_segment` + `count_tokens` are the token-level path for
+`embed_with_late_chunking`. A single class implements both — the
+bundled embedders do.
+
+Three runnable reference adapters in
+[`examples/embedders/`](examples/embedders/): MLX + Qwen3-Embedding,
+HuggingFace transformers, and a remote HTTP client. They currently
+implement just the late-chunking half of the protocol; add a
+`embed_chunklets` method (one batched forward pass over each
+chunklet, pooled the same way the model was trained) to use them
+with `split_chunks` or `chunk_document`.
+
 
 ## Observability
 
@@ -349,20 +292,6 @@ each function does, not *how*. Every behavior has a SPEC-CHUNK-NNN
 ID; every ID has a test. Implementations in other languages are
 welcome to use the specs verbatim and ignore this Python code
 entirely.
-
-## TODO
-
-- **Reference adapters could implement `embed_chunklets`.** The
-  three example adapters in `examples/embedders/` currently
-  implement only the late-chunking half of the protocol (n_ctx +
-  count_tokens + embed_segment). Adding a thin `embed_chunklets`
-  pass would make them usable as `chunk_document` embedders.
-- **CPU-only torch on Linux** still pulls the CUDA wheel (~2.5 GB)
-  via `pip install 'fancychunk[torch]'`. Users who don't have a
-  GPU and want to skip the CUDA bundle have to install torch
-  themselves first with `pip install torch --index-url
-  https://download.pytorch.org/whl/cpu`. PyPI extras can't express
-  this — document it more prominently or wait for upstream to fix.
 
 ## Acknowledgments
 

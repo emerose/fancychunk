@@ -1,15 +1,16 @@
-"""Reference SegmentEmbedder over a remote HTTP service.
+"""Reference Embedder over a remote HTTP service.
 
 The library never embeds anything itself — when you need to share a
 GPU across services, or run the embedder on a different machine from
-where the chunking happens, the SegmentEmbedder contract is small
-enough to wrap a thin HTTP call. The complementary server is sketched
-at the bottom of this file (drop in your favourite framework — FastAPI,
-LiteServe, Sanic, whatever).
+where the chunking happens, the protocol is small enough to wrap a
+thin HTTP call. The complementary server is sketched at the bottom
+of this file (drop in your favourite framework — FastAPI, LiteServe,
+Sanic, whatever).
 
-Tokenization-alignment strategy: **service-owned**. The server
-returns ``per_text_counts`` alongside the embedding matrix; the
-client trusts the server. The client uses a local tokenizer only for
+The client implements both halves of the protocol — ``embed_segment``
+for late chunking and ``embed_chunklets`` for the partition decision
+— against two endpoints under a shared base URL. The server handles
+tokenization and pooling; the client uses a local tokenizer only for
 the cheap ``count_tokens`` budget-planning call so it doesn't have
 to round-trip just to plan segments.
 
@@ -19,10 +20,12 @@ Install:
 Usage:
     from examples.embedders.remote_http import RemoteEmbedder
     embedder = RemoteEmbedder(
-        url="https://my-embed-service.example.com/embed_segment",
+        base_url="https://my-embed-service.example.com",
         local_tokenizer="bert-base-multilingual-cased",
         n_ctx=512,
     )
+    # GET {base_url}/embed_segment   for late chunking
+    # GET {base_url}/embed_chunklets for the partition decision
 """
 
 from __future__ import annotations
@@ -36,21 +39,25 @@ from transformers import AutoTokenizer  # type: ignore[import-untyped]
 
 
 class RemoteEmbedder:
-    """Thin HTTP client implementing the SegmentEmbedder contract."""
+    """Thin HTTP client implementing the full Embedder protocol."""
 
     def __init__(
         self,
-        url: str,
+        base_url: str,
         local_tokenizer: str,
         n_ctx: int,
         timeout_seconds: float = 30.0,
         session: Any = None,
     ) -> None:
-        self.url = url
+        self.base_url = base_url.rstrip("/")
+        self._segment_url = f"{self.base_url}/embed_segment"
+        self._chunklets_url = f"{self.base_url}/embed_chunklets"
         self.n_ctx = n_ctx
         self._timeout = timeout_seconds
         self._tok: Any = AutoTokenizer.from_pretrained(local_tokenizer)
         self._session: Any = session or requests.Session()
+
+    # ----- SegmentEmbedder contract -----
 
     def count_tokens(self, texts: list[str]) -> list[int]:
         return [
@@ -61,7 +68,7 @@ class RemoteEmbedder:
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         resp = self._session.post(
-            self.url,
+            self._segment_url,
             json={"texts": texts},
             timeout=self._timeout,
         )
@@ -76,6 +83,38 @@ class RemoteEmbedder:
             )
         return cast(NDArray[np.float64], matrix), counts
 
+    # ----- ChunkletEmbedder contract -----
+
+    def embed_chunklets(
+        self, chunklets: list[str]
+    ) -> NDArray[np.float64]:
+        """One pooled embedding per chunklet — server-owned pooling
+        strategy. Used by ``split_chunks`` and ``chunk_document``.
+
+        The server is expected to L2-normalize each row; the client
+        does not validate the norms (the library's SPEC-CHUNK-342
+        check will catch zero rows downstream)."""
+        if not chunklets:
+            # Server may not handle empty input; short-circuit. Dim
+            # is unknown without a round-trip, so return a 0×0
+            # placeholder — split_chunks doesn't invoke the embedder
+            # on empty input anyway (SPEC-CHUNK-340).
+            return np.zeros((0, 0), dtype=np.float64)
+        resp = self._session.post(
+            self._chunklets_url,
+            json={"chunklets": chunklets},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        matrix = np.asarray(body["embeddings"], dtype=np.float64)
+        if matrix.ndim != 2 or matrix.shape[0] != len(chunklets):
+            raise ValueError(
+                f"server returned matrix of shape {matrix.shape}; expected "
+                f"({len(chunklets)}, D)."
+            )
+        return cast(NDArray[np.float64], matrix)
+
 
 # ---------------------------------------------------------------------------
 # Server sketch (commented out — drop into a file like ``server.py`` and run).
@@ -87,6 +126,7 @@ class RemoteEmbedder:
 #
 # app = FastAPI()
 # MODEL = "BAAI/bge-m3"
+# POOLING = "cls"  # match your model's training: cls / mean / last_token
 # tokenizer = AutoTokenizer.from_pretrained(MODEL)
 # model = AutoModel.from_pretrained(MODEL).eval()
 #
@@ -115,6 +155,31 @@ class RemoteEmbedder:
 #         "per_text_counts": counts,
 #     }
 #
+# @app.post("/embed_chunklets")
+# def embed_chunklets(payload: dict) -> dict:
+#     chunklets = payload["chunklets"]
+#     enc = tokenizer(
+#         chunklets,
+#         padding=True, truncation=True, return_tensors="pt",
+#     )
+#     with torch.no_grad():
+#         h = model(
+#             input_ids=enc["input_ids"], attention_mask=enc["attention_mask"]
+#         ).last_hidden_state
+#     # Pool per the model's training. CLS for BERT/BGE; mean for
+#     # MPNet/MiniLM; last_token for Qwen3-Embedding.
+#     if POOLING == "cls":
+#         pooled = h[:, 0]
+#     elif POOLING == "mean":
+#         m = enc["attention_mask"].unsqueeze(-1).to(h.dtype)
+#         pooled = (h * m).sum(dim=1) / m.sum(dim=1).clamp(min=1e-9)
+#     elif POOLING == "last_token":
+#         seq_lens = enc["attention_mask"].sum(dim=1) - 1
+#         idx = torch.arange(h.shape[0], device=h.device)
+#         pooled = h[idx, seq_lens.clamp(min=0)]
+#     pooled = torch.nn.functional.normalize(pooled, p=2.0, dim=1)
+#     return {"embeddings": pooled.float().cpu().numpy().tolist()}
+#
 # # Note: ``mat.tolist()`` is ~10x slower than binary serialization.
 # # For production, swap JSON for msgpack/protobuf — see numpy's
 # # serialization guidance.
@@ -123,5 +188,5 @@ class RemoteEmbedder:
 if __name__ == "__main__":
     print(
         "This is a client sketch. Stand up the server stub from this file's "
-        "comments, then point RemoteEmbedder at its URL."
+        "comments, then point RemoteEmbedder at its base URL."
     )

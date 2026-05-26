@@ -75,12 +75,9 @@ real-world cases (missing terminals, multilingual text, technical
 abbreviations like "e.g."), so the default segmenter is
 [SaT](https://arxiv.org/abs/2406.16678) (Frohmann et al., 2024) from
 `wtpsplit-lite` — a learned model that produces per-character
-boundary probabilities. A Markdown override forces headings to be
-standalone sentences regardless of what SaT says, and a
-whitespace-trailing pass pins boundaries to *after* the whitespace
-run so concatenation round-trips byte-for-byte. A sliding-window DP
-picks boundary positions to maximise total score subject to a
-configurable min/max sentence length.
+boundary probabilities. A sliding-window dynamic-programming pass
+(O(N) amortised) then picks boundary positions to maximise total
+score subject to a configurable min/max sentence length.
 
 **Stage 2 — `split_chunklets`.** Sentences are grouped into
 *chunklets* — paragraph-sized units targeting roughly three
@@ -89,8 +86,9 @@ block-level structure (headings beat blockquotes beat paragraphs
 beat list items) and a document-relative *statement density* measure
 derived from sentence word counts against the document's own
 quartiles, so a 20-word sentence carries different weight in a
-terse-bullet document than in a long-prose one. A 1-D DP picks
-chunklet boundaries minimising the sum of two costs: one that
+terse-bullet document than in a long-prose one. A 1-D
+dynamic-programming pass picks chunklet boundaries minimising the
+sum of two costs: one that
 rewards starting at strong structural cues, one that penalises
 deviation from the ≈3-statement target. The result is units big
 enough to embed meaningfully but small enough that each one stays
@@ -101,7 +99,8 @@ cosine similarity, then *discourse-corrected* — the mean of typical
 chunklets' embeddings is projected out so similarity reflects local
 topic shifts rather than the document's overall theme
 ([Arora et al., 2017](https://openreview.net/forum?id=SyK00v5xx)).
-The DP picks split points where adjacent chunklets are *least*
+A third dynamic-programming pass picks split points where adjacent
+chunklets are *least*
 similar (this is "level 4" in Greg Kamradt's
 [5 Levels of Text Splitting](https://www.youtube.com/watch?v=8OJC21T2SL4&t=1930s)
 taxonomy), subject to a hard max-size covering constraint. A
@@ -188,13 +187,10 @@ A few things worth knowing:
   meaningful quality gap on multilingual retrieval); `high_quality`
   beats `default` by another ~5 points at ~5× the latency cost.
 - **Speed vs quality:** `fast` is ~2.5× faster than `default` per
-  forward pass because BGE-M3 is a bidirectional encoder while
-  Qwen3-Embedding is a decoder-only causal model. That's an
-  architectural difference, not a tuning choice.
+  forward pass but has meaningfully lower MTEB scores.
 - **Matryoshka:** `high_quality` truncates Qwen3-4B's native
-  2560-dim output to `dim=1024` so it's pin-compatible with the
-  other two for storage and A/B testing. Pass `dim=2560` for the
-  full native width.
+  2560-dim output to `dim=1024` by default, in order to make
+  storage more efficient. Pass `dim=2560` for the full native width.
 - **None of the above:** the BYO protocol is two methods and one
   attribute — see [Late chunking (optional)](#late-chunking-optional)
   and [`examples/embedders/`](examples/embedders/) for templates

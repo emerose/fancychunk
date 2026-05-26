@@ -18,7 +18,7 @@ that idea.
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `chunklets` | list of strings | yes | — | An ordered sequence of chunklets, typically from stage 2. |
-| `chunklet_embeddings` | matrix `[N, D]` of floats | yes | — | One row per chunklet, in the same order. Each row must have nonzero L2 norm. |
+| `chunklet_embeddings` | matrix `[N, D]` of floats, or `None` | no | `None` | One row per chunklet, in the same order. Each row must have nonzero L2 norm. When omitted, the cosine-similarity term is dropped and the partition similarity is uniformly `1.0` for every candidate split (see SPEC-CHUNK-320 §No-embeddings path). |
 | `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunk length in characters. (Same default as stage 2; see Spec 02 for the rationale.) |
 
 ## Outputs
@@ -113,6 +113,18 @@ similarity value.
 
 **Step 4 — Heading-aware modification (SPEC-CHUNK-322).** Adjust
 `sim[i]` for partition points adjacent to heading chunklets.
+
+**No-embeddings path.** When `chunklet_embeddings` is omitted, steps
+1-3 are skipped: ``sim[i] = 1.0`` for every partition point, the
+discourse-vector step (SPEC-CHUNK-321) does not run, and the
+heading-aware modification of step 4 still applies. The resulting
+DP minimizes the number of selected partition points subject to the
+covering constraint (SPEC-CHUNK-311), with heading-before splits
+preferred (their `sim` is divided by `HEADING_SPLIT_BEFORE_DIVISOR`)
+and heading-after splits forbidden (`HEADING_SPLIT_AFTER_FORBID`).
+This is the "structural-only" mode — useful as a no-dependency
+default and as the fallback when the caller hasn't yet computed
+embeddings.
 
 ### SPEC-CHUNK-321 — Discourse-vector removal
 

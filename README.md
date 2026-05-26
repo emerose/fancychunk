@@ -1,9 +1,7 @@
 # fancychunk
 
-> Markdown chunking for RAG that respects what your document actually
-> *is* — sentence boundaries, headings, lists, and topic shifts —
-> instead of cutting every N characters and hoping the cuts don't
-> land mid-thought.
+> Markdown chunking for RAG that attempts to craft artisanal,
+> meaningful chunks while remaining reasonably fast and efficient.
 
 ```bash
 pip install fancychunk
@@ -11,8 +9,17 @@ pip install fancychunk
 
 ## How it compares
 
-Most chunkers split at character or token counts and bolt on a
-recursive separator list to dodge the worst cuts. fancychunk treats
+Traditional chunkers split at character or token counts, possibly
+including a recursive separator list to dodge the worst cuts. This
+is fast and efficient, but can lead to awkward breaks and chunks
+that don't capture a particular idea well.  Other chunkers use an 
+LLM to find meaningful semantic boundaries, but this is slow and
+expensive.
+
+fancychunk attempts to find a middle ground, producing meaningful
+chunks quickly.
+
+fancychunk treats
 chunking as three separable problems, each solved by its own
 optimization against its own signal:
 
@@ -20,7 +27,7 @@ optimization against its own signal:
 |--------------------------------|:--:|:--:|:--:|:--:|:--:|
 | Never cuts mid-sentence        | ✗ | ~  | ✓ | ✓ | **✓** |
 | Honors Markdown structure      | ✗ | ~  | ✗ | ✗ | **✓** |
-| Detects topic shifts           | ✗ | ✗  | ✗ | ✓ | **✓** |
+| Detects topic shifts           | ✗ | ✗  | ✗ | ✓ | **opt-in** |
 | Bounded chunk size guarantee   | ✓ | ✓  | ~ | ~ | **✓** |
 | Multi-stage (sentence→group→topic) | ✗ | ✗ | partial | ✗ | **✓** |
 | Contextual heading paths       | ✗ | ✗  | ✗ | ✗ | **✓** |
@@ -61,10 +68,23 @@ doc = open("my-document.md").read()
 
 sentences  = split_sentences(doc, max_len=2048)
 chunklets  = split_chunklets(sentences, max_size=2048)
-embeddings = my_embedder(chunklets)       # any embedder you already have
-chunks, _  = split_chunks(chunklets, embeddings, max_size=2048)
-paths      = heading_paths(chunks)        # ["# Top\n## Sub\n", ...]
+chunks, _  = split_chunks(chunklets, max_size=2048)   # structural-only
+paths      = heading_paths(chunks)                    # ["# Top\n## Sub\n", ...]
 ```
+
+For semantic topic-shift splitting, pass an embedding matrix (one row
+per chunklet) as the second argument:
+
+```python
+embeddings = my_embedder(chunklets)
+chunks, _  = split_chunks(chunklets, embeddings, max_size=2048)
+```
+
+Without embeddings the splitter still respects sentence boundaries,
+chunklet groupings, Markdown structure, and the heading-aware
+modification — just with no topic-shift signal. With embeddings the
+splitter also detects topic shifts via cosine similarity between
+adjacent chunklets.
 
 The first call lazily downloads
 [SaT](https://arxiv.org/abs/2406.16678) (408 MB) for sentence
@@ -144,9 +164,9 @@ and 3.13 on every push.
 ## What it doesn't do
 
 - Doesn't parse PDFs, Word, or HTML. Input is Markdown.
-- Doesn't embed text. You bring an embedder (or skip embedding and
-  use the three-stage pipeline with synthetic vectors, which is
-  fine — Stage 3's structural awareness still helps).
+- Doesn't embed text. Pass embeddings if you have them (for
+  topic-shift splitting); skip them if you don't (structural-only mode
+  uses Markdown structure + heading-aware logic).
 - Doesn't index, retrieve, or generate. Output is `list[str]`.
 
 ## Where the specs live

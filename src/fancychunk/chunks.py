@@ -23,43 +23,34 @@ from .errors import (
 
 def split_chunks(
     chunklets: list[str],
-    chunklet_embeddings: Matrix,
+    chunklet_embeddings: Matrix | None = None,
     max_size: int = C.DEFAULT_MAX_SIZE_CHARS,
 ) -> tuple[list[str], list[Matrix]]:
-    """Partition ``chunklets`` (with embeddings) into chunks.
+    """Partition ``chunklets`` (optionally with embeddings) into chunks.
 
     Implements ``docs/specs/03-semantic-chunking.md``.
+
+    When ``chunklet_embeddings`` is ``None``, the cosine-similarity term
+    is omitted — partition similarity is uniformly ``1.0`` for every
+    candidate split, the discourse-vector step is skipped, and the
+    heading-aware modification (SPEC-CHUNK-322) is the only signal
+    shaping where splits land. The DP then minimizes the number of
+    splits subject to the ``max_size`` covering constraint, preferring
+    positions immediately before a heading. The returned
+    ``chunk_embeddings`` list is empty in this case.
     """
     if max_size <= 0:
         raise ValidationError("max_size must be positive")
 
-    emb = np.asarray(chunklet_embeddings)
-    if emb.ndim != 2:
-        raise ValidationError("chunklet_embeddings must be a 2-D matrix")
-    if emb.shape[0] != len(chunklets):
-        raise ValidationError(
-            f"chunklet_embeddings has {emb.shape[0]} rows but chunklets has "
-            f"{len(chunklets)} entries"
-        )
-
     with get_tracer().start_as_current_span("fancychunk.split_chunks") as span:
         span.set_attribute("fancychunk.chunklets.count", len(chunklets))
         span.set_attribute("fancychunk.max_size", max_size)
-        if emb.size:
-            span.set_attribute("fancychunk.embedding.dim", int(emb.shape[1]))
 
         # SPEC-CHUNK-340 — empty input.
         if not chunklets:
             span.set_attribute("fancychunk.chunks.count", 0)
             span.set_attribute("fancychunk.short_circuit", "empty")
             return [], []
-
-        # SPEC-CHUNK-342 — zero-norm embedding.
-        norms = np.linalg.norm(emb, axis=1)
-        if np.any(norms == 0):
-            raise ZeroNormEmbeddingError(
-                "one or more chunklet embeddings have L2 norm 0"
-            )
 
         # SPEC-CHUNK-341 — oversized chunklet.
         lengths = [len(c) for c in chunklets]
@@ -69,26 +60,79 @@ def split_chunks(
                     f"chunklet {idx} has length {ln} > max_size {max_size}"
                 )
 
+        # Validate embeddings if supplied.
+        emb: Matrix | None = None
+        if chunklet_embeddings is not None:
+            emb = np.asarray(chunklet_embeddings)
+            if emb.ndim != 2:
+                raise ValidationError(
+                    "chunklet_embeddings must be a 2-D matrix"
+                )
+            if emb.shape[0] != len(chunklets):
+                raise ValidationError(
+                    f"chunklet_embeddings has {emb.shape[0]} rows but "
+                    f"chunklets has {len(chunklets)} entries"
+                )
+            # SPEC-CHUNK-342 — zero-norm embedding.
+            if np.any(np.linalg.norm(emb, axis=1) == 0):
+                raise ZeroNormEmbeddingError(
+                    "one or more chunklet embeddings have L2 norm 0"
+                )
+            span.set_attribute("fancychunk.embedding.dim", int(emb.shape[1]))
+        else:
+            span.set_attribute("fancychunk.structural_only", True)
+
         # SPEC-CHUNK-340 — single chunklet.
         if len(chunklets) == 1:
             span.set_attribute("fancychunk.chunks.count", 1)
             span.set_attribute("fancychunk.short_circuit", "single_chunklet")
-            return [chunklets[0]], [emb]
+            return [chunklets[0]], [emb] if emb is not None else []
 
         # SPEC-CHUNK-340 — total fits.
         if sum(lengths) <= max_size:
             span.set_attribute("fancychunk.chunks.count", 1)
             span.set_attribute("fancychunk.short_circuit", "total_fits")
-            return ["".join(chunklets)], [emb]
+            return (
+                ["".join(chunklets)],
+                [emb] if emb is not None else [],
+            )
 
         tracer = get_tracer()
         with tracer.start_as_current_span("fancychunk.chunks.partition_similarities"):
-            sim = _partition_similarities(emb, chunklets, lengths)
+            if emb is None:
+                sim = _structural_similarities(chunklets)
+            else:
+                sim = _partition_similarities(emb, chunklets, lengths)
         with tracer.start_as_current_span("fancychunk.chunks.dp"):
             chunks, splits = _solve_partition(chunklets, lengths, sim, max_size)
-        chunk_embeddings: list[Matrix] = [emb[a:b] for a, b in splits]
+        chunk_embeddings: list[Matrix] = (
+            [emb[a:b] for a, b in splits] if emb is not None else []
+        )
         span.set_attribute("fancychunk.chunks.count", len(chunks))
         return chunks, chunk_embeddings
+
+
+def _structural_similarities(chunklets: list[str]) -> Vector:
+    """Build a ``sim`` vector for the no-embeddings path.
+
+    Every partition point starts at ``1.0`` (the maximum, so the DP
+    treats them as equally expensive to split at). The SPEC-CHUNK-322
+    heading-aware modification then lowers ``sim`` for splits *before*
+    a heading (cheap) and pins it to ``1.0`` for splits *after* a
+    heading (effectively forbidden — equivalent to the
+    ``HEADING_SPLIT_AFTER_FORBID`` ceiling). With this distribution the
+    DP minimizes the number of splits subject to the covering
+    constraint, preferring positions immediately before a heading.
+    """
+    n = len(chunklets)
+    sim = np.ones(n - 1, dtype=np.float64)
+    # Use sqrt(epsilon) as the floor — same value used by the
+    # similarity path, for consistency with the heading-aware
+    # modification's ``max(..., floor)`` guard.
+    epsilon = float(np.finfo(np.float64).eps)
+    floor = math.sqrt(epsilon)
+    _apply_heading_modification_inplace(sim, chunklets, floor)
+    return sim
 
 
 def _partition_similarities(

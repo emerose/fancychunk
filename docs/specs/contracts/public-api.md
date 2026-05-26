@@ -70,7 +70,7 @@ SPEC-CHUNK-202.
 ```python
 def split_chunks(
     chunklets: list[str],
-    chunklet_embeddings: Matrix,
+    chunklet_embeddings: Matrix | None = None,
     max_size: int = 2048,
 ) -> tuple[list[str], list[Matrix]]
 ```

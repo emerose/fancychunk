@@ -132,6 +132,42 @@ def test_empty_input() -> None:
     assert emb == []
 
 
+# No-embedder path: ``chunklet_embeddings`` is optional. The pipeline
+# falls back to size-only + heading-aware structural chunking; returned
+# chunk_embeddings is the empty list.
+def test_split_chunks_without_embeddings() -> None:
+    chunklets = ["a" * 1000, "b" * 1000, "c" * 1000]
+    chunks, emb = split_chunks(chunklets, max_size=2048)
+    assert "".join(chunks) == "".join(chunklets)
+    assert all(len(c) <= 2048 for c in chunks)
+    assert emb == []  # no embeddings in → no embeddings out
+
+
+def test_split_chunks_without_embeddings_prefers_heading_split() -> None:
+    # 4 chunklets totalling > max_size, forcing one or more splits.
+    # The heading chunklet at index 2 makes the partition point at
+    # position 1 (between non-heading-1 and heading) cheapest. The DP
+    # should prefer that split over splitting between two body
+    # chunklets.
+    chunklets = ["a" * 900, "b" * 900, "## Subhead\n\n", "c" * 900]
+    chunks, _ = split_chunks(chunklets, max_size=2048)
+    assert len(chunks) == 2
+    assert chunks[1].startswith("## Subhead")
+
+
+def test_split_chunks_without_embeddings_short_circuits() -> None:
+    chunks, emb = split_chunks([], max_size=2048)
+    assert chunks == [] and emb == []
+
+    chunks, emb = split_chunks(["only one"], max_size=2048)
+    assert chunks == ["only one"]
+    assert emb == []
+
+    chunks, emb = split_chunks(["one ", "two ", "three"], max_size=2048)
+    assert chunks == ["one two three"]
+    assert emb == []
+
+
 # SPEC-CHUNK-322 — heading detection accepts ATX and Setext forms,
 # rejects heading-plus-body and non-heading content.
 @pytest.mark.parametrize(

@@ -28,32 +28,6 @@ NDCG@10/Recall@10/MRR@10 stats from ragkit.  compare:
 - chonkie semantic splitter
 - fancychunk]
 
-
-## What it does
-
-fancychunk treats chunking as three separable problems, each solved 
-by its own optimization against its own signal:
-
-```
-document  →  split_sentences  →  split_chunklets  →  split_chunks  →  chunks
-              (punctuation +     (Markdown headings,    (cosine of
-               SaT segmenter)     paragraphs, lists)     adjacent chunklets,
-                                                         discourse-corrected)
-```
-
-[short explanation of split_sentences with SaT paper reference]
-
-[short explanation of split_chunklets]
-
-[short explanation of split_chunks with paper reference]
-
-
-It then enhances those chunks with two optional steps:
-
-[short explanation of heading path context]
-
-[short explanation of late-chunking]
-
 ## Quick start
 
 ```python
@@ -94,6 +68,77 @@ The first call lazily downloads
 segmentation. Pre-warm in your image build, or pass
 `segmenter=punctuation_segmenter` for a zero-dependency fallback.
 
+
+## What it does
+
+fancychunk treats chunking as three separable problems, each solved 
+by its own optimization against its own signal:
+
+```
+document  →  split_sentences  →  split_chunklets  →  split_chunks  →  chunks
+              (punctuation +     (Markdown headings,    (cosine of
+               SaT segmenter)     paragraphs, lists)     adjacent chunklets,
+                                                         discourse-corrected)
+```
+
+**Stage 1 — `split_sentences`.** Punctuation alone misses too many
+real-world cases (missing terminals, multilingual text, technical
+abbreviations like "e.g."), so the default segmenter is
+[SaT](https://arxiv.org/abs/2406.16678) (Frohmann et al., 2024) from
+`wtpsplit-lite` — a learned model that produces per-character
+boundary probabilities. A Markdown override forces headings to be
+standalone sentences regardless of what SaT says, and a
+whitespace-trailing pass pins boundaries to *after* the whitespace
+run so concatenation round-trips byte-for-byte. A sliding-window DP
+picks boundary positions to maximise total score subject to a
+configurable min/max sentence length.
+
+**Stage 2 — `split_chunklets`.** Sentences are grouped into
+*chunklets* — paragraph-sized units targeting roughly three
+"statements" of information content each. The signal is Markdown
+block-level structure (headings beat blockquotes beat paragraphs
+beat list items) and a document-relative *statement density* measure
+derived from sentence word counts against the document's own
+quartiles, so a 20-word sentence carries different weight in a
+terse-bullet document than in a long-prose one. A 1-D DP picks
+chunklet boundaries minimising the sum of two costs: one that
+rewards starting at strong structural cues, one that penalises
+deviation from the ≈3-statement target. The result is units big
+enough to embed meaningfully but small enough that each one stays
+topically coherent.
+
+**Stage 3 — `split_chunks`.** Adjacent chunklets are compared by
+cosine similarity, then *discourse-corrected* — the mean of typical
+chunklets' embeddings is projected out so similarity reflects local
+topic shifts rather than the document's overall theme
+([Arora et al., 2017](https://openreview.net/forum?id=SyK00v5xx)).
+The DP picks split points where adjacent chunklets are *least*
+similar (this is "level 4" in Greg Kamradt's
+[5 Levels of Text Splitting](https://www.youtube.com/watch?v=8OJC21T2SL4&t=1930s)
+taxonomy), subject to a hard max-size covering constraint. A
+heading-aware modification keeps each heading attached to the
+content it introduces. If you skip the embeddings argument, the
+stage falls back to structure-only chunking (max-size + heading-aware
+preferences) — useful as a no-dependency default.
+
+## Enrichment
+
+After producing the chunks, fancychunk then enhances those chunks with two optional steps designed to enrich the
+resulting embeddings with context from the surrounding document:
+
+## Heading-path context (optional)
+
+After chunking, prepend each chunk with the Markdown heading stack
+that was in scope at its start. Embedders gain document-outline
+context the chunk itself doesn't carry — the trick from Dan Stites's
+[Out-of-Context Chunk Problem](https://d-star.ai/solving-the-out-of-context-chunk-problem-for-rag).
+
+```python
+chunks, _ = split_chunks(chunklets, embeddings, max_size=2048)
+paths     = heading_paths(chunks)
+indexable = [(p + "\n" + c if p else c) for p, c in zip(paths, chunks)]
+```
+
 ## Late chunking (optional)
 
 Late chunking gives each chunk an embedding computed in the *context*
@@ -119,19 +164,6 @@ Three runnable reference adapters in
 HuggingFace transformers, and a remote HTTP client. Each is ~50 lines
 of glue.
 
-## Heading-path context (optional)
-
-After chunking, prepend each chunk with the Markdown heading stack
-that was in scope at its start. Embedders gain document-outline
-context the chunk itself doesn't carry — the trick from Dan Stites's
-[Out-of-Context Chunk Problem](https://d-star.ai/solving-the-out-of-context-chunk-problem-for-rag).
-
-```python
-chunks, _ = split_chunks(chunklets, embeddings, max_size=2048)
-paths     = heading_paths(chunks)
-indexable = [(p + "\n" + c if p else c) for p, c in zip(paths, chunks)]
-```
-
 ## Observability
 
 Every public function emits an OpenTelemetry span — names like
@@ -141,21 +173,6 @@ Every public function emits an OpenTelemetry span — names like
 SDK. Useful for figuring out which stage just got slow in
 production.
 
-## Performance
-
-End-to-end on an M2 MacBook Air (punctuation segmenter, no model
-inference):
-
-| Document | Size | Pipeline |
-|---|---:|---:|
-| Blog post | 8.6 KB | **13 ms** |
-| Long article | 12 KB | **15 ms** |
-| Book chapter | 104 KB | **127 ms** |
-
-Stage 1 is sliding-window-DP (O(N) amortized); stages 2 and 3 are
-vectorized 1-D DPs. Throughput is roughly flat ~0.7 MB/s across
-two orders of magnitude in document size.
-
 ## Status
 
 Alpha (`0.1.x`). Public API is documented in
@@ -163,14 +180,6 @@ Alpha (`0.1.x`). Public API is documented in
 and locked in by the test suite, but not yet SemVer-stable — that
 lands at `1.0.0`. CI runs pyright strict + pytest on Python 3.12
 and 3.13 on every push.
-
-## What it doesn't do
-
-- Doesn't parse PDFs, Word, or HTML. Input is Markdown.
-- Doesn't embed text. Pass embeddings if you have them (for
-  topic-shift splitting); skip them if you don't (structural-only mode
-  uses Markdown structure + heading-aware logic).
-- Doesn't index, retrieve, or generate. Output is `list[str]`.
 
 ## Where the specs live
 

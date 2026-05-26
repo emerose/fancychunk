@@ -108,8 +108,10 @@ def test_split_chunks_emits_span_short_circuit(captured_spans) -> None:
     invoking the embedder. The span records the short-circuit branch
     but does NOT carry an embedding.dim attribute (the embedder was
     never called)."""
+    from fancychunk.embedders import noop
+
     exporter, provider = captured_spans
-    chunks = split_chunks(["a chunklet."])
+    chunks = split_chunks(["a chunklet."], noop())
     assert chunks == ["a chunklet."]
     provider.force_flush()
     span = next(

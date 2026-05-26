@@ -11,6 +11,7 @@ from . import _constants as constants
 from . import embedders
 from .chunklets import split_chunklets
 from .chunks import ChunkletEmbedder, split_chunks
+from .document import Embedder, chunk_document
 from .errors import (
     ChunkExceedsContextError,
     FancyChunkError,
@@ -36,6 +37,8 @@ __all__ = [
     "embed_with_late_chunking",
     "heading_paths",
     "enrich_with_headings",
+    "chunk_document",
+    "Embedder",
     "SaTSegmenter",
     "SentenceSegmenter",
     "punctuation_segmenter",

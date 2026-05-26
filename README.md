@@ -30,9 +30,32 @@ NDCG@10/Recall@10/MRR@10 stats from ragkit.  compare:
 
 ## Quick start
 
-The end-to-end RAG pipeline — semantic topic-shift chunking, late
-chunking for context-aware embeddings, heading-path prepending, and a
-single pooled vector per chunk ready for your vector store:
+```python
+from fancychunk import chunk_document
+from fancychunk.embedders import qwen3_600m
+
+embedder = qwen3_600m()                          # probably the right pick for most uses
+chunks, vectors = chunk_document(open("my-document.md").read(), embedder)
+# chunks[i] ⇄ vectors[i] — drop straight into your vector store.
+```
+
+That's it. `chunk_document` runs the full pipeline — semantic
+topic-shift chunking, then late chunking to produce one
+context-aware vector per chunk with the document's heading stack
+folded into the embedding context. The same embedder instance is
+used for the partition decision and the late-chunking pass, so the
+model loads exactly once.
+
+`qwen3_600m()` is the recommended default for most workloads
+(~596M params, native 1024-dim, MTEB Multilingual 64.33 — the
+leader at sub-1B). For other choices see [Models](#models) below.
+
+### Building blocks
+
+`chunk_document` is sugar over the four primitives. Compose them
+directly when you want more control — different embedders per
+stage, different `max_size` per stage, a structural-only split, or
+storage-time heading breadcrumbs:
 
 ```python
 from fancychunk import (
@@ -41,62 +64,44 @@ from fancychunk import (
     split_chunks,
     embed_with_late_chunking,
     enrich_with_headings,
-    embedders,
 )
+from fancychunk.embedders import qwen3_600m
 
+embedder = qwen3_600m()
 doc = open("my-document.md").read()
 
-# Stages 1-3 — produce chunks. split_chunks defaults to
-# `embedders.default()`, the hardware-appropriate recommended
-# embedder; override with any other factory, or pass
-# `embedder=embedders.noop()` for a no-model-download
-# structural-only split.
 sentences = split_sentences(doc, max_len=2048)
 chunklets = split_chunklets(sentences, max_size=2048)
-chunks = split_chunks(chunklets, max_size=2048)
+chunks    = split_chunks(chunklets, embedder, max_size=2048)
+vectors   = embed_with_late_chunking(chunks, embedder)
 
-# Late chunking — one context-aware embedding per chunk. The
-# embedder sees adjacent chunks together so attention can resolve
-# anaphora ("the algorithm" → real referent); the in-scope heading
-# stack is prepended once per segment as additional outline context
-# (controlled by `include_headings=True`, on by default). Reuses
-# split_chunks's cached embedder singleton — same weights, one load.
-vectors = embed_with_late_chunking(chunks, embedders.default())
-
-# Heading-path enrichment — prepend each chunk's Markdown heading
-# stack onto the *stored* text, as a retrieval-time breadcrumb. The
-# vectors above already incorporate the heading context via late
-# chunking; this step is for what gets displayed back to the user.
+# Optional: decorate the *stored* chunk text with its heading path
+# as a retrieval-time breadcrumb. `enrich_with_headings` does NOT
+# affect `vectors` — late chunking already saw the in-document
+# headings via its per-segment heading prepend.
 chunks = enrich_with_headings(chunks)
-
-# chunks[i] ⇄ vectors[i] — drop straight into your vector store.
 ```
 
-Five calls to go from a Markdown document to indexable vectors:
-three pipeline stages, late chunking for the storage embeddings, and
-the optional heading-path enrichment. A higher-level
-`chunk_document(doc, embedder=default())` is still on the roadmap
-to collapse this into one call, but the building blocks here are
-the documented, test-locked API. The rest of this README walks
-through what each piece does and what you can swap out.
+For a no-model-download structural split, swap the embedder for
+`embedders.noop()`:
 
-`fancychunk.embedders` ships two parallel sets of factories. The
-**tier-named** ones pick the best model for the current hardware:
-`default()` (recommended) → `fastest()` (throughput king) → `fast()`
-→ `medium()` → `high()`. The **model-named** ones — `bge_m3()`,
-`qwen3_600m()`, `qwen3_4b(dim=...)`, `qwen3_8b(dim=...)` — pin a
-specific model regardless of backend, for when reproducibility across
-machines matters. On Apple Silicon both sets automatically pick the
-MLX-mxfp8 builds when `mlx_embeddings` is installed. The Qwen models
-return their native dimension by default (`qwen3_4b` → 2560,
-`qwen3_8b` → 4096); pass `dim=N` for Matryoshka truncation.
+```python
+from fancychunk.embedders import noop
+chunks = split_chunks(chunklets, noop(), max_size=2048)
+```
 
-For a no-model-download structural split, pass `embedder=noop()` to
-`split_chunks`. `noop()` returns constant per-chunklet vectors, which
-collapses the semantic-similarity term and leaves heading-aware
-boundaries as the only signal — the same behavior the old "no
-embeddings supplied" path produced, now reachable through the
-embedder interface.
+`noop()` returns constant per-chunklet vectors, which collapses
+the semantic-similarity term and leaves heading-aware boundaries
+as the only signal — the same shape the old "no embeddings
+supplied" path produced.
+
+**Lifecycle.** Each call to `qwen3_600m()` (or any factory)
+returns a fresh embedder instance. The model weights load lazily
+on first use of `embed_chunklets` / `embed_segment`. Hold the
+embedder reference while you need it; drop it to free its memory.
+Two separate factory calls = two independent instances and two
+model loads — pass one instance everywhere when you want to share
+weights, which is what `chunk_document` does internally.
 
 ## What it does
 
@@ -139,67 +144,88 @@ taxonomy), subject to a hard max-size covering constraint.
 
 ## Enrichment
 
-Two optional steps that push context from the surrounding document
-into each chunk's output. Either can be dropped if you don't want it,
-and they partly overlap — pick what fits your retrieval setup.
+The pipeline includes two enrichment steps that pull document
+context into each chunk's output. **Both are baked into
+`chunk_document`** with sensible defaults; the building-blocks form
+exposes them as separate primitives.
 
-### Late chunking (recommended)
+### Late chunking (does the heavy lifting)
 
-`embed_with_late_chunking(sentences, embedder)` gives each sentence
-an embedding computed in the *context* of its neighbours — anaphor
-references like "it" and "the algorithm" pick up real referents
-instead of generic directions. Mean-pooling those per-sentence
-embeddings within each final chunk yields a per-chunk vector that
-carries inter-chunk context an in-isolation embedding would lose.
-Typical retrieval-quality win is 4–8 MTEB points (Jina AI's paper
-has the numbers). Every bundled embedder satisfies the token-level
-contract late chunking requires; cloud APIs that only return one
-vector per input do not.
+`embed_with_late_chunking(chunks, embedder)` produces one
+context-aware vector per chunk. Instead of embedding each chunk in
+isolation, the embedder sees windows of adjacent chunks together so
+attention can resolve anaphora ("the algorithm" picks up its real
+referent), and the in-scope Markdown heading stack is **prepended
+once per segment** as additional preamble (controlled by
+`include_headings=True`, on by default). Typical retrieval-quality
+win is 4–8 MTEB points (Jina AI's paper has the numbers).
 
-### Heading-path enrichment (optional)
+Because the heading stack is already in the embedder's input, **the
+embedding already incorporates heading context** — there's no need
+to also prepend headings to the chunk text before embedding.
+`enrich_with_headings` is for the *stored* text only (see below).
+
+The bundled embedders all satisfy the token-level contract late
+chunking requires. Cloud APIs that only return one vector per input
+do not.
+
+### Heading-path enrichment (display only)
 
 `enrich_with_headings(chunks)` returns each chunk with the Markdown
 heading stack in scope at its start prepended (e.g.
-`"# Top\n## Sub\n\n<chunk text>"`). Two reasons to do this:
+`"# Top\n## Sub\n\n<chunk text>"`). The use case is **stored-text
+breadcrumbs**: when a chunk gets surfaced back to the user from a
+vector store, the prepended heading shows where in the document it
+came from.
 
-- **Outline-context boost for the embedding** — apply
-  `enrich_with_headings` *before* embedding, and the heading stack
-  goes into the vector. Useful when each chunk would otherwise be
-  embedded in isolation, since the embedder gains document-outline
-  context the chunk's own text doesn't carry. The trick from Dan
-  Stites's
-  [Out-of-Context Chunk Problem](https://d-star.ai/solving-the-out-of-context-chunk-problem-for-rag).
-  With late chunking the nearest heading is already in the
-  preamble window, so this use is largely redundant.
-- **Breadcrumb for display** — apply *after* embedding (as in the
-  Quick start) so the prepended heading shows up when the chunk is
-  surfaced back to the user, without changing the vector.
+Apply it *after* embedding (the Quick start's building-blocks form
+shows this) so the breadcrumb doesn't double up on the heading
+context the vectors already carry. If you're not using late
+chunking — e.g., you swapped in a BYO embedder that doesn't expose
+per-token outputs — you can apply `enrich_with_headings` before
+embedding instead, to push outline context into the vector that
+way; that's the d-star.ai
+[Out-of-Context Chunk Problem](https://d-star.ai/solving-the-out-of-context-chunk-problem-for-rag)
+trick. With late chunking that mode is redundant.
 
-fancychunk doesn't host any embedding model. The bundled factories
-are an opinionated default; if you want your own, write a thin
-adapter against this protocol:
+### Bring your own embedder
+
+fancychunk ships four bundled embedders (see [Models](#models)).
+If you need your own — different backend, custom model, remote
+service — implement the protocol:
 
 ```python
-class SegmentEmbedder(Protocol):
+class Embedder(Protocol):
     n_ctx: int
-    def count_tokens(self, sentences: list[str]) -> list[int]: ...
+    def count_tokens(self, texts: list[str]) -> list[int]: ...
     def embed_segment(
-        self, sentences: list[str]
+        self, texts: list[str]
     ) -> tuple[NDArray, list[int]]: ...
+    def embed_chunklets(self, chunklets: list[str]) -> NDArray: ...
 ```
+
+`embed_chunklets` is the pooled per-chunklet path for `split_chunks`;
+`embed_segment` + `count_tokens` are the token-level path for
+`embed_with_late_chunking`. A single class implements both — the
+bundled embedders do.
 
 Three runnable reference adapters in
 [`examples/embedders/`](examples/embedders/): MLX + Qwen3-Embedding,
-HuggingFace transformers, and a remote HTTP client. Each is ~50 lines
-of glue.
+HuggingFace transformers, and a remote HTTP client. They currently
+implement just the late-chunking half of the protocol; add a
+`embed_chunklets` method (one batched forward pass over each
+chunklet, pooled the same way the model was trained) to use them
+with `split_chunks` or `chunk_document`.
 
 ## Models
 
 fancychunk uses two kinds of model: a *sentence segmenter* (Stage 1)
-and an *embedder* (Stage 3 + optional late chunking). Both are
+and an *embedder* (Stage 3 + late chunking). Both are
 **lazy-loaded on first use** — importing `fancychunk` itself is
-cheap and triggers no network calls. Weights cache under
-`~/.cache/huggingface/` so the download happens once per machine.
+cheap and triggers no network calls, and constructing an embedder
+(e.g. `qwen3_600m()`) doesn't load the weights either. Weights
+cache under `~/.cache/huggingface/` so the download happens once
+per machine; subsequent process runs hit the cache.
 
 **Sentence segmenter — SaT.** The default is `sat-3l-sm` from
 [Segment Any Text](https://arxiv.org/abs/2406.16678) (Frohmann et
@@ -211,23 +237,19 @@ deployments where you can tolerate lower segmentation quality, pass
 `segmenter=punctuation_segmenter` instead: a ~50-line rule-based
 fallback bundled with the library.
 
-**Embedders.** Four bundled models trade quality for latency. Each
-has a **model-named factory** that pins the model regardless of
-backend, plus five **tier-named convenience factories** that pick a
-hardware-appropriate model:
-
-| Tier factory | Picks | Rationale |
-|---|---|---|
-| `default()` | `qwen3_600m()` on MLX, `qwen3_8b(dim=1024)` on torch | Recommended default. Mac stays interactive; CUDA gets near-leaderboard quality at ~44 ms per pass. Output is 1024-dim either way. |
-| `fastest()` | `qwen3_600m()` on MLX, `bge_m3()` on torch (CUDA/MPS/CPU) | Throughput winner depends on backend — Qwen3-0.6B-mxfp8 leads on Apple Silicon; BGE-M3 leads on discrete GPUs. |
-| `fast()` | `qwen3_600m()` everywhere | Best MTEB at sub-1B; only ~1.3× slower than `fastest()` on the worst backend. |
-| `medium(dim=...)` | `qwen3_4b(dim=...)` everywhere | Alias. Defaults to native 2560-dim. |
-| `high(dim=...)` | `qwen3_8b(dim=...)` everywhere | Alias. Defaults to native 4096-dim. |
+**Embedders.** Four bundled models trade quality for latency. You
+pick one explicitly — there's no hidden default — and pass it
+through to `chunk_document` (or to the individual primitives). The
+recommended choice for most workloads is **`qwen3_600m()`**: good
+quality (MTEB Multilingual 64.33, the sub-1B leader), modest
+memory (~0.5 GB on MLX-mxfp8, ~1 GB on torch), and fast enough to
+keep interactive workflows responsive.
 
 The MLX backend is auto-selected on Apple Silicon when
 `mlx_embeddings` is installed (skipped via PEP 508 marker on
-Linux/Windows). MTEB scores are from each model's published tables;
-throughput is measured on this machine.
+Linux/Windows); the factories transparently pick the
+MLX-community build of each model. MTEB scores are from each
+model's published tables; throughput is measured on this machine.
 
 Apple Silicon, MLX path (M2 MacBook Air):
 
@@ -249,8 +271,8 @@ Linux, torch + CUDA path (RTX 3090)²:
 
 `qwen3_4b` and `qwen3_8b` accept a `dim=N` argument to truncate via
 Matryoshka Representation Learning and re-L2-normalize; the compute
-cost is unchanged. Pass `dim=1024` (what `default()` does on CUDA) to
-keep storage-pin-compatibility with the smaller models.
+cost is unchanged. Pass `dim=1024` to keep storage-pin-compatibility
+with `qwen3_600m` and `bge_m3`.
 
 ¹ MLX builds: `mlx-community/bge-m3-mlx-fp16`,
 `mlx-community/Qwen3-Embedding-{0.6B,4B,8B}-mxfp8`. The Qwen3
@@ -273,25 +295,25 @@ A few things worth knowing:
   meaningful gap on multilingual retrieval); `qwen3_4b` beats
   `qwen3_600m` by another ~5 points at ~6× the latency; `qwen3_8b`
   adds another ~1 point on top.
-- **Speed vs quality:** on MLX, `qwen3_600m` at mxfp8 actually
-  outruns `bge_m3` at fp16 — which is why `fastest()` picks Qwen3 on
-  Apple Silicon. On torch (MPS or CUDA) the encoder-vs-decoder
-  architectural gap reasserts itself: BGE-M3 is the throughput
-  king, and on an RTX 3090 it's ~2.3× faster than Qwen3-0.6B. The
-  spread across all four models compresses to ~3× on CUDA vs ~12×
-  on MLX — a discrete GPU hides the per-pass overhead that dominates
-  the small-batch MLX path.
-- **`noop()`** is the fifth bundled embedder: zero downloads, returns
-  constant per-chunklet vectors. Use it for a structural-only split
-  via `split_chunks(chunklets, embedder=noop())`.
+- **Speed vs quality by backend:** on MLX, `qwen3_600m` at mxfp8
+  actually outruns `bge_m3` at fp16 — Apple Silicon's the one place
+  the decoder model wins on throughput too. On torch (MPS or CUDA)
+  the encoder-vs-decoder architectural gap reasserts itself: BGE-M3
+  is the throughput king, and on an RTX 3090 it's ~2.3× faster than
+  Qwen3-0.6B. The spread across all four models compresses to ~3×
+  on CUDA vs ~12× on MLX — a discrete GPU hides the per-pass
+  overhead that dominates the small-batch MLX path.
+- **`noop()`** is the fifth bundled embedder: zero downloads,
+  returns constant per-chunklet vectors. Use it for a
+  structural-only split via `split_chunks(chunklets, noop())`.
 - **8B on a 24 GB Mac is tight.** `qwen3_8b()` runs at ~7 GB
   resident and shares unified memory with everything else; expect
-  thermal throttling on sustained workloads on an Air. `default()`
-  picks `qwen3_600m()` on MLX precisely to avoid this.
-- **None of the above:** the BYO protocol is two methods and one
-  attribute — see [Late chunking (optional)](#late-chunking-optional)
-  and [`examples/embedders/`](examples/embedders/) for templates
-  covering MLX, HuggingFace, and remote HTTP backends.
+  thermal throttling on sustained workloads on an Air. Stick with
+  `qwen3_600m()` (the recommended default) unless you've measured
+  the quality gain matters for your retrieval task.
+- **None of the above:** implement the BYO protocol from
+  [Bring your own embedder](#bring-your-own-embedder) above — three
+  methods plus an attribute, ~50 lines of glue.
 
 ## Observability
 
@@ -326,11 +348,11 @@ entirely.
   back into an extra (probably one per backend: `[torch]`,
   `[mlx]`), with the base install carrying only the structural
   pipeline + `noop()`. Tracking issue TBD.
-- **`chunk_document()` convenience.** Wrap the Quick start's
-  remaining glue into a single entry point that returns
-  `(chunks, vectors)` ready for a vector store. With factory
-  caching in place, `chunk_document` can reuse one embedder across
-  stage 3 and late chunking without the caller doing anything.
+- **Reference adapters could implement `embed_chunklets`.** The
+  three example adapters in `examples/embedders/` currently
+  implement only the late-chunking half of the protocol (n_ctx +
+  count_tokens + embed_segment). Adding a thin `embed_chunklets`
+  pass would make them usable as `chunk_document` embedders.
 
 ## Acknowledgments
 

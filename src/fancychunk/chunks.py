@@ -43,22 +43,29 @@ class ChunkletEmbedder(Protocol):
 
 def split_chunks(
     chunklets: list[str],
-    embedder: ChunkletEmbedder | None = None,
+    embedder: ChunkletEmbedder,
     max_size: int = C.DEFAULT_MAX_SIZE_CHARS,
 ) -> list[str]:
     """Partition ``chunklets`` into chunks.
 
     Implements ``docs/specs/03-semantic-chunking.md``.
 
-    ``embedder`` defaults to ``embedders.default()`` — the hardware-
-    appropriate recommended embedder, a process-wide singleton. The
-    embedder drives the *split decision* only; its output is not
-    returned. For the storage embeddings the caller indexes against,
-    use :func:`embed_with_late_chunking` on the chunks returned here.
+    ``embedder`` is required. The caller picks the embedder
+    explicitly — see ``fancychunk.embedders`` for the bundled
+    choices (``qwen3_600m()`` is the recommended default for most
+    uses). The embedder drives the *split decision* only; its output
+    is not returned. For storage embeddings the caller indexes
+    against, use :func:`embed_with_late_chunking` on the chunks
+    returned here — or use :func:`chunk_document` to do both in one
+    call.
 
     Pass ``embedder=embedders.noop()`` for a no-model-download
     structural-only split (uniform cosine signal, heading-aware
     boundaries only).
+
+    On the trivial-input short-circuit paths (SPEC-CHUNK-340) the
+    embedder argument is required for signature consistency but is
+    not invoked.
     """
     if max_size <= 0:
         raise ValidationError("max_size must be positive")
@@ -95,13 +102,7 @@ def split_chunks(
             return ["".join(chunklets)]
 
         # Multi-chunklet, multi-chunk case: embedder drives the
-        # partition decision. Resolve the embedder lazily so module
-        # import doesn't depend on the bundled embedders package.
-        if embedder is None:
-            from .embedders import default
-
-            embedder = default()
-
+        # partition decision.
         emb = np.asarray(embedder.embed_chunklets(chunklets))
         if emb.ndim != 2:
             raise ValidationError(

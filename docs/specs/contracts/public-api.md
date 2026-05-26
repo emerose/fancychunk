@@ -70,7 +70,7 @@ SPEC-CHUNK-202.
 ```python
 def split_chunks(
     chunklets: list[str],
-    embedder: ChunkletEmbedder | None = None,
+    embedder: ChunkletEmbedder,
     max_size: int = 2048,
 ) -> list[str]
 ```
@@ -80,7 +80,7 @@ Implements [spec 03](../03-semantic-chunking.md).
 | Parameter | Default | Contract |
 |-----------|---------|----------|
 | `chunklets` | — | Ordered list of chunklets. |
-| `embedder` | implementation-defined recommended default when `None` (typically the bundled "default" embedder for the current hardware) | Caller-supplied object exposing `embed_chunklets(chunklets) -> Matrix[N, D]`. Each returned row must have nonzero L2 norm. Pass a constant-output embedder (e.g. `fancychunk.embedders.noop()`) for a no-model-download structural-only split. The embedder is invoked only on the multi-chunk partition path; trivial-input short-circuits (SPEC-CHUNK-340) skip it. |
+| `embedder` | — | Caller-supplied object exposing `embed_chunklets(chunklets) -> Matrix[N, D]`. Each returned row must have nonzero L2 norm. Pass a constant-output embedder (e.g. `fancychunk.embedders.noop()`) for a no-model-download structural-only split. The embedder is invoked only on the multi-chunk partition path; trivial-input short-circuits (SPEC-CHUNK-340) skip it but the argument remains required for signature consistency. |
 | `max_size` | `2048` | Hard upper bound on chunk length in characters. |
 
 Returns the list of chunks satisfying SPEC-CHUNK-300 and
@@ -143,23 +143,54 @@ texts_for_embedding = [
 ]
 ```
 
+## Function: chunk document (optional)
+
+```python
+def chunk_document(
+    document: str,
+    embedder: Embedder,
+    max_size: int = 2048,
+) -> tuple[list[str], Matrix]
+```
+
+Optional convenience composed entirely from the four required
+operations above plus late chunking. Implementations may omit it.
+
+| Parameter | Default | Contract |
+|-----------|---------|----------|
+| `document` | — | UTF-8 string. |
+| `embedder` | — | An object satisfying both the `ChunkletEmbedder` (`embed_chunklets`) and `SegmentEmbedder` (`n_ctx`, `count_tokens`, `embed_segment`) contracts. The same instance is used for the partition decision and for late chunking, so model weights load exactly once. |
+| `max_size` | `2048` | Hard upper bound shared by stages 1-3 (passed as `max_len` to `split_sentences` and as `max_size` to `split_chunklets` / `split_chunks`). |
+
+Returns `(chunks, vectors)` where:
+- `chunks` is the result of `split_chunks` (satisfying SPEC-CHUNK-300, -301).
+- `vectors` is `embed_with_late_chunking(chunks, embedder)` — one
+  L2-normalized context-aware embedding per chunk, with the heading
+  stack prepended once per segment (SPEC-CHUNK-470, default on).
+
+For storage-time heading-breadcrumb decoration, apply
+`enrich_with_headings(chunks)` to the returned chunks. That step
+does **not** affect `vectors` — late chunking already saw the
+in-document headings via SPEC-CHUNK-470.
+
 ## Wiring the stages
 
-The pipeline has no top-level "do everything" function; callers
-compose the three stages themselves. When doing so, pass
+`chunk_document` is the one-call entry point. For finer control —
+different embedders per stage, different `max_size` per stage, or a
+structural-only split via `embedders.noop()` — compose the
+underlying stages yourself. When doing so, pass
 `max_len = max_size` to `split_sentences` so that no individual
 sentence exceeds the downstream chunklet size limit (which would
 trigger SPEC-CHUNK-263). `split_sentences`'s own default for
 `max_len` is `None` because the function is also useful standalone.
 
-Example:
+Example (manual composition):
 
 ```python
 sentences = split_sentences(doc, max_len=2048)
 chunklets = split_chunklets(sentences, max_size=2048)
-chunks = split_chunks(chunklets, max_size=2048)
-# `split_chunks` resolves its `embedder` argument to an
-# implementation-defined recommended default when omitted.
+chunks = split_chunks(chunklets, embedder, max_size=2048)
+vectors = embed_with_late_chunking(chunks, embedder)
 ```
 
 ## Error contract

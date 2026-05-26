@@ -86,15 +86,13 @@ def test_total_fits_skips_embedder() -> None:
     assert chunks == ["one two three"]
 
 
-# SPEC-CHUNK-340 — short-circuits also work with embedder=None
-# (the lazy default would resolve, but we never invoke it).
-def test_short_circuit_does_not_resolve_default_embedder() -> None:
-    # If the lazy default were resolved on the short-circuit path,
-    # we'd load a model on import — passing no embedder must still
-    # be cheap when the input is trivial.
-    assert split_chunks([]) == []
-    assert split_chunks(["only one"]) == ["only one"]
-    assert split_chunks(["one ", "two ", "three"]) == ["one two three"]
+# SPEC-CHUNK-340 — short-circuits hold for any embedder argument
+# (the embedder is never invoked on these paths). We use the noop
+# embedder here since it's the cheapest valid choice.
+def test_short_circuit_with_noop_embedder() -> None:
+    assert split_chunks([], noop()) == []
+    assert split_chunks(["only one"], noop()) == ["only one"]
+    assert split_chunks(["one ", "two ", "three"], noop()) == ["one two three"]
 
 
 # Identical embeddings, total fits: short-circuit before similarity.

@@ -18,7 +18,7 @@ that idea.
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `chunklets` | list of strings | yes | — | An ordered sequence of chunklets, typically from stage 2. |
-| `embedder` | `ChunkletEmbedder` (object exposing `embed_chunklets(chunklets) -> matrix[N, D]`), or `None` | no | `None` → resolves lazily to an implementation-defined recommended default | Caller-supplied embedder that produces one pooled vector per chunklet. The stage calls `embedder.embed_chunklets(chunklets)` at most once — only on the multi-chunk partition path. Trivial-input short-circuits (SPEC-CHUNK-340) skip the call entirely, so passing a lazy default for a tiny input pays no model-load cost. Each returned row must have nonzero L2 norm (SPEC-CHUNK-342). For a no-model-download structural-only split, pass an embedder that returns identical constant vectors (the Python implementation ships such an embedder as `fancychunk.embedders.noop()`); the cosine-similarity term then collapses uniformly and only heading-aware boundaries shape the split. |
+| `embedder` | `ChunkletEmbedder` (object exposing `embed_chunklets(chunklets) -> matrix[N, D]`) | yes | — | Caller-supplied embedder that produces one pooled vector per chunklet. The stage calls `embedder.embed_chunklets(chunklets)` at most once — only on the multi-chunk partition path. Trivial-input short-circuits (SPEC-CHUNK-340) skip the call entirely; the embedder argument is still required for signature consistency. Each returned row must have nonzero L2 norm (SPEC-CHUNK-342). For a no-model-download structural-only split, pass an embedder that returns identical constant vectors (the Python implementation ships such an embedder as `fancychunk.embedders.noop()`); the cosine-similarity term then collapses uniformly and only heading-aware boundaries shape the split. |
 | `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunk length in characters. (Same default as stage 2; see Spec 02 for the rationale.) |
 
 ## Outputs
@@ -371,8 +371,3 @@ that partition optimization failed.
 - Behavior when the embedder's output has a row count different from
   `len(chunklets)`. The implementation should validate and raise
   before optimization begins.
-- The specific default embedder chosen when `embedder` is `None`.
-  Implementations are free to ship a hardware-aware recommended
-  default (the Python implementation uses
-  `fancychunk.embedders.default()`), or to reject `None` and require
-  an explicit embedder argument.

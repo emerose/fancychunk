@@ -24,11 +24,6 @@ from fancychunk.embedders import (
     NoopSegmentEmbedder,
     PooledSegmentEmbedder,
     bge_m3,
-    default,
-    fast,
-    fastest,
-    high,
-    medium,
     noop,
     qwen3_4b,
     qwen3_8b,
@@ -56,14 +51,6 @@ def test_model_named_factories_return_pooled_segment_embedder() -> None:
     assert isinstance(qwen3_600m(), PooledSegmentEmbedder)
     assert isinstance(qwen3_4b(), PooledSegmentEmbedder)
     assert isinstance(qwen3_8b(), PooledSegmentEmbedder)
-
-
-def test_tier_named_factories_return_pooled_segment_embedder() -> None:
-    assert isinstance(default(), PooledSegmentEmbedder)
-    assert isinstance(fastest(), PooledSegmentEmbedder)
-    assert isinstance(fast(), PooledSegmentEmbedder)
-    assert isinstance(medium(), PooledSegmentEmbedder)
-    assert isinstance(high(), PooledSegmentEmbedder)
 
 
 def test_factories_pick_correct_pooling() -> None:
@@ -119,49 +106,14 @@ def test_bge_m3_and_qwen3_600m_have_no_mrl_truncation() -> None:
     assert qwen3_600m().output_dim is None
 
 
-# ----- tier-named factory dispatch -----
-
-
-def test_default_picks_qwen3_600m_on_mlx_qwen3_8b_on_torch() -> None:
-    """SPEC: default() picks the hardware-appropriate model.
-
-    * MLX → qwen3_600m at native 1024-dim.
-    * torch → qwen3_8b with MRL truncation to 1024-dim.
-    """
-    embedder = default()
-    if _mlx_available():
-        assert embedder.model_id.endswith("Qwen3-Embedding-0.6B-mxfp8")
-        assert embedder.output_dim is None  # native 1024
-    else:
-        assert embedder.model_id == "Qwen/Qwen3-Embedding-8B"
-        assert embedder.output_dim == 1024
-
-
-def test_fastest_picks_qwen3_600m_on_mlx_bge_m3_on_torch() -> None:
-    embedder = fastest()
-    if _mlx_available():
-        assert embedder.model_id.endswith("Qwen3-Embedding-0.6B-mxfp8")
-    else:
-        assert embedder.model_id == "BAAI/bge-m3"
-
-
-def test_fast_is_qwen3_600m_everywhere() -> None:
-    embedder = fast()
-    if _mlx_available():
-        assert embedder.model_id.endswith("Qwen3-Embedding-0.6B-mxfp8")
-    else:
-        assert embedder.model_id == "Qwen/Qwen3-Embedding-0.6B"
-    assert embedder.pooling == "last_token"
-
-
-def test_medium_aliases_qwen3_4b_with_native_dim_default() -> None:
-    assert medium().output_dim is None  # native 2560
-    assert medium(dim=1024).output_dim == 1024
-
-
-def test_high_aliases_qwen3_8b_with_native_dim_default() -> None:
-    assert high().output_dim is None  # native 4096
-    assert high(dim=1024).output_dim == 1024
+def test_factories_return_fresh_instances_each_call() -> None:
+    """No caching. Each factory call returns a new embedder
+    instance; the caller manages lifecycle. (Pass the same instance
+    twice to reuse weights, or call the factory twice to load the
+    model twice — the caller's choice.)"""
+    a = qwen3_600m()
+    b = qwen3_600m()
+    assert a is not b
 
 
 # ----- noop -----
@@ -186,11 +138,11 @@ def test_noop_embed_chunklets_constant_unit_vectors() -> None:
 
 def test_noop_embed_segment_satisfies_row_conservation() -> None:
     e = noop()
-    sentences = ["one", "two three", "four five six seven"]
-    mat, counts = e.embed_segment(sentences)
+    texts = ["one", "two three", "four five six seven"]
+    mat, counts = e.embed_segment(texts)
     assert mat.shape[1] == e.embedding_dim
     assert sum(counts) == mat.shape[0]
-    assert len(counts) == len(sentences)
+    assert len(counts) == len(texts)
 
 
 def test_noop_with_split_chunks_structural_only() -> None:
@@ -246,7 +198,6 @@ SAMPLE_SENTENCES = [
         (lambda: qwen3_4b(dim=512), 512),
         (qwen3_8b, 4096),
         (lambda: qwen3_8b(dim=1024), 1024),
-        (default, 1024),
     ],
 )
 def test_embed_chunklets_shape_and_norm(factory, expected_dim: int) -> None:
@@ -270,10 +221,10 @@ def test_embedders_implement_segment_embedder_protocol(factory) -> None:
     counts = embedder.count_tokens(SAMPLE_SENTENCES)
     assert len(counts) == len(SAMPLE_SENTENCES)
     assert all(c > 0 for c in counts)
-    mat, per_sentence = embedder.embed_segment(SAMPLE_SENTENCES)
+    mat, per_text = embedder.embed_segment(SAMPLE_SENTENCES)
     assert mat.ndim == 2
-    assert sum(per_sentence) == mat.shape[0]
-    assert len(per_sentence) == len(SAMPLE_SENTENCES)
+    assert sum(per_text) == mat.shape[0]
+    assert len(per_text) == len(SAMPLE_SENTENCES)
 
 
 @_requires_models
@@ -297,7 +248,9 @@ def test_qwen3_600m_end_to_end_with_late_chunking() -> None:
     embedder = qwen3_600m()
     doc = "# Heading\n\nFirst sentence. Second sentence. Third sentence.\n"
     sentences = split_sentences(doc, max_len=2048, segmenter=punctuation_segmenter)
-    emb = embed_with_late_chunking(sentences, embedder)
+    # embed_with_late_chunking takes chunks now; use the sentences
+    # directly as a single-chunk approximation for this smoke test.
+    emb = embed_with_late_chunking(sentences, embedder, include_headings=False)
     assert emb.shape[0] == len(sentences)
     assert np.allclose(np.linalg.norm(emb, axis=1), 1.0, atol=1e-3)
 

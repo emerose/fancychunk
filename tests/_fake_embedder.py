@@ -46,6 +46,29 @@ class FakeEmbedder:
             mat[i, ord(ch) % self.dim] = 1.0
         return mat, counts
 
+    def embed_chunklets(
+        self, chunklets: list[str]
+    ) -> NDArray[np.float64]:
+        """Pooled per-chunklet embedding — sum of per-character one-hot
+        vectors, L2-normalized. Satisfies the ChunkletEmbedder
+        contract so the fake can be used as a full ``Embedder``
+        (e.g., with ``chunk_document``)."""
+        rows: list[NDArray[np.float64]] = []
+        for c in chunklets:
+            v = np.zeros(self.dim, dtype=np.float64)
+            for ch in c:
+                v[ord(ch) % self.dim] += 1.0
+            n = float(np.linalg.norm(v))
+            if n > 0:
+                v = v / n
+            else:
+                # Empty chunklet → satisfy SPEC-CHUNK-342 by using a
+                # canonical unit vector. Real callers shouldn't have
+                # empty chunklets, but tests sometimes do.
+                v[0] = 1.0
+            rows.append(v)
+        return np.stack(rows) if rows else np.zeros((0, self.dim), dtype=np.float64)
+
 
 class WhitespaceDroppingFakeEmbedder(FakeEmbedder):
     """Variant that drops every ``b`` character — single-letter texts

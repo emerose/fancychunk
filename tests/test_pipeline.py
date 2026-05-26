@@ -74,8 +74,9 @@ def test_trivial_input_short_circuits() -> None:
     # Stage 1.
     assert split_sentences("") == []
     assert split_sentences("ab") == ["ab"]
-    # Stage 3 — empty input short-circuits before any embedder call.
-    assert split_chunks([]) == []
+    # Stage 3 — empty input short-circuits; the embedder is required
+    # for signature consistency but is not invoked on this path.
+    assert split_chunks([], noop()) == []
 
 
 def test_heading_paths_consistent_with_pipeline() -> None:

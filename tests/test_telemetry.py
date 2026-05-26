@@ -124,7 +124,7 @@ def test_split_chunks_emits_span(captured_spans) -> None:
 def test_embed_with_late_chunking_emits_span(captured_spans) -> None:
     exporter, provider = captured_spans
     fake = FakeEmbedder(dim=8, n_ctx=512)
-    embed_with_late_chunking(["first.", "second."], fake)
+    embed_with_late_chunking(["first.", "second."], fake, include_headings=False)
     provider.force_flush()
     span = next(
         s
@@ -132,11 +132,12 @@ def test_embed_with_late_chunking_emits_span(captured_spans) -> None:
         if s.name == "fancychunk.embed_with_late_chunking"
     )
     attrs = _attrs(span)
-    assert attrs["fancychunk.sentences.count"] == 2
+    assert attrs["fancychunk.chunks.count"] == 2
     assert attrs["fancychunk.embedder"] == "FakeEmbedder"
     assert attrs["fancychunk.embedding.dim"] == 8
     assert attrs["fancychunk.segments.count"] >= 1
     assert attrs["fancychunk.normalize"] is True
+    assert attrs["fancychunk.include_headings"] is False
 
 
 def test_heading_paths_emits_span(captured_spans) -> None:

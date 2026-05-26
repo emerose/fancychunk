@@ -35,7 +35,6 @@ chunking for context-aware embeddings, heading-path prepending, and a
 single pooled vector per chunk ready for your vector store:
 
 ```python
-import numpy as np
 from fancychunk import (
     split_sentences,
     split_chunklets,
@@ -56,35 +55,30 @@ sentences = split_sentences(doc, max_len=2048)
 chunklets = split_chunklets(sentences, max_size=2048)
 chunks, _ = split_chunks(chunklets, max_size=2048)
 
-# Late chunking — embed each sentence with context from its
-# neighbours, then mean-pool sentences within each chunk. The
-# per-chunk vector carries inter-chunk context that an embedded-
-# in-isolation chunk would lose ("the algorithm" → real referent).
-# Reuses split_chunks's cached singleton — same weights, one load.
-sent_emb = embed_with_late_chunking(sentences, embedders.default())
-chunk_of = np.empty(len(sentences), dtype=int)
-s = 0
-for k, ch in enumerate(chunks):
-    used = 0
-    while used < len(ch):
-        used += len(sentences[s]); chunk_of[s] = k; s += 1
-vectors = np.stack([sent_emb[chunk_of == k].mean(axis=0) for k in range(len(chunks))])
-vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+# Late chunking — one context-aware embedding per chunk. The
+# embedder sees adjacent chunks together so attention can resolve
+# anaphora ("the algorithm" → real referent); the in-scope heading
+# stack is prepended once per segment as additional outline context
+# (controlled by `include_headings=True`, on by default). Reuses
+# split_chunks's cached embedder singleton — same weights, one load.
+vectors = embed_with_late_chunking(chunks, embedders.default())
 
 # Heading-path enrichment — prepend each chunk's Markdown heading
-# stack (useful as a retrieval-time breadcrumb).
+# stack onto the *stored* text, as a retrieval-time breadcrumb. The
+# vectors above already incorporate the heading context via late
+# chunking; this step is for what gets displayed back to the user.
 chunks = enrich_with_headings(chunks)
 
 # chunks[i] ⇄ vectors[i] — drop straight into your vector store.
 ```
 
-Yes, that's a lot of wiring for what is conceptually "chunk this
-document for retrieval" — almost all of it the sentence→chunk
-mapping reconstruction. A higher-level `chunk_document(doc,
-embedder=default())` convenience is on the roadmap; today the
-three-stage API is what's documented and locked in by the test suite.
-The rest of this README walks through what each piece does and what
-you can swap out.
+Five calls to go from a Markdown document to indexable vectors:
+three pipeline stages, late chunking for the storage embeddings, and
+the optional heading-path enrichment. A higher-level
+`chunk_document(doc, embedder=default())` is still on the roadmap
+to collapse this into one call, but the building blocks here are
+the documented, test-locked API. The rest of this README walks
+through what each piece does and what you can swap out.
 
 `fancychunk.embedders` ships two parallel sets of factories. The
 **tier-named** ones pick the best model for the current hardware:

@@ -39,11 +39,19 @@ class ZeroNormEmbeddingError(ValidationError):
     """
 
 
-class SentenceExceedsContextError(ValidationError):
-    """A single sentence exceeds the embedder's context size.
+class ChunkExceedsContextError(ValidationError):
+    """A single chunk exceeds the embedder's context size.
 
-    Raised by stage 4 (SPEC-CHUNK-451).
+    Raised by stage 4 (SPEC-CHUNK-451) when the unit fed to the
+    embedder (a chunk in the current API, historically a sentence)
+    tokenizes to more tokens than ``embedder.n_ctx`` allows.
     """
+
+
+# Back-compat alias. Older stage-4 callers used the per-sentence API
+# and referenced this name; the unit is now a chunk, but external
+# imports of the old name keep working.
+SentenceExceedsContextError = ChunkExceedsContextError
 
 
 class OptimizationFailedError(FancyChunkError):

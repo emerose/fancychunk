@@ -193,24 +193,23 @@ class PooledSegmentEmbedder:
 
     # ----- SegmentEmbedder protocol -----
 
-    def count_tokens(self, sentences: list[str]) -> list[int]:
+    def count_tokens(self, texts: list[str]) -> list[int]:
         _, tokenizer = self._ensure_loaded()
         return [
-            len(tokenizer.encode(s, add_special_tokens=False)) for s in sentences
+            len(tokenizer.encode(s, add_special_tokens=False)) for s in texts
         ]
 
     def embed_segment(
-        self, sentences: list[str]
+        self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
-        """Per-token output + per-sentence counts for late chunking.
+        """Per-token output + per-text counts for late chunking.
 
-        Uses the tokenizer's offset_mapping to align tokens to
-        sentences by character offset; special tokens (offset
-        ``(0, 0)``) are absorbed into the first/last sentence
-        (SPEC-CHUNK-420 option b).
+        Uses the tokenizer's offset_mapping to align tokens to texts
+        by character offset; special tokens (offset ``(0, 0)``) are
+        absorbed into the first/last text (SPEC-CHUNK-420 option b).
         """
         model, tokenizer = self._ensure_loaded()
-        joined = "".join(sentences)
+        joined = "".join(texts)
         enc = tokenizer(
             joined,
             return_offsets_mapping=True,
@@ -228,7 +227,7 @@ class PooledSegmentEmbedder:
         else:
             mat = self._forward_torch_per_token(ids, attention_mask)
 
-        counts = _align_counts(sentences, offsets)
+        counts = _align_counts(texts, offsets)
         return mat, counts
 
     def _forward_torch_per_token(
@@ -338,18 +337,18 @@ class PooledSegmentEmbedder:
 # ---------------------------------------------------------------------------
 
 
-def _align_counts(sentences: list[str], offsets: list[tuple[int, int]]) -> list[int]:
-    """Map per-token offsets back to per-sentence counts. Special
-    tokens (offset (0,0)) are absorbed into the first/last sentence
+def _align_counts(texts: list[str], offsets: list[tuple[int, int]]) -> list[int]:
+    """Map per-token offsets back to per-text counts. Special tokens
+    (offset (0,0)) are absorbed into the first/last text
     (SPEC-CHUNK-420 option b).
     """
     spans: list[tuple[int, int]] = []
     pos = 0
-    for s in sentences:
+    for s in texts:
         spans.append((pos, pos + len(s)))
         pos += len(s)
 
-    counts = [0] * len(sentences)
+    counts = [0] * len(texts)
     for a, b in offsets:
         if a == 0 and b == 0:
             continue

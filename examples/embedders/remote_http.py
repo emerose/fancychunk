@@ -8,7 +8,7 @@ at the bottom of this file (drop in your favourite framework — FastAPI,
 LiteServe, Sanic, whatever).
 
 Tokenization-alignment strategy: **service-owned**. The server
-returns ``per_sentence_counts`` alongside the embedding matrix; the
+returns ``per_text_counts`` alongside the embedding matrix; the
 client trusts the server. The client uses a local tokenizer only for
 the cheap ``count_tokens`` budget-planning call so it doesn't have
 to round-trip just to plan segments.
@@ -52,23 +52,23 @@ class RemoteEmbedder:
         self._tok: Any = AutoTokenizer.from_pretrained(local_tokenizer)
         self._session: Any = session or requests.Session()
 
-    def count_tokens(self, sentences: list[str]) -> list[int]:
+    def count_tokens(self, texts: list[str]) -> list[int]:
         return [
-            len(self._tok.encode(s, add_special_tokens=False)) for s in sentences
+            len(self._tok.encode(s, add_special_tokens=False)) for s in texts
         ]
 
     def embed_segment(
-        self, sentences: list[str]
+        self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         resp = self._session.post(
             self.url,
-            json={"sentences": sentences},
+            json={"texts": texts},
             timeout=self._timeout,
         )
         resp.raise_for_status()
         body = resp.json()
         matrix = np.asarray(body["embeddings"], dtype=np.float64)
-        counts: list[int] = list(body["per_sentence_counts"])
+        counts: list[int] = list(body["per_text_counts"])
         if matrix.ndim != 2 or sum(counts) != matrix.shape[0]:
             raise ValueError(
                 f"server returned matrix shape {matrix.shape} and counts "
@@ -92,8 +92,8 @@ class RemoteEmbedder:
 #
 # @app.post("/embed_segment")
 # def embed_segment(payload: dict) -> dict:
-#     sentences = payload["sentences"]
-#     joined = "".join(sentences)
+#     texts = payload["texts"]
+#     joined = "".join(texts)
 #     enc = tokenizer(
 #         joined,
 #         return_offsets_mapping=True,
@@ -106,13 +106,13 @@ class RemoteEmbedder:
 #         ).last_hidden_state[0]
 #     mat = h.float().cpu().numpy()
 #
-#     # Compute per-sentence counts via offset_mapping (same as
+#     # Compute per-text counts via offset_mapping (same as
 #     # huggingface_offsets.py). The server returns counts as a list[int]
 #     # alongside the matrix so the client doesn't need a tokenizer.
-#     counts = compute_counts_via_offsets(sentences, enc["offset_mapping"][0])
+#     counts = compute_counts_via_offsets(texts, enc["offset_mapping"][0])
 #     return {
 #         "embeddings": mat.tolist(),
-#         "per_sentence_counts": counts,
+#         "per_text_counts": counts,
 #     }
 #
 # # Note: ``mat.tolist()`` is ~10x slower than binary serialization.

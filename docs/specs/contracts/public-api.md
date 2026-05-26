@@ -90,11 +90,12 @@ through SPEC-CHUNK-302.
 
 ```python
 def embed_with_late_chunking(
-    sentences: list[str],
-    embedder: TokenLevelEmbedder,
+    chunks: list[str],
+    embedder: SegmentEmbedder,
     max_tokens_per_segment: int | None = None,
     preamble_fraction: float = 0.382,
     normalize: bool = True,
+    include_headings: bool = True,
 ) -> Matrix
 ```
 
@@ -103,13 +104,14 @@ implementations may omit it if they do not support late chunking.
 
 | Parameter | Default | Contract |
 |-----------|---------|----------|
-| `sentences` | — | Ordered list of sentences. |
-| `embedder` | — | An object satisfying the SegmentEmbedder contract in [spec 04 §Embedder contract](../04-late-chunking.md#embedder-contract): `n_ctx: int`, `count_tokens(sentences) → list[int]`, and `embed_segment(sentences) → (matrix[T, D], list[int])`. See `examples/embedders/` for reference adapters over MLX, HuggingFace transformers, and remote HTTP services. |
+| `chunks` | — | Ordered list of chunks (typically the first element of `split_chunks`'s output, before any `enrich_with_headings` post-processing). |
+| `embedder` | — | An object satisfying the SegmentEmbedder contract in [spec 04 §Embedder contract](../04-late-chunking.md#embedder-contract): `n_ctx: int`, `count_tokens(texts) → list[int]`, and `embed_segment(texts) → (matrix[T, D], list[int])`. The `texts` parameter is generic — the library passes chunks plus (optionally) one heading-stack prepend. See `examples/embedders/` for reference adapters over MLX, HuggingFace transformers, and remote HTTP services. |
 | `max_tokens_per_segment` | derived from embedder | Optional override of the per-segment token budget. |
-| `preamble_fraction` | `0.382` | Fraction of the segment budget reserved for the preamble. |
+| `preamble_fraction` | `0.382` | Fraction of the segment budget reserved for the preamble (heading prepend + backward-walk context). |
 | `normalize` | `True` | Whether to L2-normalize each output row. |
+| `include_headings` | `True` | Whether to prepend the in-scope Markdown heading stack to each segment's preamble (SPEC-CHUNK-470). |
 
-Returns a `[len(sentences), embedding_dim]` matrix satisfying
+Returns a `[len(chunks), embedding_dim]` matrix satisfying
 SPEC-CHUNK-400 through SPEC-CHUNK-402.
 
 ## Function: heading paths (optional)

@@ -37,20 +37,20 @@ class NoopSegmentEmbedder:
 
     # ----- SegmentEmbedder protocol -----
 
-    def count_tokens(self, sentences: list[str]) -> list[int]:
+    def count_tokens(self, texts: list[str]) -> list[int]:
         """Approximate token counts.
 
         Used only for late-chunking segment-budget planning, which
         noop won't realistically be used for. A character-quarter
         heuristic is sufficient.
         """
-        return [max(1, len(s) // 4) for s in sentences]
+        return [max(1, len(s) // 4) for s in texts]
 
     def embed_segment(
-        self, sentences: list[str]
+        self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
-        """Return constant per-token embeddings + per-sentence counts."""
-        counts = self.count_tokens(sentences)
+        """Return constant per-token embeddings + per-text counts."""
+        counts = self.count_tokens(texts)
         total = sum(counts)
         mat = np.full(
             (total, self.embedding_dim), self._unit_value, dtype=np.float64

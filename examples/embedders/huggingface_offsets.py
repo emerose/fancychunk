@@ -1,32 +1,40 @@
 """Reference SegmentEmbedder over a HuggingFace transformer.
 
 Uses the tokenizer's ``offset_mapping`` feature to map each output
-token back to its source sentence by character offset — the most
-robust alignment method when it's available. Recommended for any
+token back to its source text by character offset — the most robust
+alignment method when it's available. Recommended for any
 HuggingFace ``AutoTokenizer`` based on a fast (Rust) tokenizer.
 
 Tested with ``bert-base-multilingual-cased`` and ``BAAI/bge-m3``. For
 larger models (Qwen3-Embedding-* via transformers) the same code
 works; if you're on Apple Silicon prefer ``qwen3_mlx.py`` for speed.
 
-Tokenization-alignment strategy: **offset-based**. Sentences are
+Tokenization-alignment strategy: **offset-based**. The input texts
+(chunks plus any heading-stack prepend the library passes us) are
 joined with no separator. The tokenizer's offset_mapping reports
 each token's character span; tokens whose offset falls inside a
-sentence's character range count toward that sentence.
+text's character range count toward that text.
 
 Specials: detected by their offset of ``(0, 0)`` and absorbed into
-the first / last sentence's allocation (SPEC-CHUNK-420 option b).
+the first / last text's allocation (SPEC-CHUNK-420 option b).
 
 Install:
     pip install torch transformers
 
 Usage:
     from examples.embedders.huggingface_offsets import HFOffsetEmbedder
-    from fancychunk import embed_with_late_chunking, split_sentences
+    from fancychunk import (
+        embed_with_late_chunking,
+        split_chunklets,
+        split_chunks,
+        split_sentences,
+    )
 
     embedder = HFOffsetEmbedder("BAAI/bge-m3")
     sentences = split_sentences(my_document, max_len=2048)
-    matrix = embed_with_late_chunking(sentences, embedder)
+    chunklets = split_chunklets(sentences, max_size=2048)
+    chunks, _ = split_chunks(chunklets, max_size=2048)
+    matrix = embed_with_late_chunking(chunks, embedder)
 """
 
 from __future__ import annotations
@@ -64,15 +72,15 @@ class HFOffsetEmbedder:
 
     # ----- SegmentEmbedder contract -----
 
-    def count_tokens(self, sentences: list[str]) -> list[int]:
+    def count_tokens(self, texts: list[str]) -> list[int]:
         return [
-            len(self._tok.encode(s, add_special_tokens=False)) for s in sentences
+            len(self._tok.encode(s, add_special_tokens=False)) for s in texts
         ]
 
     def embed_segment(
-        self, sentences: list[str]
+        self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
-        joined = "".join(sentences)
+        joined = "".join(texts)
         enc = self._tok(
             joined,
             return_offsets_mapping=True,
@@ -93,14 +101,14 @@ class HFOffsetEmbedder:
             ).last_hidden_state[0]
         mat = cast(NDArray[np.float64], h.float().cpu().numpy()).astype(np.float64)
 
-        # Build the per-sentence character spans.
+        # Build the per-text character spans.
         spans: list[tuple[int, int]] = []
         pos = 0
-        for s in sentences:
+        for s in texts:
             spans.append((pos, pos + len(s)))
             pos += len(s)
 
-        counts = [0] * len(sentences)
+        counts = [0] * len(texts)
         for a, b in offsets:
             if a == 0 and b == 0:
                 # Special token — defer; absorbed below.
@@ -111,7 +119,7 @@ class HFOffsetEmbedder:
                     counts[s_idx] += 1
                     break
 
-        # Absorb leading specials into sentence 0; trailing into the last.
+        # Absorb leading specials into text 0; trailing into the last.
         for a, b in offsets:
             if a == 0 and b == 0:
                 counts[0] += 1
@@ -128,15 +136,23 @@ class HFOffsetEmbedder:
 
 
 if __name__ == "__main__":
-    from fancychunk import embed_with_late_chunking, split_sentences
+    from fancychunk import (
+        embed_with_late_chunking,
+        split_chunklets,
+        split_chunks,
+        split_sentences,
+    )
+    from fancychunk.embedders import noop
 
     doc = (
         "# Sorting\n\nQuicksort uses a pivot. It partitions around the pivot.\n\n"
         "## Random pivots\n\nThey give expected O(n log n) time.\n"
     )
     sents = split_sentences(doc, max_len=2048)
-    print(f"sentences: {len(sents)}")
+    chunklets = split_chunklets(sents, max_size=2048)
+    chunks, _ = split_chunks(chunklets, noop(), max_size=2048)
+    print(f"chunks: {len(chunks)}")
     emb = HFOffsetEmbedder("bert-base-multilingual-cased")
-    out = embed_with_late_chunking(sents, emb)
+    out = embed_with_late_chunking(chunks, emb)
     print(f"output shape: {out.shape}")
     print(f"norms: {np.linalg.norm(out, axis=1).round(4)}")

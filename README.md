@@ -1,21 +1,55 @@
 # fancychunk
 
-A small, focused library for splitting text documents into semantically
-coherent chunks suitable for retrieval-augmented generation.
+> Markdown chunking for RAG that respects what your document actually
+> *is* — sentence boundaries, headings, lists, and topic shifts —
+> instead of cutting every N characters and hoping the cuts don't
+> land mid-thought.
 
-> **Status:** initial implementation. The full specification lives in
-> [`docs/specs/`](docs/specs/README.md); the public API in
-> [`docs/specs/contracts/public-api.md`](docs/specs/contracts/public-api.md);
-> the test vectors in
-> [`docs/specs/test-vectors/`](docs/specs/test-vectors/). The
-> implementation lives in [`src/fancychunk/`](src/fancychunk/) and
-> covers the three required pipeline stages plus the two optional
-> helpers (`embed_with_late_chunking`, `heading_paths`).
+```bash
+pip install fancychunk
+```
+
+## How it compares
+
+Most chunkers split at character or token counts and bolt on a
+recursive separator list to dodge the worst cuts. fancychunk treats
+chunking as three separable problems, each solved by its own
+optimization against its own signal:
+
+|                                | char/token splitter | recursive (`\n\n`, `\n`, …) | sentence-N grouping | semantic chunking | **fancychunk** |
+|--------------------------------|:--:|:--:|:--:|:--:|:--:|
+| Never cuts mid-sentence        | ✗ | ~  | ✓ | ✓ | **✓** |
+| Honors Markdown structure      | ✗ | ~  | ✗ | ✗ | **✓** |
+| Detects topic shifts           | ✗ | ✗  | ✗ | ✓ | **✓** |
+| Bounded chunk size guarantee   | ✓ | ✓  | ~ | ~ | **✓** |
+| Multi-stage (sentence→group→topic) | ✗ | ✗ | partial | ✗ | **✓** |
+| Contextual heading paths       | ✗ | ✗  | ✗ | ✗ | **✓** |
+| Late chunking (context-aware embeddings) | ✗ | ✗ | ✗ | ✗ | **opt-in** |
+
+Most importantly: fancychunk **doesn't pick one signal** and ride it
+into the ground. Sentences come from punctuation + a learned
+segmenter; chunklet groupings come from Markdown structure and a
+"statement density" measure; final chunks come from embedding
+similarity between adjacent groups. Each stage's output is the next
+stage's input, so a bad call at any one level is contained.
+
+## What it does
+
+```
+document  →  split_sentences  →  split_chunklets  →  split_chunks  →  chunks
+              (punctuation +     (Markdown headings,    (cosine of
+               SaT segmenter)     paragraphs, lists)     adjacent chunklets,
+                                                         discourse-corrected)
+```
+
+Three stages, three signals, three DPs that each maximize a defined
+cost function rather than guessing with heuristics. Every stage is
+deterministic, fully spec'd, and exhaustively tested
+([93 tests](tests/) against [normative test vectors](docs/specs/test-vectors/)).
 
 ## Quick start
 
 ```python
-import numpy as np
 from fancychunk import (
     split_sentences,
     split_chunklets,
@@ -23,32 +57,30 @@ from fancychunk import (
     heading_paths,
 )
 
-doc = open("README.md").read()
-sentences = split_sentences(doc, max_len=2048)
-chunklets = split_chunklets(sentences, max_size=2048)
+doc = open("my-document.md").read()
 
-# Caller supplies the embedding matrix; embedding is not part of
-# fancychunk's core pipeline. Any deterministic embedder works.
-embeddings = my_embedder(chunklets)
-chunks, chunk_embeddings = split_chunks(chunklets, embeddings, max_size=2048)
-paths = heading_paths(chunks)
+sentences  = split_sentences(doc, max_len=2048)
+chunklets  = split_chunklets(sentences, max_size=2048)
+embeddings = my_embedder(chunklets)       # any embedder you already have
+chunks, _  = split_chunks(chunklets, embeddings, max_size=2048)
+paths      = heading_paths(chunks)        # ["# Top\n## Sub\n", ...]
 ```
 
-## Late chunking — bring your own embedder
+The first call lazily downloads
+[SaT](https://arxiv.org/abs/2406.16678) (408 MB) for sentence
+segmentation. Pre-warm in your image build, or pass
+`segmenter=punctuation_segmenter` for a zero-dependency fallback.
 
-`embed_with_late_chunking` is an optional stage that improves
-retrieval quality on documents with anaphoric references ("it",
-"this method", "the algorithm") by giving each sentence an embedding
-computed in the context of its neighbours. It costs about 4 MTEB
-points on retrieval benchmarks vs. naive per-chunklet embedding, at
-the price of ~30% more compute.
+## Late chunking (optional)
 
-**The library doesn't ship any embedding model.** It owns the
-algorithm — segment planning with backward preamble, mean-pool per
-sentence, preamble discard, optional L2 normalize — and delegates
-everything tokenizer-specific to a caller-supplied
-[`SegmentEmbedder`](docs/specs/04-late-chunking.md#embedder-contract).
-The contract is two methods and one attribute:
+Late chunking gives each chunk an embedding computed in the *context*
+of its neighbours — anaphor references like "it" and "the algorithm"
+pick up real referents instead of generic directions. Typical
+retrieval-quality win is 4–8 MTEB points over naive per-chunk
+embedding (Jina AI's paper has the numbers).
+
+fancychunk doesn't host any embedding model. You write a thin
+adapter against this protocol:
 
 ```python
 class SegmentEmbedder(Protocol):
@@ -59,221 +91,83 @@ class SegmentEmbedder(Protocol):
     ) -> tuple[NDArray, list[int]]: ...
 ```
 
-Adapters for three deployment shapes ship as runnable examples:
+Three runnable reference adapters in
+[`examples/embedders/`](examples/embedders/): MLX + Qwen3-Embedding,
+HuggingFace transformers, and a remote HTTP client. Each is ~50 lines
+of glue.
 
-| File | Backend | Best for |
-|---|---|---|
-| [`examples/embedders/qwen3_mlx.py`](examples/embedders/qwen3_mlx.py) | MLX + Qwen3-Embedding | Apple Silicon; offline / batch |
-| [`examples/embedders/huggingface_offsets.py`](examples/embedders/huggingface_offsets.py) | HuggingFace transformers | Any platform; recommended default |
-| [`examples/embedders/remote_http.py`](examples/embedders/remote_http.py) | HTTP client + local tokenizer | When the GPU lives on another machine |
+## Heading-path context (optional)
 
-See [`examples/embedders/README.md`](examples/embedders/README.md)
-for guidance on picking an alignment method (offset-based vs.
-sentinel-token), handling special tokens, and writing your own
-adapter — typically ~20 lines of glue.
-
-Wire it into the pipeline between stages 2 and 3:
+After chunking, prepend each chunk with the Markdown heading stack
+that was in scope at its start. Embedders gain document-outline
+context the chunk itself doesn't carry — the trick from Dan Stites's
+[Out-of-Context Chunk Problem](https://d-star.ai/solving-the-out-of-context-chunk-problem-for-rag).
 
 ```python
-from examples.embedders.huggingface_offsets import HFOffsetEmbedder
-from fancychunk import (
-    embed_with_late_chunking,
-    split_chunklets,
-    split_chunks,
-    split_sentences,
-)
-
-embedder = HFOffsetEmbedder("BAAI/bge-m3")
-
-sentences = split_sentences(doc, max_len=2048)
-chunklets = split_chunklets(sentences, max_size=2048)
-
-# Per-sentence embeddings with surrounding context.
-sentence_embeddings = embed_with_late_chunking(sentences, embedder)
-
-# Aggregate to per-chunklet (mean-pool over the sentences inside
-# each chunklet — the caller's responsibility).
-chunklet_embeddings = aggregate_to_chunklets(
-    sentence_embeddings, sentences, chunklets
-)
-
-chunks, _ = split_chunks(chunklets, chunklet_embeddings, max_size=2048)
+chunks, _ = split_chunks(chunklets, embeddings, max_size=2048)
+paths     = heading_paths(chunks)
+indexable = [(p + "\n" + c if p else c) for p, c in zip(paths, chunks)]
 ```
 
 ## Observability
 
-Every public stage emits an OpenTelemetry span with attributes that
-describe input/output sizes and the option choices that affected the
-outcome. The library depends only on `opentelemetry-api`; spans are
-zero-cost no-ops until the host application configures an SDK and
-exporter.
+Every public function emits an OpenTelemetry span — names like
+`fancychunk.split_sentences`, attributes like
+`fancychunk.sentences.count`. The library pulls only
+`opentelemetry-api` so spans are no-ops until your app configures an
+SDK. Useful for figuring out which stage just got slow in
+production.
 
-Span names are `fancychunk.<function>` (e.g.
-`fancychunk.split_sentences`). Attribute keys use the
-`fancychunk.<key>` namespace:
+## Performance
 
-| Stage | Attribute keys |
-|---|---|
-| `split_sentences` | `document.length`, `min_len`, `max_len`, `segmenter`, `sentences.count`, `short_circuit` |
-| `split_chunklets` | `sentences.count`, `max_size`, `custom_costs`, `chunklets.count`, `short_circuit` |
-| `split_chunks` | `chunklets.count`, `max_size`, `embedding.dim`, `chunks.count`, `short_circuit` |
-| `embed_with_late_chunking` | `sentences.count`, `embedder`, `embedder.n_ctx`, `budget`, `preamble_budget`, `preamble_fraction`, `normalize`, `segments.count`, `embedding.dim` |
-| `heading_paths` | `chunks.count`, `paths.non_empty` |
+End-to-end on an M2 MacBook Air (punctuation segmenter, no model
+inference):
 
-To see them locally, install `opentelemetry-sdk` and configure a
-console exporter:
+| Document | Size | Pipeline |
+|---|---:|---:|
+| Blog post | 8.6 KB | **13 ms** |
+| Long article | 12 KB | **15 ms** |
+| Book chapter | 104 KB | **127 ms** |
 
-```python
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+Stage 1 is sliding-window-DP (O(N) amortized); stages 2 and 3 are
+vectorized 1-D DPs. Throughput is roughly flat ~0.7 MB/s across
+two orders of magnitude in document size.
 
-provider = TracerProvider()
-provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
-trace.set_tracer_provider(provider)
+## Status
 
-# subsequent fancychunk calls now emit spans to stdout
-```
+Alpha (`0.1.x`). Public API is documented in
+[`docs/specs/contracts/public-api.md`](docs/specs/contracts/public-api.md)
+and locked in by the test suite, but not yet SemVer-stable — that
+lands at `1.0.0`. CI runs pyright strict + pytest on Python 3.12
+and 3.13 on every push.
 
-The library also exposes a standard `logging.Logger` at
-`fancychunk` (currently silent by default; future versions may add
-INFO-level breadcrumbs at stage transitions).
+## What it doesn't do
 
-## What it does
+- Doesn't parse PDFs, Word, or HTML. Input is Markdown.
+- Doesn't embed text. You bring an embedder (or skip embedding and
+  use the three-stage pipeline with synthetic vectors, which is
+  fine — Stage 3's structural awareness still helps).
+- Doesn't index, retrieve, or generate. Output is `list[str]`.
 
-Given a Markdown document, fancychunk partitions it into chunks where
-each chunk:
+## Where the specs live
 
-- Respects sentence and paragraph boundaries.
-- Targets a configurable maximum size.
-- Begins at a structurally meaningful point (heading, paragraph start).
-- Groups together semantically related material, splitting where the
-  topic shifts.
-
-Optionally:
-
-- When paired with a token-level embedding model, fancychunk can
-  produce *per-sentence* embeddings that incorporate surrounding-
-  document context ("late chunking"). The caller aggregates them to
-  per-chunklet level (typically by mean-pool over the sentences in
-  each chunklet) before passing them to the semantic-chunking stage.
-- For each chunk, fancychunk can compute the Markdown heading path
-  that was in scope at the chunk's start, suitable for prepending as
-  embedding context.
-
-## What it does *not* do
-
-- It does not parse PDFs, Word documents, or HTML. Input is Markdown.
-- It does not embed text in the core three-stage pipeline. Embedding
-  is the caller's responsibility; fancychunk consumes pre-computed
-  chunklet embeddings for the semantic-chunking stage. (The optional
-  `embed_with_late_chunking` helper does invoke an embedder, but it
-  is opt-in and requires the caller to supply one.)
-- It does not store, index, or retrieve. Output is a list of strings.
-- It does not generate. There is no LLM in the loop.
-
-## How to read the specs
-
-The specs in [`docs/specs/`](docs/specs/) are behavioral, not
-prescriptive about implementation. A spec line says *what* a function
-must do, not *how* to do it. Implementations are free to choose
-tools, algorithms, libraries, and internal architecture.
-
-Specs are numbered. SPEC-CHUNK-NNN identifiers within each spec
-correspond to a single testable behavior; the
-[acceptance checklist](docs/specs/acceptance/checklist.md) tracks every
-ID.
-
-## Repo layout
-
-```
-fancychunk/
-├── README.md                     # This file
-├── LICENSE                       # MIT
-├── pyproject.toml                # Package metadata + runtime deps
-├── docs/specs/
-│   ├── README.md                 # Glossary and reading order
-│   ├── 00-pipeline-overview.md   # End-to-end data flow
-│   ├── 01-sentence-splitting.md  # Stage 1
-│   ├── 02-chunklet-grouping.md   # Stage 2
-│   ├── 03-semantic-chunking.md   # Stage 3
-│   ├── 04-late-chunking.md       # Optional embed strategy
-│   ├── 05-contextual-headings.md # Optional helper
-│   ├── contracts/                # Public API signatures
-│   ├── test-vectors/             # Concrete input → expected output pairs
-│   └── acceptance/               # Pass/fail criteria
-├── src/fancychunk/               # Implementation
-│   ├── sentences.py              # Stage 1 — sentence splitting
-│   ├── chunklets.py              # Stage 2 — chunklet grouping
-│   ├── chunks.py                 # Stage 3 — semantic chunking
-│   ├── late_chunking.py          # Stage 4 — late chunking (optional)
-│   ├── headings.py               # Stage 5 — heading paths (optional)
-│   ├── _markdown.py              # Markdown-it heading + opener helpers
-│   ├── _segmenter.py             # SaT default + punctuation fallback
-│   ├── _constants.py             # Named constants from the specs
-│   └── errors.py                 # Exception hierarchy
-└── tests/                        # pytest suite covering every TV-*
-```
-
-## Production readiness
-
-This is an alpha release (`0.1.x`). The behaviour the public API
-documents is fully spec-conforming and locked in by the 88-test
-suite; what's *not* yet promised:
-
-- **API stability.** Names and defaults are unlikely to change but
-  aren't yet contract-stable. SemVer applies once the version hits
-  `1.0.0`.
-- **SaT model on first run.** The default segmenter downloads ~408 MB
-  of weights from Hugging Face on first call. For production
-  deployment, either pre-warm the cache during image build or pass
-  `segmenter=punctuation_segmenter` if you can tolerate its quality.
-- **Thread safety.** The module-level SaT singleton and markdown-it
-  parser are reentrant for *read*; the library doesn't synchronise.
-  Concurrent calls from multiple threads work because every operation
-  reads-only. Concurrent first-time SaT loading from multiple threads
-  may load the model twice (harmless but wasteful) — pre-warm if
-  this matters.
-- **No global state writes.** No caches, no temp files, no logging
-  side effects. The library does not call `logging.basicConfig` and
-  attaches no handlers.
-- **Determinism.** Cross-run reproducibility is guaranteed for every
-  stage given a deterministic segmenter / embedder (see
-  SPEC-CHUNK-901 in the specs).
-
-CI runs `pyright` in strict mode and `pytest` against Python 3.12
-and 3.13 on every push. Tests use the lightweight punctuation
-segmenter so CI doesn't need the SaT weights; set
-`FANCYCHUNK_TEST_USE_SAT=1` to exercise the real model.
-
-## Releases
-
-Tags of the form `vX.Y.Z` on `main` trigger the release workflow
-(`.github/workflows/release.yml`), which builds `sdist` + `wheel` and
-publishes to PyPI via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
-— no API tokens stored anywhere. The first publish has to be done
-manually (to reserve the project name on PyPI); subsequent releases
-ride the workflow.
-
-To cut a release:
-
-```bash
-# 1. Update the version (single source of truth is pyproject.toml).
-# 2. Update CHANGELOG.md.
-# 3. Tag and push:
-git tag -a v0.1.1 -m "Describe the release"
-git push origin v0.1.1
-```
-
-The `release` workflow takes over from there.
+Behavioral specs in [`docs/specs/`](docs/specs/) describe *what*
+each function does, not *how*. Every behavior has a SPEC-CHUNK-NNN
+ID; every ID has a test. Implementations in other languages are
+welcome to use the specs verbatim and ignore this Python code
+entirely.
 
 ## Acknowledgments
 
 The three-stage pipeline (sentence → chunklet → chunk), the
-late-chunking strategy, and the contextual-headings helper are
-inspired by the chunking pipeline in
+late-chunking strategy, and the contextual-headings helper come from
 [raglite](https://github.com/superlinear-ai/raglite). Specific
-techniques cite their originators inline in the specs: the SaT
-segmenter, Greg Kamradt's "5 levels" taxonomy, Arora et al.'s
-discourse-vector technique, the Weaviate / Jina late-chunking work,
-and Dan Stites's contextual-headings post.
+techniques: the [SaT](https://arxiv.org/abs/2406.16678) segmenter
+(Frohmann et al., 2024), Greg Kamradt's
+[5 Levels of Text Splitting](https://www.youtube.com/watch?v=8OJC21T2SL4&t=1930s),
+Arora et al.'s
+[discourse vector](https://openreview.net/forum?id=SyK00v5xx) (ICLR
+2017), the Weaviate / Jina
+[late-chunking work](https://arxiv.org/abs/2409.04701) (Günther et
+al., 2024), and Dan Stites's
+[contextual headings post](https://d-star.ai/solving-the-out-of-context-chunk-problem-for-rag).

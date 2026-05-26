@@ -1,0 +1,42 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+device pick: cuda   torch: 2.12.0+cu130  initial RSS: 672 MB
+
+  Qwen3-Embedding-0.6B  (Qwen/Qwen3-Embedding-0.6B)
+    device: cuda
+Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 3395.24it/s]
+    loaded in 18.8s  (+1,027 MB)
+    forward pass: mean 25.4 ms / p95 26.0 ms  (5,390 tok/s)
+    resident after inference: 2,157 MB
+
+  BGE-M3  (BAAI/bge-m3)
+    device: cuda
+Loading weights:   0%|          | 0/391 [00:00<?, ?it/s]Loading weights:  62%|██████▏   | 241/391 [00:00<00:00, 2392.18it/s]Loading weights: 100%|██████████| 391/391 [00:00<00:00, 2999.41it/s]
+    loaded in 22.7s  (+983 MB)
+    forward pass: mean 8.9 ms / p95 9.3 ms  (18,566 tok/s)
+    resident after inference: 3,198 MB
+
+  multilingual-e5-large  (intfloat/multilingual-e5-large)
+    device: cuda
+Loading weights:   0%|          | 0/391 [00:00<?, ?it/s]Loading weights:   1%|▏         | 5/391 [00:00<00:08, 44.77it/s]Loading weights: 100%|██████████| 391/391 [00:00<00:00, 2549.92it/s]
+    loaded in 30.8s  (+335 MB)
+    forward pass: mean 8.6 ms / p95 9.0 ms  (19,220 tok/s)
+    resident after inference: 3,506 MB
+
+  Qwen3-Embedding-4B  (Qwen/Qwen3-Embedding-4B)
+    device: cuda
+Fetching 2 files:   0%|          | 0/2 [00:00<?, ?it/s]Fetching 2 files:  50%|█████     | 1/2 [01:37<01:37, 97.25s/it]Fetching 2 files: 100%|██████████| 2/2 [01:37<00:00, 48.63s/it]
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights:   0%|          | 1/398 [00:00<01:16,  5.17it/s]Loading weights:  36%|███▋      | 145/398 [00:00<00:00, 608.86it/s]Loading weights:  58%|█████▊    | 229/398 [00:00<00:00, 622.88it/s]Loading weights:  76%|███████▋  | 304/398 [00:00<00:00, 604.48it/s]Loading weights:  94%|█████████▍| 376/398 [00:00<00:00, 633.11it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 578.86it/s]
+    loaded in 101.0s  (+1,448 MB)
+    forward pass: mean 33.4 ms / p95 33.5 ms  (4,103 tok/s)
+    resident after inference: 4,895 MB
+
+==============================================================================================================
+  Summary
+==============================================================================================================
+  model                        params   dim  tokens      mean       p95    tok/s  MTEB-Mu  MTEB-En      RAM
+  ---------------------------------------------------------------------------------------------------------
+  Qwen3-Embedding-0.6B          596M   1024     137    25.4ms    26.0ms   5,390    64.33    70.70    2.1GB
+  BGE-M3                        568M   1024     166     8.9ms     9.3ms  18,566    59.50    63.50    3.1GB
+  multilingual-e5-large         560M   1024     166     8.6ms     9.0ms  19,220    58.00    63.50    3.4GB
+  Qwen3-Embedding-4B           3600M   2560     137    33.4ms    33.5ms   4,103    69.45    74.60    4.8GB

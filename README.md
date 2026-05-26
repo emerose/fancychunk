@@ -168,9 +168,10 @@ fallback bundled with the library.
 'fancychunk[embedders]'`) trade quality for latency, in order of
 increasing parameter count. The MLX backend is auto-selected on
 Apple Silicon when `mlx_embeddings` is installed (skipped via PEP
-508 marker on Linux/Windows). Numbers measured on an M2 MacBook Air
-running the MLX path; MTEB scores are from each model's published
-tables.
+508 marker on Linux/Windows). MTEB scores are from each model's
+published tables; throughput is measured on this machine.
+
+Apple Silicon, MLX path (M2 MacBook Air):
 
 | Factory | Backend default | Model | Params | Output dim | Resident | `embed_chunklets` mean | Tokens/s | MTEB-Multi | MTEB-Eng |
 |---|:---:|---|---:|---:|---:|---:|---:|---:|---:|
@@ -178,6 +179,15 @@ tables.
 | `fast()` | MLX¹ / torch | Qwen3-Embedding-0.6B | 596M | 1024 | ~0.5 GB | 79 ms | 1,186 | **64.33** | **70.70** |
 | `medium(dim=1024)` | MLX¹ / torch | Qwen3-Embedding-4B + MRL | 3.6B | 1024 *(native 2560)* | ~4 GB | 516 ms | 182 | **69.45** | **74.60** |
 | `high(dim=1024)` | MLX¹ / torch | Qwen3-Embedding-8B + MRL | 7.6B | 1024 *(native 4096)* | ~7 GB | 950 ms | 99 | **70.58** | **75.22** |
+
+Linux, torch + CUDA path (RTX 3090)²:
+
+| Factory | Backend | `embed_chunklets` mean | Tokens/s |
+|---|:---:|---:|---:|
+| `fastest()` | torch | 18 ms | 6,843 |
+| `fast()` | torch | 32 ms | 2,974 |
+| `medium(dim=1024)` | torch | 39 ms | 2,426 |
+| `high(dim=1024)` | torch | 44 ms | 2,162 |
 
 ¹ MLX builds: `mlx-community/bge-m3-mlx-fp16`,
 `mlx-community/Qwen3-Embedding-{0.6B,4B,8B}-mxfp8`. The Qwen3
@@ -187,6 +197,13 @@ MLX build the community publishes. On non-Apple-Silicon, the same
 factory functions transparently load the canonical HuggingFace
 weights and run on torch + MPS / CUDA / CPU.
 
+² CUDA numbers measured on an NVIDIA GeForce RTX 3090 (24 GB VRAM,
+driver 580.159.03) with Intel Core i9-10900KF and 32 GB system RAM,
+on Linux 6.17 with PyTorch 2.12.0 + bundled CUDA 13.0 wheels (Python
+3.13). All four factories load canonical HuggingFace weights in
+fp16; weights live on VRAM. Same 3-chunklet `bench_factories.py`
+batch as the Mac measurements.
+
 A few things worth knowing:
 
 - **MTEB-Multi deltas:** `fast` beats `fastest` by ~5 points (a
@@ -195,8 +212,12 @@ A few things worth knowing:
   point on top of `medium`.
 - **Speed vs quality:** on the MLX path `fast` is the actual
   throughput winner — Qwen3-0.6B at mxfp8 runs faster than BGE-M3
-  at fp16 on Apple Silicon. On torch + MPS the order flips and
-  `fastest` lives up to the name.
+  at fp16 on Apple Silicon. Everywhere else the encoder-vs-decoder
+  architectural gap reasserts itself: on torch (MPS or CUDA)
+  `fastest` lives up to the name. On the RTX 3090 it's ~2.3× faster
+  than `fast`, and the spread across all four factories compresses
+  to ~3× (vs ~12× on MLX) — a discrete GPU hides the per-pass
+  overhead that dominates the small-batch MLX path.
 - **Matryoshka:** `medium` and `high` truncate their native
   2560-dim and 4096-dim outputs respectively to `dim=1024` by
   default, so all four factories produce storage-pin-compatible

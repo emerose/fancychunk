@@ -1,0 +1,159 @@
+
+==============================================================================
+  Pipeline benchmark — 8 documents, punctuation segmenter
+==============================================================================
+
+# tiny_paragraph  (single short paragraph)
+      244 chars  →     4 sentences  →    1 chunklets  →   1 chunks
+  phase                                                  mean        p50        p95       %
+  fancychunk.split_sentences                          773.9µs    768.6µs    808.5µs   50.4%
+    fancychunk.sentences.segmenter                     19.7µs     18.0µs     26.4µs        
+    fancychunk.sentences.heading_override              56.4µs     56.0µs     58.9µs        
+    fancychunk.sentences.merge                         16.5µs     16.3µs     16.9µs        
+    fancychunk.sentences.whitespace_trailing           46.6µs     43.4µs     58.4µs        
+    fancychunk.sentences.dp                           173.3µs    171.6µs    177.6µs        
+    fancychunk.sentences.slice                          4.9µs      4.9µs      5.2µs        
+  fancychunk.split_chunklets                          723.0µs    713.5µs    744.0µs   47.1%
+    fancychunk.chunklets.boundary_probas               65.2µs     62.3µs     69.0µs        
+    fancychunk.chunklets.statement_counts             139.6µs    135.4µs    149.9µs        
+    fancychunk.chunklets.dp                           102.7µs    100.2µs    105.7µs        
+  fancychunk.split_chunks                              38.0µs     37.5µs     40.6µs    2.5%
+
+# small_article  (~1 KB with two H-level headings)
+    1,204 chars  →    18 sentences  →    5 chunklets  →   1 chunks
+  phase                                                  mean        p50        p95       %
+  fancychunk.split_sentences                           1.77ms     1.78ms     1.78ms   62.3%
+    fancychunk.sentences.segmenter                     53.3µs     52.4µs     58.3µs        
+    fancychunk.sentences.heading_override             185.7µs    181.1µs    218.1µs        
+    fancychunk.sentences.merge                         21.4µs     20.9µs     25.5µs        
+    fancychunk.sentences.whitespace_trailing          192.4µs    187.3µs    226.1µs        
+    fancychunk.sentences.dp                           848.2µs    841.0µs    868.8µs        
+    fancychunk.sentences.slice                          6.8µs      6.8µs      7.2µs        
+  fancychunk.split_chunklets                           1.03ms     1.01ms     1.18ms   36.3%
+    fancychunk.chunklets.boundary_probas              198.2µs    192.8µs    213.5µs        
+    fancychunk.chunklets.statement_counts             147.6µs    143.5µs    182.3µs        
+    fancychunk.chunklets.dp                           273.0µs    271.7µs    278.5µs        
+  fancychunk.split_chunks                              40.5µs     39.1µs     44.5µs    1.4%
+
+# medium_blog  (~10 KB, 8 sections, mixed-length paragraphs)
+    8,609 chars  →   114 sentences  →   32 chunklets  →   6 chunks
+  phase                                                  mean        p50        p95       %
+  fancychunk.split_sentences                           9.16ms     9.11ms     9.37ms   64.8%
+    fancychunk.sentences.segmenter                    336.5µs    322.5µs    395.9µs        
+    fancychunk.sentences.heading_override             905.7µs    896.0µs    930.4µs        
+    fancychunk.sentences.merge                         32.3µs     32.2µs     36.3µs        
+    fancychunk.sentences.whitespace_trailing           1.30ms     1.30ms     1.34ms        
+    fancychunk.sentences.dp                            6.09ms     6.06ms     6.34ms        
+    fancychunk.sentences.slice                         16.0µs     15.1µs     19.9µs        
+  fancychunk.split_chunklets                           3.04ms     3.02ms     3.15ms   21.5%
+    fancychunk.chunklets.boundary_probas              981.8µs    981.4µs     1.00ms        
+    fancychunk.chunklets.statement_counts             206.1µs    194.2µs    248.1µs        
+    fancychunk.chunklets.dp                            1.43ms     1.43ms     1.46ms        
+  fancychunk.split_chunks                              1.94ms     1.92ms     2.01ms   13.7%
+    fancychunk.chunks.partition_similarities           1.39ms     1.38ms     1.44ms        
+    fancychunk.chunks.dp                              141.1µs    137.8µs    169.5µs        
+
+# large_longform  (~100 KB, 40 sections)
+  104,425 chars  →  1301 sentences  →  365 chunklets  →  61 chunks
+  phase                                                  mean        p50        p95       %
+  fancychunk.split_sentences                         106.24ms   106.36ms   107.42ms   71.2%
+    fancychunk.sentences.segmenter                     4.22ms     4.04ms     4.59ms        
+    fancychunk.sentences.heading_override              9.68ms     9.69ms     9.85ms        
+    fancychunk.sentences.merge                        358.2µs    348.8µs    424.1µs        
+    fancychunk.sentences.whitespace_trailing          15.95ms    15.97ms    16.20ms        
+    fancychunk.sentences.dp                           75.33ms    75.48ms    75.89ms        
+    fancychunk.sentences.slice                        132.3µs    133.2µs    140.6µs        
+  fancychunk.split_chunklets                          28.36ms    28.26ms    29.12ms   19.0%
+    fancychunk.chunklets.boundary_probas              11.00ms    10.96ms    11.19ms        
+    fancychunk.chunklets.statement_counts             817.0µs    810.6µs    852.0µs        
+    fancychunk.chunklets.dp                           16.04ms    16.02ms    16.63ms        
+  fancychunk.split_chunks                             14.71ms    14.72ms    15.12ms    9.9%
+    fancychunk.chunks.partition_similarities          13.04ms    13.06ms    13.29ms        
+    fancychunk.chunks.dp                               1.19ms     1.18ms     1.29ms        
+
+# heading_heavy  (60 small h3 sections)
+    6,259 chars  →   142 sentences  →   33 chunklets  →   4 chunks
+  phase                                                  mean        p50        p95       %
+  fancychunk.split_sentences                           7.91ms     7.91ms     8.02ms   53.0%
+    fancychunk.sentences.segmenter                    258.3µs    265.6µs    276.3µs        
+    fancychunk.sentences.heading_override              1.68ms     1.68ms     1.72ms        
+    fancychunk.sentences.merge                         33.2µs     32.4µs     36.7µs        
+    fancychunk.sentences.whitespace_trailing          983.2µs    982.4µs     1.02ms        
+    fancychunk.sentences.dp                            4.46ms     4.47ms     4.50ms        
+    fancychunk.sentences.slice                         16.4µs     16.4µs     16.9µs        
+  fancychunk.split_chunklets                           4.26ms     4.25ms     4.39ms   28.6%
+    fancychunk.chunklets.boundary_probas               1.81ms     1.79ms     1.89ms        
+    fancychunk.chunklets.statement_counts             210.9µs    209.5µs    222.9µs        
+    fancychunk.chunklets.dp                            1.82ms     1.82ms     1.85ms        
+  fancychunk.split_chunks                              2.74ms     2.74ms     2.86ms   18.4%
+    fancychunk.chunks.partition_similarities           2.18ms     2.17ms     2.30ms        
+    fancychunk.chunks.dp                              147.8µs    145.4µs    153.0µs        
+
+# list_heavy  (6 sections of 20 bullets each)
+    5,221 chars  →   127 sentences  →   25 chunklets  →   3 chunks
+  phase                                                  mean        p50        p95       %
+  fancychunk.split_sentences                           8.22ms     8.20ms     8.36ms   47.9%
+    fancychunk.sentences.segmenter                    233.9µs    232.7µs    237.7µs        
+    fancychunk.sentences.heading_override              2.84ms     2.83ms     2.90ms        
+    fancychunk.sentences.merge                         29.8µs     29.6µs     31.2µs        
+    fancychunk.sentences.whitespace_trailing          886.2µs    881.5µs    909.9µs        
+    fancychunk.sentences.dp                            3.73ms     3.73ms     3.87ms        
+    fancychunk.sentences.slice                         14.6µs     14.6µs     15.2µs        
+  fancychunk.split_chunklets                           5.25ms     5.23ms     5.42ms   30.6%
+    fancychunk.chunklets.boundary_probas               3.01ms     3.00ms     3.12ms        
+    fancychunk.chunklets.statement_counts             195.2µs    194.2µs    206.7µs        
+    fancychunk.chunklets.dp                            1.62ms     1.63ms     1.65ms        
+  fancychunk.split_chunks                              3.68ms     3.66ms     3.80ms   21.5%
+    fancychunk.chunks.partition_similarities           3.15ms     3.13ms     3.23ms        
+    fancychunk.chunks.dp                              120.4µs    120.1µs    126.6µs        
+
+# code_heavy  (12 functions w/ code fences)
+    6,029 chars  →    59 sentences  →   15 chunklets  →   3 chunks
+  phase                                                  mean        p50        p95       %
+  fancychunk.split_sentences                           7.96ms     7.00ms    13.81ms   60.9%
+    fancychunk.sentences.segmenter                    261.9µs    229.7µs    418.4µs        
+    fancychunk.sentences.heading_override              1.27ms     1.07ms     2.24ms        
+    fancychunk.sentences.merge                         52.0µs     30.3µs    136.8µs        
+    fancychunk.sentences.whitespace_trailing          977.3µs    856.7µs     1.68ms        
+    fancychunk.sentences.dp                            4.76ms     4.33ms     8.13ms        
+    fancychunk.sentences.slice                         17.5µs     10.8µs     42.1µs        
+  fancychunk.split_chunklets                           2.94ms     2.56ms     5.35ms   22.5%
+    fancychunk.chunklets.boundary_probas               1.31ms     1.14ms     2.36ms        
+    fancychunk.chunklets.statement_counts             239.0µs    180.5µs    509.0µs        
+    fancychunk.chunklets.dp                           892.5µs    789.2µs     1.45ms        
+  fancychunk.split_chunks                              2.17ms     1.86ms     3.89ms   16.6%
+    fancychunk.chunks.partition_similarities           1.54ms     1.36ms     2.58ms        
+    fancychunk.chunks.dp                              116.9µs     89.6µs    270.8µs        
+
+# long_prose  (8 long paragraphs, no internal headings)
+   11,805 chars  →   136 sentences  →   37 chunklets  →   8 chunks
+  phase                                                  mean        p50        p95       %
+  fancychunk.split_sentences                          12.37ms    12.34ms    12.67ms   68.4%
+    fancychunk.sentences.segmenter                    451.8µs    442.9µs    500.5µs        
+    fancychunk.sentences.heading_override              1.10ms     1.08ms     1.16ms        
+    fancychunk.sentences.merge                         37.8µs     37.1µs     41.2µs        
+    fancychunk.sentences.whitespace_trailing           1.83ms     1.81ms     1.96ms        
+    fancychunk.sentences.dp                            8.45ms     8.42ms     8.81ms        
+    fancychunk.sentences.slice                         18.2µs     18.1µs     20.0µs        
+  fancychunk.split_chunklets                           3.54ms     3.54ms     3.62ms   19.6%
+    fancychunk.chunklets.boundary_probas               1.19ms     1.19ms     1.24ms        
+    fancychunk.chunklets.statement_counts             223.0µs    222.2µs    236.2µs        
+    fancychunk.chunklets.dp                            1.71ms     1.70ms     1.82ms        
+  fancychunk.split_chunks                              2.16ms     2.13ms     2.35ms   12.0%
+    fancychunk.chunks.partition_similarities           1.58ms     1.57ms     1.68ms        
+    fancychunk.chunks.dp                              158.0µs    152.4µs    197.1µs        
+
+==============================================================================
+  Overall throughput summary (mean of 20 trials per doc)
+==============================================================================
+  doc                       chars     pipeline       throughput
+  tiny_paragraph              244       1.53ms         0.16 MB/s
+  small_article             1,204       2.84ms         0.42 MB/s
+  medium_blog               8,609      14.13ms         0.61 MB/s
+  large_longform          104,425     149.32ms         0.70 MB/s
+  heading_heavy             6,259      14.92ms         0.42 MB/s
+  list_heavy                5,221      17.15ms         0.30 MB/s
+  code_heavy                6,029      13.08ms         0.46 MB/s
+  long_prose               11,805      18.08ms         0.65 MB/s
+
+total wall time: 5.61s (20 trials × 8 docs)

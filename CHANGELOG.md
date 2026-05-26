@@ -16,6 +16,12 @@ the project follows [Semantic Versioning](https://semver.org/).
   - ``high(dim=1024)`` is new (Qwen3-8B + MRL, ~70.58 MTEB-Multi).
 
 ### Added
+- Linux / NVIDIA CUDA benchmark results in the README Models table,
+  measured on an NVIDIA GeForce RTX 3090 (24 GB VRAM, driver
+  580.159.03) with Intel Core i9-10900KF and 32 GB system RAM, on
+  Linux 6.17 with PyTorch 2.12.0 + bundled CUDA 13.0 wheels. The
+  relative ordering of ``fastest`` and ``fast`` flips vs the M2/MLX
+  numbers — BGE-M3 reclaims the throughput crown on discrete CUDA.
 - **MLX backend** for ``PooledSegmentEmbedder``. On Apple Silicon
   with ``mlx_embeddings`` installed, every factory transparently
   loads the corresponding ``mlx-community/...-mxfp8`` (Qwen3) or

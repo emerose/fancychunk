@@ -30,7 +30,7 @@ Usage:
     embedder = Qwen3MLXEmbedder("mlx-community/Qwen3-Embedding-8B-mxfp8")
     sentences = split_sentences(my_document, max_len=2048)
     chunklets = split_chunklets(sentences, max_size=2048)
-    chunks, _ = split_chunks(chunklets, max_size=2048)
+    chunks = split_chunks(chunklets, max_size=2048)
     matrix = embed_with_late_chunking(chunks, embedder)
 """
 
@@ -148,7 +148,7 @@ if __name__ == "__main__":
     )
     sents = split_sentences(doc, max_len=2048)
     chunklets = split_chunklets(sents, max_size=2048)
-    chunks, _ = split_chunks(chunklets, noop(), max_size=2048)
+    chunks = split_chunks(chunklets, noop(), max_size=2048)
     print(f"chunks: {len(chunks)}")
     emb = Qwen3MLXEmbedder()
     out = embed_with_late_chunking(chunks, emb)

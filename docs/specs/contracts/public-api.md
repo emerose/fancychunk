@@ -72,7 +72,7 @@ def split_chunks(
     chunklets: list[str],
     embedder: ChunkletEmbedder | None = None,
     max_size: int = 2048,
-) -> tuple[list[str], list[Matrix]]
+) -> list[str]
 ```
 
 Implements [spec 03](../03-semantic-chunking.md).
@@ -80,11 +80,13 @@ Implements [spec 03](../03-semantic-chunking.md).
 | Parameter | Default | Contract |
 |-----------|---------|----------|
 | `chunklets` | — | Ordered list of chunklets. |
-| `embedder` | implementation-defined recommended default when `None` (typically the bundled "default" embedder for the current hardware) | Caller-supplied object exposing `embed_chunklets(chunklets) -> Matrix[N, D]`. Each returned row must have nonzero L2 norm. Pass a constant-output embedder (e.g. `fancychunk.embedders.noop()`) for a no-model-download structural-only split. |
+| `embedder` | implementation-defined recommended default when `None` (typically the bundled "default" embedder for the current hardware) | Caller-supplied object exposing `embed_chunklets(chunklets) -> Matrix[N, D]`. Each returned row must have nonzero L2 norm. Pass a constant-output embedder (e.g. `fancychunk.embedders.noop()`) for a no-model-download structural-only split. The embedder is invoked only on the multi-chunk partition path; trivial-input short-circuits (SPEC-CHUNK-340) skip it. |
 | `max_size` | `2048` | Hard upper bound on chunk length in characters. |
 
-Returns `(chunks, chunk_embeddings)` satisfying SPEC-CHUNK-300
-through SPEC-CHUNK-302.
+Returns the list of chunks satisfying SPEC-CHUNK-300 and
+SPEC-CHUNK-301. The embedder's output drives the partition decision
+internally but is not returned; per-chunk storage vectors come from
+`embed_with_late_chunking(chunks, embedder)` ([spec 04](../04-late-chunking.md)).
 
 ## Function: embed with late chunking (optional)
 
@@ -133,7 +135,7 @@ satisfying SPEC-CHUNK-500 through SPEC-CHUNK-502.
 Common downstream use:
 
 ```python
-chunks, _ = split_chunks(chunklets)
+chunks = split_chunks(chunklets)
 paths = heading_paths(chunks)
 texts_for_embedding = [
     (p + "\n" + c) if p else c
@@ -155,7 +157,7 @@ Example:
 ```python
 sentences = split_sentences(doc, max_len=2048)
 chunklets = split_chunklets(sentences, max_size=2048)
-chunks, chunk_embeddings = split_chunks(chunklets, max_size=2048)
+chunks = split_chunks(chunklets, max_size=2048)
 # `split_chunks` resolves its `embedder` argument to an
 # implementation-defined recommended default when omitted.
 ```

@@ -49,12 +49,8 @@ def test_concatenation_round_trip_all_stages() -> None:
     emb = rng.normal(size=(len(chunklets), 8))
     # Make sure no row has near-zero norm.
     emb = emb + 0.01 * np.sign(emb)
-    chunks, chunk_embeddings = split_chunks(
-        chunklets, _PreCookedEmbedder(emb), max_size=2048
-    )
+    chunks = split_chunks(chunklets, _PreCookedEmbedder(emb), max_size=2048)
     assert "".join(chunks) == "".join(chunklets)
-    rows = np.vstack(chunk_embeddings)
-    assert np.array_equal(rows, emb)
 
 
 # SPEC-CHUNK-901 — determinism across runs.
@@ -78,9 +74,8 @@ def test_trivial_input_short_circuits() -> None:
     # Stage 1.
     assert split_sentences("") == []
     assert split_sentences("ab") == ["ab"]
-    # Stage 3 — empty input still short-circuits before any embedder call.
-    chunks, emb = split_chunks([])
-    assert chunks == [] and emb == []
+    # Stage 3 — empty input short-circuits before any embedder call.
+    assert split_chunks([]) == []
 
 
 def test_heading_paths_consistent_with_pipeline() -> None:
@@ -91,7 +86,7 @@ def test_heading_paths_consistent_with_pipeline() -> None:
     chunklets = split_chunklets(sentences, max_size=2048)
     rng = np.random.default_rng(0)
     emb = rng.normal(size=(len(chunklets), 8)) + 0.01
-    chunks, _ = split_chunks(chunklets, _PreCookedEmbedder(emb), max_size=2048)
+    chunks = split_chunks(chunklets, _PreCookedEmbedder(emb), max_size=2048)
     paths = heading_paths(chunks)
     assert len(paths) == len(chunks)
     assert paths[0] == ""
@@ -105,5 +100,5 @@ def test_pipeline_with_noop_embedder() -> None:
     )
     sentences = split_sentences(document, max_len=2048)
     chunklets = split_chunklets(sentences, max_size=2048)
-    chunks, _ = split_chunks(chunklets, noop(), max_size=2048)
+    chunks = split_chunks(chunklets, noop(), max_size=2048)
     assert "".join(chunks) == "".join(chunklets)

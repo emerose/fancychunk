@@ -103,11 +103,14 @@ class _FixedEmbedder:
         return self.matrix
 
 
-def test_split_chunks_emits_span(captured_spans) -> None:
+def test_split_chunks_emits_span_short_circuit(captured_spans) -> None:
+    """SPEC-CHUNK-340 — single-chunklet input short-circuits before
+    invoking the embedder. The span records the short-circuit branch
+    but does NOT carry an embedding.dim attribute (the embedder was
+    never called)."""
     exporter, provider = captured_spans
-    chunks, _ = split_chunks(
-        ["a chunklet."], _FixedEmbedder(np.array([[1.0, 0.0]]))
-    )
+    chunks = split_chunks(["a chunklet."])
+    assert chunks == ["a chunklet."]
     provider.force_flush()
     span = next(
         s
@@ -117,8 +120,34 @@ def test_split_chunks_emits_span(captured_spans) -> None:
     attrs = _attrs(span)
     assert attrs["fancychunk.chunklets.count"] == 1
     assert attrs["fancychunk.chunks.count"] == 1
-    assert attrs["fancychunk.embedding.dim"] == 2
     assert attrs["fancychunk.short_circuit"] == "single_chunklet"
+    assert "fancychunk.embedding.dim" not in attrs
+
+
+def test_split_chunks_emits_span_multi_chunk(captured_spans) -> None:
+    """Multi-chunk path actually invokes the embedder, so the span
+    carries the embedding.dim attribute."""
+    exporter, provider = captured_spans
+    # Three 1000-char chunklets > max_size=2048 → forced split,
+    # embedder gets called.
+    matrix = np.array([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]])
+    chunks = split_chunks(
+        ["a" * 1000, "b" * 1000, "c" * 1000],
+        _FixedEmbedder(matrix),
+        max_size=2048,
+    )
+    assert len(chunks) >= 2
+    provider.force_flush()
+    span = next(
+        s
+        for s in exporter.get_finished_spans()
+        if s.name == "fancychunk.split_chunks"
+    )
+    attrs = _attrs(span)
+    assert attrs["fancychunk.chunklets.count"] == 3
+    assert attrs["fancychunk.embedding.dim"] == 2
+    # Multi-chunk path does NOT set short_circuit.
+    assert "fancychunk.short_circuit" not in attrs
 
 
 def test_embed_with_late_chunking_emits_span(captured_spans) -> None:

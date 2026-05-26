@@ -18,30 +18,22 @@ that idea.
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `chunklets` | list of strings | yes | — | An ordered sequence of chunklets, typically from stage 2. |
-| `embedder` | `ChunkletEmbedder` (object exposing `embed_chunklets(chunklets) -> matrix[N, D]`), or `None` | no | `None` → resolves lazily to an implementation-defined recommended default | Caller-supplied embedder that produces one pooled vector per chunklet. The stage calls `embedder.embed_chunklets(chunklets)` exactly once to obtain the matrix that drives the cosine signal. Each returned row must have nonzero L2 norm (SPEC-CHUNK-342). For a no-model-download structural-only split, pass an embedder that returns identical constant vectors (the Python implementation ships such an embedder as `fancychunk.embedders.noop()`); the cosine-similarity term then collapses uniformly and only heading-aware boundaries shape the split. |
+| `embedder` | `ChunkletEmbedder` (object exposing `embed_chunklets(chunklets) -> matrix[N, D]`), or `None` | no | `None` → resolves lazily to an implementation-defined recommended default | Caller-supplied embedder that produces one pooled vector per chunklet. The stage calls `embedder.embed_chunklets(chunklets)` at most once — only on the multi-chunk partition path. Trivial-input short-circuits (SPEC-CHUNK-340) skip the call entirely, so passing a lazy default for a tiny input pays no model-load cost. Each returned row must have nonzero L2 norm (SPEC-CHUNK-342). For a no-model-download structural-only split, pass an embedder that returns identical constant vectors (the Python implementation ships such an embedder as `fancychunk.embedders.noop()`); the cosine-similarity term then collapses uniformly and only heading-aware boundaries shape the split. |
 | `max_size` | positive integer | no | `DEFAULT_MAX_SIZE_CHARS` (`= 2048`) | Hard upper bound on chunk length in characters. (Same default as stage 2; see Spec 02 for the rationale.) |
 
 ## Outputs
 
-A tuple of two values:
-
-1. `chunks` — list of strings. Each chunk is the concatenation of one
-   or more contiguous input chunklets.
-2. `chunk_embeddings` — list of matrices. The `i`-th matrix has one
-   row per chunklet inside the `i`-th chunk, taken from the
-   embedder's output in the same row order. Empty list when
-   `chunklets` is empty (the embedder is not invoked).
+A list of strings — `chunks`. Each chunk is the concatenation of one
+or more contiguous input chunklets. The embedder's output drives the
+partition decision but is *not* returned: the embedder is internal
+machinery, and callers who want per-chunk storage vectors should
+invoke `embed_with_late_chunking(chunks, embedder)` separately
+(see [spec 04](04-late-chunking.md)).
 
 Invariants:
 
 - **SPEC-CHUNK-300** — `"".join(chunks) == "".join(chunklets)`.
 - **SPEC-CHUNK-301** — Every chunk is at most `max_size` characters.
-- **SPEC-CHUNK-302** — Let `E = embedder.embed_chunklets(chunklets)`.
-  The rows of the matrices in `chunk_embeddings`, concatenated in
-  order, equal `E`. The returned rows are the *original* embedder
-  output; the unit-normalized and discourse-corrected forms used
-  internally during partition similarity construction are not
-  exposed.
 
 ## Behavior
 
@@ -315,32 +307,20 @@ choices.
 
 ### SPEC-CHUNK-340 — Short-circuit: trivial input
 
-- If `chunklets == []`, return `([], [])`. The embedder is **not**
-  invoked — empty input is recognized before any model load.
-- If `len(chunklets) == 1`, the embedder *is* invoked exactly once to
-  obtain `E = embedder.embed_chunklets(chunklets)`, then return
-  `([chunklets[0]], [E])` — one chunk equal to the sole input
-  chunklet, paired with the full embedder-output matrix.
-- Otherwise, if `sum(len(c) for c in chunklets) <= max_size`, the
-  embedder is invoked once to obtain `E` and the return is
-  `(["".join(chunklets)], [E])` — one chunk concatenating all `N`
-  chunklets, paired with the full embedder output as a single
-  element of the outer list. (The inner matrix has all `N` rows in
-  their original order; concatenating across the single-element
-  outer list yields `E` unchanged, satisfying SPEC-CHUNK-302.)
+- If `chunklets == []`, return `[]`.
+- If `len(chunklets) == 1`, return `[chunklets[0]]`.
+- Otherwise, if `sum(len(c) for c in chunklets) <= max_size`,
+  return `["".join(chunklets)]`.
 
-The single-chunklet and total-fits cases call the embedder so that
-SPEC-CHUNK-302 holds uniformly across all return paths and SPEC-
-CHUNK-342 (zero-norm validation) still gets a chance to fire. No
-partition optimization runs and the heading-aware modification of
-SPEC-CHUNK-322 is skipped, even if the input contains heading
-chunklets — the covering constraint is trivially satisfied, so
-there is no similarity-driven split to bias. An implementation
-that wants to avoid the embedder call for these cases (e.g.,
-because the caller is using `noop()` and doesn't care about the
-return matrix) may do so as long as it returns matrices satisfying
-SPEC-CHUNK-302 — typically by synthesizing a placeholder matrix of
-the correct shape.
+In all three short-circuit cases the embedder is **not** invoked
+— no partition decision is needed, so the embedder's output would
+be discarded anyway. Skipping the call avoids the model-load cost
+on trivial inputs (and lets a caller pass `embedder=None` with no
+ill effect when the input happens to fit). The heading-aware
+modification of SPEC-CHUNK-322 is also skipped: the covering
+constraint is trivially satisfied, so there is no
+similarity-driven split to bias even if the input contains
+heading chunklets.
 
 ### SPEC-CHUNK-341 — Chunklet exceeds `max_size`
 
@@ -352,8 +332,10 @@ validation error before optimization begins.
 
 If any row of `embedder.embed_chunklets(chunklets)` has L2 norm `0`,
 the implementation raises a validation error before optimization
-begins. The check runs against the embedder's output, not the
-input — a faulty embedder is the most likely source.
+begins. The check runs against the embedder's output (a faulty
+embedder is the most likely source) and applies only on the
+multi-chunk path where the embedder is invoked at all
+(SPEC-CHUNK-340 short-circuits skip the call).
 
 ### SPEC-CHUNK-343 — Optimization failure
 

@@ -45,17 +45,20 @@ def split_chunks(
     chunklets: list[str],
     embedder: ChunkletEmbedder | None = None,
     max_size: int = C.DEFAULT_MAX_SIZE_CHARS,
-) -> tuple[list[str], list[Matrix]]:
+) -> list[str]:
     """Partition ``chunklets`` into chunks.
 
     Implements ``docs/specs/03-semantic-chunking.md``.
 
     ``embedder`` defaults to ``embedders.default()`` — the hardware-
-    appropriate recommended embedder, a process-wide singleton.
-    Override with any object satisfying the :class:`ChunkletEmbedder`
-    protocol; pass ``embedder=embedders.noop()`` for a
-    no-model-download structural-only split (uniform cosine signal,
-    heading-aware boundaries only).
+    appropriate recommended embedder, a process-wide singleton. The
+    embedder drives the *split decision* only; its output is not
+    returned. For the storage embeddings the caller indexes against,
+    use :func:`embed_with_late_chunking` on the chunks returned here.
+
+    Pass ``embedder=embedders.noop()`` for a no-model-download
+    structural-only split (uniform cosine signal, heading-aware
+    boundaries only).
     """
     if max_size <= 0:
         raise ValidationError("max_size must be positive")
@@ -68,7 +71,7 @@ def split_chunks(
         if not chunklets:
             span.set_attribute("fancychunk.chunks.count", 0)
             span.set_attribute("fancychunk.short_circuit", "empty")
-            return [], []
+            return []
 
         # SPEC-CHUNK-341 — oversized chunklet (validate before embed
         # so a bad input doesn't trigger a model load).
@@ -79,14 +82,26 @@ def split_chunks(
                     f"chunklet {idx} has length {ln} > max_size {max_size}"
                 )
 
-        # Resolve the embedder lazily so module import doesn't depend on
-        # the bundled embedders package.
+        # SPEC-CHUNK-340 — single chunklet. No embedder call.
+        if len(chunklets) == 1:
+            span.set_attribute("fancychunk.chunks.count", 1)
+            span.set_attribute("fancychunk.short_circuit", "single_chunklet")
+            return [chunklets[0]]
+
+        # SPEC-CHUNK-340 — total fits. No embedder call.
+        if sum(lengths) <= max_size:
+            span.set_attribute("fancychunk.chunks.count", 1)
+            span.set_attribute("fancychunk.short_circuit", "total_fits")
+            return ["".join(chunklets)]
+
+        # Multi-chunklet, multi-chunk case: embedder drives the
+        # partition decision. Resolve the embedder lazily so module
+        # import doesn't depend on the bundled embedders package.
         if embedder is None:
             from .embedders import default
 
             embedder = default()
 
-        # Embed once, then validate.
         emb = np.asarray(embedder.embed_chunklets(chunklets))
         if emb.ndim != 2:
             raise ValidationError(
@@ -104,26 +119,13 @@ def split_chunks(
             )
         span.set_attribute("fancychunk.embedding.dim", int(emb.shape[1]))
 
-        # SPEC-CHUNK-340 — single chunklet.
-        if len(chunklets) == 1:
-            span.set_attribute("fancychunk.chunks.count", 1)
-            span.set_attribute("fancychunk.short_circuit", "single_chunklet")
-            return [chunklets[0]], [emb]
-
-        # SPEC-CHUNK-340 — total fits.
-        if sum(lengths) <= max_size:
-            span.set_attribute("fancychunk.chunks.count", 1)
-            span.set_attribute("fancychunk.short_circuit", "total_fits")
-            return ["".join(chunklets)], [emb]
-
         tracer = get_tracer()
         with tracer.start_as_current_span("fancychunk.chunks.partition_similarities"):
             sim = _partition_similarities(emb, chunklets, lengths)
         with tracer.start_as_current_span("fancychunk.chunks.dp"):
-            chunks, splits = _solve_partition(chunklets, lengths, sim, max_size)
-        chunk_embeddings: list[Matrix] = [emb[a:b] for a, b in splits]
+            chunks = _solve_partition(chunklets, lengths, sim, max_size)
         span.set_attribute("fancychunk.chunks.count", len(chunks))
-        return chunks, chunk_embeddings
+        return chunks
 
 
 def _partition_similarities(
@@ -231,12 +233,12 @@ def _apply_heading_modification_inplace(
 
 def _solve_partition(
     chunklets: list[str], lengths: list[int], sim: Vector, max_size: int
-) -> tuple[list[str], list[tuple[int, int]]]:
+) -> list[str]:
     """SPEC-CHUNK-310/-311 — minimize total partition similarity under the
     covering constraint that every chunk fits in ``max_size``.
 
-    Returns ``(chunks, ranges)`` where ``ranges[i] = (a, b)`` is the
-    half-open chunklet range of ``chunks[i]``.
+    Returns the partitioned chunks (each chunk is the concatenation
+    of one or more contiguous chunklets).
 
     ``dp_cost[i] = min_{j} dp_cost[j] + (sim[j-1] if j > 0 else 0)``
     over all ``j`` such that the chunk ``chunklets[j:i]`` fits in
@@ -286,9 +288,4 @@ def _solve_partition(
     cuts.reverse()
     cuts.append(n)
 
-    chunks: list[str] = []
-    ranges: list[tuple[int, int]] = []
-    for a, b in zip(cuts[:-1], cuts[1:]):
-        chunks.append("".join(chunklets[a:b]))
-        ranges.append((a, b))
-    return chunks, ranges
+    return ["".join(chunklets[a:b]) for a, b in zip(cuts[:-1], cuts[1:])]

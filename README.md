@@ -53,7 +53,7 @@ doc = open("my-document.md").read()
 # structural-only split.
 sentences = split_sentences(doc, max_len=2048)
 chunklets = split_chunklets(sentences, max_size=2048)
-chunks, _ = split_chunks(chunklets, max_size=2048)
+chunks = split_chunks(chunklets, max_size=2048)
 
 # Late chunking — one context-aware embedding per chunk. The
 # embedder sees adjacent chunks together so attention can resolve

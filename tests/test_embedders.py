@@ -206,7 +206,7 @@ def test_noop_with_split_chunks_structural_only() -> None:
         "Second paragraph.\n",
         "Third paragraph.\n",
     ]
-    chunks, _ = split_chunks(chunklets, noop(), max_size=2048)
+    chunks = split_chunks(chunklets, noop(), max_size=2048)
     assert "".join(chunks) == "".join(chunklets)
 
 
@@ -285,7 +285,7 @@ def test_qwen3_600m_end_to_end_with_split_chunks() -> None:
     doc = "\n\n".join(["# Heading\n", "First paragraph. ", "Second paragraph."])
     sentences = split_sentences(doc, max_len=2048, segmenter=punctuation_segmenter)
     chunklets = split_chunklets(sentences, max_size=2048)
-    chunks, _ = split_chunks(chunklets, embedder, max_size=2048)
+    chunks = split_chunks(chunklets, embedder, max_size=2048)
     assert "".join(chunks) == "".join(chunklets)
 
 

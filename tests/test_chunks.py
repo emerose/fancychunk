@@ -35,55 +35,77 @@ class _FixedEmbedder:
         return self.matrix
 
 
-# TV-301 / SPEC-CHUNK-340 — single chunklet short-circuits.
-def test_tv_301_single_chunklet() -> None:
-    emb = _FixedEmbedder(np.array([[1.0, 0.0]]))
-    chunks, ce = split_chunks(["Single chunklet content."], emb)
-    assert chunks == ["Single chunklet content."]
-    assert len(ce) == 1
-    assert np.array_equal(ce[0], np.array([[1.0, 0.0]]))
+class _RaisingEmbedder:
+    """Test-only ChunkletEmbedder that raises if invoked.
+
+    Used to assert the short-circuit paths in SPEC-CHUNK-340 don't
+    call the embedder at all.
+    """
+
+    def embed_chunklets(self, chunklets: list[str]) -> NDArray[np.float64]:
+        raise AssertionError(
+            "embedder.embed_chunklets must not be called on the short-circuit path"
+        )
 
 
-# TV-302 / SPEC-CHUNK-340 — total fits in max_size short-circuits.
-def test_tv_302_total_fits_short_circuit() -> None:
-    chunklets = ["one ", "two ", "three"]
-    matrix = np.eye(3)
-    chunks, e = split_chunks(chunklets, _FixedEmbedder(matrix))
-    assert chunks == ["one two three"]
-    assert len(e) == 1
-    assert np.array_equal(e[0], matrix)
-
-
-# TV-303 / SPEC-CHUNK-300, -302 — round-trip property.
-def test_tv_303_round_trip() -> None:
+# SPEC-CHUNK-300 — round-trip across the partition.
+def test_partition_preserves_concatenation() -> None:
     chunklets = ["a" * 1000, "b" * 1000, "c" * 1000, "d" * 1000]
     matrix = np.eye(4)
-    chunks, e = split_chunks(chunklets, _FixedEmbedder(matrix))
+    chunks = split_chunks(chunklets, _FixedEmbedder(matrix))
     assert "".join(chunks) == "".join(chunklets)
-    rows = np.vstack(e)
-    assert np.array_equal(rows, matrix)
 
 
-# TV-304 / SPEC-CHUNK-301, -311 — hard size constraint.
-def test_tv_304_size_constraint_forces_split() -> None:
+# SPEC-CHUNK-301, -311 — hard size constraint.
+def test_size_constraint_forces_split() -> None:
     chunklets = ["a" * 1000, "b" * 1000, "c" * 1000]
     matrix = np.tile([[1.0, 0.0]], (3, 1))
-    chunks, _ = split_chunks(chunklets, _FixedEmbedder(matrix))
+    chunks = split_chunks(chunklets, _FixedEmbedder(matrix))
     for c in chunks:
         assert len(c) <= 2048
     assert "".join(chunks) == "".join(chunklets)
 
 
-# TV-305 — identical embeddings, total fits: single chunk via short-circuit.
-def test_tv_305_identical_short_circuit() -> None:
+# SPEC-CHUNK-340 — empty input. No embedder call.
+def test_empty_input_skips_embedder() -> None:
+    chunks = split_chunks([], _RaisingEmbedder())
+    assert chunks == []
+
+
+# SPEC-CHUNK-340 — single chunklet. No embedder call.
+def test_single_chunklet_skips_embedder() -> None:
+    chunks = split_chunks(["Single chunklet content."], _RaisingEmbedder())
+    assert chunks == ["Single chunklet content."]
+
+
+# SPEC-CHUNK-340 — total fits in max_size. No embedder call.
+def test_total_fits_skips_embedder() -> None:
+    chunks = split_chunks(
+        ["one ", "two ", "three"], _RaisingEmbedder()
+    )
+    assert chunks == ["one two three"]
+
+
+# SPEC-CHUNK-340 — short-circuits also work with embedder=None
+# (the lazy default would resolve, but we never invoke it).
+def test_short_circuit_does_not_resolve_default_embedder() -> None:
+    # If the lazy default were resolved on the short-circuit path,
+    # we'd load a model on import — passing no embedder must still
+    # be cheap when the input is trivial.
+    assert split_chunks([]) == []
+    assert split_chunks(["only one"]) == ["only one"]
+    assert split_chunks(["one ", "two ", "three"]) == ["one two three"]
+
+
+# Identical embeddings, total fits: short-circuit before similarity.
+def test_identical_short_circuit() -> None:
     chunklets = ["x" * 100] * 10
-    matrix = np.tile([[1.0, 0.0]], (10, 1))
-    chunks, _ = split_chunks(chunklets, _FixedEmbedder(matrix))
+    chunks = split_chunks(chunklets, _RaisingEmbedder())
     assert chunks == ["x" * 1000]
 
 
-# TV-307 / SPEC-CHUNK-322 — no split immediately after a heading.
-def test_tv_307_no_split_after_heading() -> None:
+# SPEC-CHUNK-322 — no split immediately after a heading.
+def test_no_split_after_heading() -> None:
     # Use a pure heading chunklet plus body chunklets that together
     # exceed max_size so the short-circuit does not apply and the
     # heading-aware modification runs.
@@ -96,13 +118,13 @@ def test_tv_307_no_split_after_heading() -> None:
             [0.7, 0.7],
         ]
     )
-    chunks, _ = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    chunks = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
     # The heading must not be its own standalone chunk.
     assert chunks[0] != "# Heading\n\n"
 
 
-# TV-308 / SPEC-CHUNK-322 — encourage split before heading.
-def test_tv_308_split_before_heading() -> None:
+# SPEC-CHUNK-322 — encourage split before heading.
+def test_split_before_heading() -> None:
     chunklets = ["a" * 900, "b" * 900, "## Subhead\n\n", "c" * 900]
     matrix = np.array(
         [
@@ -112,29 +134,32 @@ def test_tv_308_split_before_heading() -> None:
             [1.0, 1e-3],
         ]
     )
-    chunks, _ = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    chunks = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
     assert len(chunks) == 2
     assert chunks[1].startswith("## Subhead")
 
 
-# TV-309 / SPEC-CHUNK-342 — zero-norm embedding rejected.
-def test_tv_309_zero_norm_rejected() -> None:
-    emb = _FixedEmbedder(np.array([[0.0, 0.0], [1.0, 0.0]]))
+# SPEC-CHUNK-342 — zero-norm embedding rejected.
+def test_zero_norm_rejected() -> None:
+    # Need 3+ chunklets so we hit the multi-chunk path where the
+    # embedder is actually invoked (short-circuits skip it now).
+    matrix = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]])
+    emb = _FixedEmbedder(matrix)
     with pytest.raises(ZeroNormEmbeddingError):
-        split_chunks(["a", "b"], emb)
+        split_chunks(["a" * 1000, "b" * 1000, "c" * 1000], emb, max_size=2048)
 
 
-# TV-310 / SPEC-CHUNK-341 — oversized chunklet rejected.
-def test_tv_310_oversized_chunklet_rejected() -> None:
+# SPEC-CHUNK-341 — oversized chunklet rejected.
+def test_oversized_chunklet_rejected() -> None:
     emb = _FixedEmbedder(np.eye(2))
     with pytest.raises(OversizedChunkletError):
         split_chunks(["a" * 3000, "b"], emb, max_size=2048)
 
 
-# TV-311 / SPEC-CHUNK-321 — discourse-vector fallback when projection would zero rows.
-def test_tv_311_discourse_fallback() -> None:
+# SPEC-CHUNK-321 — discourse-vector fallback when projection would zero rows.
+def test_discourse_fallback() -> None:
     matrix = np.tile([[1.0, 0.0]], (5, 1))
-    chunks, _ = split_chunks(
+    chunks = split_chunks(
         ["x" * 1000] * 5, _FixedEmbedder(matrix), max_size=2048
     )
     for c in chunks:
@@ -148,16 +173,7 @@ def test_determinism() -> None:
     matrix = np.array([[1.0, 0.1], [1.0, 0.2], [1.0, 0.05], [1.0, 0.1]])
     out_a = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
     out_b = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
-    assert out_a[0] == out_b[0]
-    for ea, eb in zip(out_a[1], out_b[1]):
-        assert np.array_equal(ea, eb)
-
-
-# SPEC-CHUNK-340 — empty input. No embedder call needed.
-def test_empty_input() -> None:
-    chunks, ce = split_chunks([])
-    assert chunks == []
-    assert ce == []
+    assert out_a == out_b
 
 
 # Structural-only path: pass embedders.noop() instead of a real model.
@@ -166,7 +182,7 @@ def test_empty_input() -> None:
 # heading-aware modification shapes where splits land.
 def test_split_chunks_with_noop_embedder() -> None:
     chunklets = ["a" * 1000, "b" * 1000, "c" * 1000]
-    chunks, _ = split_chunks(chunklets, noop(), max_size=2048)
+    chunks = split_chunks(chunklets, noop(), max_size=2048)
     assert "".join(chunks) == "".join(chunklets)
     assert all(len(c) <= 2048 for c in chunks)
 
@@ -178,26 +194,9 @@ def test_split_chunks_with_noop_prefers_heading_split() -> None:
     # should prefer that split over splitting between two body
     # chunklets.
     chunklets = ["a" * 900, "b" * 900, "## Subhead\n\n", "c" * 900]
-    chunks, _ = split_chunks(chunklets, noop(), max_size=2048)
+    chunks = split_chunks(chunklets, noop(), max_size=2048)
     assert len(chunks) == 2
     assert chunks[1].startswith("## Subhead")
-
-
-def test_split_chunks_with_noop_short_circuits() -> None:
-    # Empty input doesn't even need the embedder.
-    chunks, ce = split_chunks([], max_size=2048)
-    assert chunks == [] and ce == []
-
-    chunks, ce = split_chunks(["only one"], noop(), max_size=2048)
-    assert chunks == ["only one"]
-    # noop() produces a 1×D constant matrix as the per-chunk slice.
-    assert len(ce) == 1
-    assert ce[0].shape[0] == 1
-
-    chunks, ce = split_chunks(["one ", "two ", "three"], noop(), max_size=2048)
-    assert chunks == ["one two three"]
-    assert len(ce) == 1
-    assert ce[0].shape[0] == 3
 
 
 # SPEC-CHUNK-322 — heading detection accepts ATX and Setext forms,
@@ -226,9 +225,9 @@ def test_is_heading_atx_and_setext(chunklet: str, expected: bool) -> None:
 
 
 # SPEC-CHUNK-322 — heading-aware modification fires for Setext exactly
-# as it does for ATX. Same shape as TV-308: a Setext heading buried
-# between large body chunklets pulls the cheap split to its left edge
-# and forbids the split to its right.
+# as it does for ATX. Same shape as the ATX test above: a Setext
+# heading buried between large body chunklets pulls the cheap split
+# to its left edge and forbids the split to its right.
 def test_setext_heading_pulls_split_before() -> None:
     chunklets = [
         "a" * 900,
@@ -244,6 +243,6 @@ def test_setext_heading_pulls_split_before() -> None:
             [1.0, 1e-3],
         ]
     )
-    chunks, _ = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    chunks = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
     assert len(chunks) == 2
     assert chunks[1].startswith("Subhead\n=======")

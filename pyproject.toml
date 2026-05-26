@@ -31,11 +31,15 @@ dependencies = [
 
 [project.optional-dependencies]
 # ``pip install fancychunk[embedders]`` installs the deps for the
-# bundled fancychunk.embedders module (default / fast / high_quality).
+# bundled fancychunk.embedders module (fastest / fast / medium / high).
 # Skip this extra if you BYO embedder.
 embedders = [
     "torch>=2.0",
     "transformers>=4.40",
+    # MLX backend on Apple Silicon — 2-4× faster than torch + MPS for
+    # the Qwen3 family. Skipped on Linux/Windows via PEP 508 marker.
+    "mlx>=0.30; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-embeddings>=0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [dependency-groups]

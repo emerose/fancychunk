@@ -1,8 +1,8 @@
-"""PooledSegmentEmbedder — the workhorse class behind
-``fancychunk.embedders.default()`` / ``fast()`` / ``high_quality()``.
+"""PooledSegmentEmbedder — backs ``fancychunk.embedders.{fastest,
+fast, medium, high}``.
 
-Loads a HuggingFace transformer + tokenizer once, then serves three
-use cases:
+Loads a HuggingFace transformer (or an MLX-format build via
+``mlx_embeddings``) once, then serves three use cases:
 
 * :meth:`count_tokens` and :meth:`embed_segment` — the
   :class:`fancychunk.SegmentEmbedder` protocol, used by
@@ -11,22 +11,29 @@ use cases:
   model's intended pooling strategy, suitable for direct use as
   ``chunklet_embeddings`` argument to :func:`split_chunks`.
 
-Pooling strategy is per-model. Three are bundled:
+Two backends:
 
-* ``last_token`` (Qwen3-Embedding family, decoder-only causal models)
-* ``cls`` (BGE-M3 and most BERT-derived encoder models)
-* ``mean`` (multilingual-e5-large and most "instructor"-style models)
+* ``"torch"`` — HuggingFace ``transformers`` + PyTorch. Works
+  everywhere; picks CUDA / MPS / CPU automatically.
+* ``"mlx"`` — Apple's MLX via ``mlx_embeddings``. Apple Silicon only,
+  typically 2-4× faster than torch + MPS on the same hardware. Used
+  automatically when the platform supports it and an MLX build of the
+  model is available.
 
-Matryoshka Representation Learning (MRL) is supported for any model
-trained with it: pass ``output_dim`` to truncate pooled embeddings to
-that prefix and re-L2-normalize. Truncation applies only to
-``embed_chunklets``; ``embed_segment`` returns the model's native
-per-token width so late chunking can pool over the full
-representation.
+Pooling strategy is per-model (``"last_token"`` for Qwen3-Embedding,
+``"cls"`` for BGE-M3, ``"mean"`` for some encoder models). The
+factory functions in :mod:`fancychunk.embedders` pre-select the
+right pooling per model.
+
+Matryoshka Representation Learning (MRL) truncation applies only to
+``embed_chunklets`` (the pooled output) — ``embed_segment`` always
+returns the model's native per-token width so late chunking pools
+over the full representation.
 """
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Literal, cast
 
 import numpy as np
@@ -34,30 +41,37 @@ from numpy.typing import NDArray
 
 
 PoolingMethod = Literal["last_token", "cls", "mean"]
+Backend = Literal["torch", "mlx", "auto"]
 
 
 class PooledSegmentEmbedder:
-    """Concrete SegmentEmbedder backed by a HuggingFace transformer.
+    """Concrete SegmentEmbedder backed by a HuggingFace transformer
+    (torch) or an MLX-format build (mlx_embeddings).
 
     Parameters
     ----------
     model_id:
-        HuggingFace model identifier (e.g. ``"Qwen/Qwen3-Embedding-0.6B"``).
+        HuggingFace model identifier. For MLX, use the ``mlx-community/``
+        flavour of the desired model.
     pooling:
         Which pooling strategy to use for ``embed_chunklets``. The
         factory functions in :mod:`fancychunk.embedders` pre-select
         the right value per model.
     output_dim:
         Truncate pooled embeddings to this many leading dimensions
-        and re-L2-normalize (Matryoshka representation learning). Only
-        valid for models trained with MRL (the Qwen3-Embedding family
-        and a handful of others); silently produces lower-quality
-        embeddings if applied to a model not trained for it.
-        Default ``None`` keeps the model's native output width.
+        and re-L2-normalize (Matryoshka Representation Learning). Only
+        valid for models trained with MRL; default ``None`` keeps the
+        model's native output width.
     device:
-        ``"cpu"``, ``"cuda"``, ``"mps"``, or ``"auto"`` (default).
+        ``"cpu"``, ``"cuda"``, ``"mps"``, or ``"auto"`` (torch backend
+        only; MLX always runs on the GPU).
     batch_size:
-        Batch size for ``embed_chunklets``. Default 32.
+        Batch size for ``embed_chunklets``.
+    backend:
+        ``"torch"``, ``"mlx"``, or ``"auto"`` (the default). ``"auto"``
+        picks ``"mlx"`` on Apple Silicon when ``mlx_embeddings`` is
+        importable AND ``model_id`` is recognized as an MLX build
+        (i.e. the namespace starts with ``mlx-community/``).
     """
 
     def __init__(
@@ -67,19 +81,39 @@ class PooledSegmentEmbedder:
         output_dim: int | None = None,
         device: str = "auto",
         batch_size: int = 32,
+        backend: Backend = "auto",
     ) -> None:
         self.model_id = model_id
         self.pooling: PoolingMethod = pooling
         self.output_dim = output_dim
         self._device_pref = device
         self.batch_size = batch_size
+        self._backend_pref: Backend = backend
+        self._backend: Literal["torch", "mlx"] | None = None
         self._model: Any = None
         self._tokenizer: Any = None
         self._device: str | None = None
 
-    # ----- internals -----
+    # ----- backend selection -----
 
-    def _pick_device(self) -> str:
+    def _resolve_backend(self) -> Literal["torch", "mlx"]:
+        if self._backend_pref == "mlx":
+            return "mlx"
+        if self._backend_pref == "torch":
+            return "torch"
+        # "auto": prefer MLX on Apple Silicon when (a) mlx_embeddings
+        # is importable and (b) model_id is an MLX-community build.
+        if sys.platform != "darwin":
+            return "torch"
+        if not self.model_id.startswith("mlx-community/"):
+            return "torch"
+        try:
+            import mlx_embeddings  # noqa: F401
+        except ImportError:
+            return "torch"
+        return "mlx"
+
+    def _pick_torch_device(self) -> str:
         import torch  # type: ignore[import-untyped]
 
         if self._device_pref != "auto":
@@ -90,37 +124,57 @@ class PooledSegmentEmbedder:
             return "cuda"
         return "cpu"
 
+    # ----- loading -----
+
     def _ensure_loaded(self) -> tuple[Any, Any]:
         if self._model is None:
-            try:
-                import torch  # type: ignore[import-untyped]
-                from transformers import (  # type: ignore[import-untyped]
-                    AutoModel,
-                    AutoTokenizer,
-                )
-            except ImportError as e:  # pragma: no cover - import guard
-                raise ImportError(
-                    "fancychunk.embedders requires the [embedders] extra. "
-                    "Install with: pip install 'fancychunk[embedders]'"
-                ) from e
-
-            self._device = self._pick_device()
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-            self._model = AutoModel.from_pretrained(
-                self.model_id, dtype=torch.float16
-            )
-            self._model.eval()
-            if self._device != "cpu":
-                self._model = self._model.to(self._device)
+            self._backend = self._resolve_backend()
+            if self._backend == "mlx":
+                self._load_mlx()
+            else:
+                self._load_torch()
         return self._model, self._tokenizer
 
-    # ----- public attribute -----
+    def _load_torch(self) -> None:
+        try:
+            import torch  # type: ignore[import-untyped]
+            from transformers import (  # type: ignore[import-untyped]
+                AutoModel,
+                AutoTokenizer,
+            )
+        except ImportError as e:  # pragma: no cover - import guard
+            raise ImportError(
+                "fancychunk.embedders requires the [embedders] extra. "
+                "Install with: pip install 'fancychunk[embedders]'"
+            ) from e
+
+        self._device = self._pick_torch_device()
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+        self._model = AutoModel.from_pretrained(self.model_id, dtype=torch.float16)
+        self._model.eval()
+        if self._device != "cpu":
+            self._model = self._model.to(self._device)
+
+    def _load_mlx(self) -> None:
+        try:
+            from mlx_embeddings.utils import load  # type: ignore[import-untyped]
+        except ImportError as e:  # pragma: no cover - import guard
+            raise ImportError(
+                "MLX backend requires mlx_embeddings; install with "
+                "pip install 'fancychunk[embedders]' on macOS."
+            ) from e
+
+        self._model, tokenizer_wrapper = load(self.model_id)
+        self._model.eval()
+        # Unwrap the HF tokenizer for offset_mapping support.
+        self._tokenizer = tokenizer_wrapper._tokenizer  # noqa: SLF001
+        self._device = "mlx"
+
+    # ----- public attributes -----
 
     @property
     def n_ctx(self) -> int:
         _, tokenizer = self._ensure_loaded()
-        # ``model_max_length`` can be astronomical (1e30) when the
-        # tokenizer config doesn't pin it; clamp to a sane default.
         mml = int(getattr(tokenizer, "model_max_length", 4096))
         return min(mml, 32768) if mml > 0 else 4096
 
@@ -128,6 +182,7 @@ class PooledSegmentEmbedder:
     def embedding_dim(self) -> int:
         """Output dimension of ``embed_chunklets`` (after any MRL truncation)."""
         model, _ = self._ensure_loaded()
+        # Both torch and mlx_embeddings models expose ``.config.hidden_size``.
         native = int(model.config.hidden_size)
         return self.output_dim if self.output_dim else native
 
@@ -149,76 +204,72 @@ class PooledSegmentEmbedder:
         ``(0, 0)``) are absorbed into the first/last sentence
         (SPEC-CHUNK-420 option b).
         """
-        import torch  # type: ignore[import-untyped]
-
         model, tokenizer = self._ensure_loaded()
         joined = "".join(sentences)
         enc = tokenizer(
             joined,
             return_offsets_mapping=True,
-            return_tensors="pt",
+            return_tensors="np",
             add_special_tokens=True,
             truncation=True,
             max_length=self.n_ctx,
         )
         offsets = enc.pop("offset_mapping")[0].tolist()
-        if self._device and self._device != "cpu":
-            enc = {k: v.to(self._device) for k, v in enc.items()}
+        ids = enc["input_ids"]
+        attention_mask = enc.get("attention_mask")
 
+        if self._backend == "mlx":
+            mat = self._forward_mlx_per_token(ids, attention_mask)
+        else:
+            mat = self._forward_torch_per_token(ids, attention_mask)
+
+        counts = _align_counts(sentences, offsets)
+        return mat, counts
+
+    def _forward_torch_per_token(
+        self, ids: Any, attention_mask: Any
+    ) -> NDArray[np.float64]:
+        import torch  # type: ignore[import-untyped]
+
+        ids_t = torch.tensor(ids)
+        am_t = torch.tensor(attention_mask) if attention_mask is not None else None
+        if self._device and self._device != "cpu":
+            ids_t = ids_t.to(self._device)
+            if am_t is not None:
+                am_t = am_t.to(self._device)
         with torch.no_grad():
-            out = model(**enc)
-        mat = cast(
-            NDArray[np.float64], out.last_hidden_state[0].float().cpu().numpy()
+            out = self._model(input_ids=ids_t, attention_mask=am_t)
+        return cast(
+            NDArray[np.float64],
+            out.last_hidden_state[0].float().cpu().numpy(),
         ).astype(np.float64)
 
-        spans: list[tuple[int, int]] = []
-        pos = 0
-        for s in sentences:
-            spans.append((pos, pos + len(s)))
-            pos += len(s)
+    def _forward_mlx_per_token(
+        self, ids: Any, attention_mask: Any
+    ) -> NDArray[np.float64]:
+        import mlx.core as mx  # type: ignore[import-untyped]
 
-        counts = [0] * len(sentences)
-        for a, b in offsets:
-            if a == 0 and b == 0:
-                continue
-            mid = (a + b) // 2
-            for s_idx, (sa, sb) in enumerate(spans):
-                if sa <= mid < sb:
-                    counts[s_idx] += 1
-                    break
-
-        # Absorb leading specials into sentence 0, trailing into the last.
-        for a, b in offsets:
-            if a == 0 and b == 0:
-                counts[0] += 1
-            else:
-                break
-        for k in range(len(offsets) - 1, -1, -1):
-            a, b = offsets[k]
-            if a == 0 and b == 0:
-                counts[-1] += 1
-            else:
-                break
-
-        return mat, counts
+        ids_mx = mx.array(ids, dtype=mx.int32)
+        am_mx = (
+            mx.array(attention_mask, dtype=mx.int32)
+            if attention_mask is not None
+            else None
+        )
+        out = self._model(ids_mx, attention_mask=am_mx)
+        h = out.last_hidden_state
+        mx.eval(h)
+        return np.asarray(h.astype(mx.float32))[0].astype(np.float64)
 
     # ----- pooled-chunklet convenience -----
 
     def embed_chunklets(self, chunklets: list[str]) -> NDArray[np.float64]:
         """Pooled embeddings (one row per chunklet), suitable for
         passing as the ``chunklet_embeddings`` argument to
-        :func:`fancychunk.split_chunks`.
-
-        Uses the model's intended pooling strategy (configured at
-        construction) and applies MRL truncation when ``output_dim``
-        was supplied. Output rows are L2-normalized.
-        """
-        import torch  # type: ignore[import-untyped]
-
+        :func:`fancychunk.split_chunks`."""
         if not chunklets:
             return np.zeros((0, self.embedding_dim), dtype=np.float64)
 
-        model, tokenizer = self._ensure_loaded()
+        _, tokenizer = self._ensure_loaded()
         rows: list[NDArray[np.float64]] = []
         for start in range(0, len(chunklets), self.batch_size):
             batch = chunklets[start : start + self.batch_size]
@@ -227,27 +278,98 @@ class PooledSegmentEmbedder:
                 padding=True,
                 truncation=True,
                 max_length=self.n_ctx,
-                return_tensors="pt",
+                return_tensors="np",
             )
-            if self._device and self._device != "cpu":
-                enc = {k: v.to(self._device) for k, v in enc.items()}
-            with torch.no_grad():
-                out = model(**enc)
-            pooled = _pool(out.last_hidden_state, enc["attention_mask"], self.pooling)
-            pooled = torch.nn.functional.normalize(pooled, p=2.0, dim=1)
-            rows.append(cast(NDArray[np.float64], pooled.float().cpu().numpy()))
+            if self._backend == "mlx":
+                pooled_np = self._forward_mlx_pooled(
+                    enc["input_ids"], enc["attention_mask"]
+                )
+            else:
+                pooled_np = self._forward_torch_pooled(
+                    enc["input_ids"], enc["attention_mask"]
+                )
+            rows.append(pooled_np.astype(np.float64))
 
-        arr = np.vstack(rows).astype(np.float64)
+        arr = np.vstack(rows)
         if self.output_dim is not None and self.output_dim < arr.shape[1]:
             arr = arr[:, : self.output_dim]
-            # Re-normalize after MRL truncation.
             norms = np.linalg.norm(arr, axis=1, keepdims=True)
             arr = arr / np.where(norms == 0, 1.0, norms)
         return arr
 
+    def _forward_torch_pooled(
+        self, ids: Any, attention_mask: Any
+    ) -> NDArray[np.float64]:
+        import torch  # type: ignore[import-untyped]
 
-def _pool(hidden_states: Any, attention_mask: Any, method: PoolingMethod) -> Any:
-    """Apply the configured pooling. Operates on torch tensors."""
+        ids_t = torch.tensor(ids)
+        am_t = torch.tensor(attention_mask)
+        if self._device and self._device != "cpu":
+            ids_t = ids_t.to(self._device)
+            am_t = am_t.to(self._device)
+        with torch.no_grad():
+            out = self._model(input_ids=ids_t, attention_mask=am_t)
+        pooled = _pool_torch(out.last_hidden_state, am_t, self.pooling)
+        pooled = torch.nn.functional.normalize(pooled, p=2.0, dim=1)
+        return cast(NDArray[np.float64], pooled.float().cpu().numpy())
+
+    def _forward_mlx_pooled(
+        self, ids: Any, attention_mask: Any
+    ) -> NDArray[np.float64]:
+        import mlx.core as mx  # type: ignore[import-untyped]
+
+        ids_mx = mx.array(ids, dtype=mx.int32)
+        am_mx = mx.array(attention_mask, dtype=mx.int32)
+        out = self._model(ids_mx, attention_mask=am_mx)
+        # mlx_embeddings returns ``text_embeds`` already pooled +
+        # L2-normalized using the model's intended strategy. Cast to
+        # numpy and we're done.
+        mx.eval(out.text_embeds)
+        return np.asarray(out.text_embeds.astype(mx.float32))
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared between backends.
+# ---------------------------------------------------------------------------
+
+
+def _align_counts(sentences: list[str], offsets: list[tuple[int, int]]) -> list[int]:
+    """Map per-token offsets back to per-sentence counts. Special
+    tokens (offset (0,0)) are absorbed into the first/last sentence
+    (SPEC-CHUNK-420 option b).
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    for s in sentences:
+        spans.append((pos, pos + len(s)))
+        pos += len(s)
+
+    counts = [0] * len(sentences)
+    for a, b in offsets:
+        if a == 0 and b == 0:
+            continue
+        mid = (a + b) // 2
+        for s_idx, (sa, sb) in enumerate(spans):
+            if sa <= mid < sb:
+                counts[s_idx] += 1
+                break
+
+    for a, b in offsets:
+        if a == 0 and b == 0:
+            counts[0] += 1
+        else:
+            break
+    for k in range(len(offsets) - 1, -1, -1):
+        a, b = offsets[k]
+        if a == 0 and b == 0:
+            counts[-1] += 1
+        else:
+            break
+    return counts
+
+
+def _pool_torch(hidden_states: Any, attention_mask: Any, method: PoolingMethod) -> Any:
+    """Torch pooling. (MLX models pool internally via ``out.text_embeds``.)"""
     import torch  # type: ignore[import-untyped]
 
     if method == "cls":
@@ -256,8 +378,6 @@ def _pool(hidden_states: Any, attention_mask: Any, method: PoolingMethod) -> Any
         mask = attention_mask.unsqueeze(-1).to(hidden_states.dtype)
         return (hidden_states * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
     if method == "last_token":
-        # Qwen3-Embedding convention: take the last non-padding token
-        # in each row. Handles both left- and right-padded inputs.
         seq_lens = attention_mask.sum(dim=1) - 1
         seq_lens = seq_lens.clamp(min=0)
         batch_size = hidden_states.shape[0]

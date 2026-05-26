@@ -6,7 +6,28 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (breaking — pre-1.0)
+- ``fancychunk.embedders`` factories renamed and the set extended.
+  The new order is **`fastest` → `fast` → `medium` → `high`** by
+  increasing quality / parameter count:
+  - ``fastest()`` was ``fast()`` (BGE-M3 / CLS pooling).
+  - ``fast()`` was ``default()`` (Qwen3-Embedding-0.6B).
+  - ``medium(dim=1024)`` was ``high_quality(dim=1024)`` (Qwen3-4B + MRL).
+  - ``high(dim=1024)`` is new (Qwen3-8B + MRL, ~70.58 MTEB-Multi).
+
 ### Added
+- **MLX backend** for ``PooledSegmentEmbedder``. On Apple Silicon
+  with ``mlx_embeddings`` installed, every factory transparently
+  loads the corresponding ``mlx-community/...-mxfp8`` (Qwen3) or
+  ``mlx-community/bge-m3-mlx-fp16`` (BGE-M3) build instead of the
+  torch + MPS path. 2-4× faster on the same hardware. The
+  ``[embedders]`` extra now installs ``mlx`` and ``mlx-embeddings``
+  via PEP 508 platform markers so the deps land only on macOS arm64.
+- ``high()`` factory wrapping Qwen3-Embedding-8B with MRL truncation
+  to ``dim=1024`` (configurable up to native 4096). MTEB Multilingual
+  70.58 / English 75.22 — top of the bundled options.
+
+
 - ``split_chunks`` accepts an optional ``chunklet_embeddings`` argument
   (now ``None`` by default). The structural-only fallback uses uniform
   ``sim = 1.0`` + the SPEC-CHUNK-322 heading-aware modification, so

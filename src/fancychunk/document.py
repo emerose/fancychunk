@@ -36,7 +36,7 @@ from ._segmenter import (
     precomputed_segmenter,
 )
 from ._telemetry import get_tracer
-from ._typing import Matrix, Vector
+from ._typing import Matrix
 from .chunklets import split_chunklets
 from .chunks import Chunk, split_chunks
 from .errors import ValidationError
@@ -154,11 +154,15 @@ async def chunk_documents(
     Segmenter batching (``segmenter_batch_size``):
 
     Set ``segmenter_batch_size=N`` to pre-segment documents in groups
-    of N before the per-document downstream pipeline runs.
-    wtpsplit-lite's SaT model can share one ONNX forward pass across
-    many documents — for corpora of short documents this is the
-    single largest win available, typically 3-10× the per-document
-    SaT cost depending on length distribution and hardware.
+    of N. SaT runs in waves on a worker thread; each wave's
+    downstream chunking/embedding tasks fire immediately so the next
+    wave's forward pass overlaps with the current wave's downstream
+    work. Measured numbers on this layout (RTX 3090, sat-3l-sm,
+    1,000 × 1,500-char docs, ``embedders.noop()``): SaT-only batched
+    vs serial on GPU is ~1.8× (GPU utilisation is ~25%, capped by
+    wtpsplit's CPU-side tokenisation); the full ``chunk_documents``
+    pipeline is 4.7× over CPU just from ``device="cuda"`` and 6.2×
+    with batching on top.
 
     The segmenter must satisfy
     :class:`~fancychunk._segmenter.BatchSentenceSegmenter` (i.e. expose
@@ -167,13 +171,11 @@ async def chunk_documents(
     ``segmenter_batch_size`` with a non-batchable custom segmenter
     raises :class:`ValidationError`.
 
-    Trade-off: all SaT inference happens up-front, so the embedder
-    cannot start until the segmenter finishes. On corpora where the
-    embedder dominates and SaT is already cheap (large documents,
-    small batches, slow embedder), leaving
-    ``segmenter_batch_size=None`` keeps the existing per-document
-    overlap. The win is on small-document workloads where SaT is the
-    bottleneck.
+    CPU-only callers see no benefit (forward FLOPs scale linearly
+    with batch size under ``CPUExecutionProvider``); leave
+    ``segmenter_batch_size`` unset — the streaming overlap can
+    actually make it slower because SaT waves serialise behind
+    downstream work that would otherwise overlap per-doc.
 
     Errors propagate via ``asyncio.gather``'s default semantics: the
     first exception aborts the batch and cancels in-flight siblings.
@@ -200,86 +202,75 @@ async def chunk_documents(
         if not documents:
             return []
 
-        per_doc_segmenters = await _maybe_presegment(
-            documents=documents,
-            segmenter=segmenter,
-            segmenter_batch_size=segmenter_batch_size,
+        sem = (
+            asyncio.Semaphore(max_concurrency)
+            if max_concurrency is not None
+            else None
         )
-
-        if max_concurrency is None:
-            return list(
-                await asyncio.gather(
-                    *(
-                        chunk_document(
-                            doc,
-                            embedder,
-                            max_size=max_size,
-                            segmenter=per_doc_segmenters[i],
-                        )
-                        for i, doc in enumerate(documents)
-                    )
-                )
-            )
-
-        sem = asyncio.Semaphore(max_concurrency)
 
         async def _one(
             doc: str,
             seg: SentenceSegmenter | None,
         ) -> tuple[list[Chunk], NDArray[np.float64]]:
+            if sem is None:
+                return await chunk_document(
+                    doc, embedder, max_size=max_size, segmenter=seg
+                )
             async with sem:
                 return await chunk_document(
                     doc, embedder, max_size=max_size, segmenter=seg
                 )
 
-        return list(
-            await asyncio.gather(
-                *(
-                    _one(doc, per_doc_segmenters[i])
-                    for i, doc in enumerate(documents)
+        if segmenter_batch_size is None:
+            return list(
+                await asyncio.gather(
+                    *(_one(doc, segmenter) for doc in documents)
                 )
             )
-        )
 
+        # Batched path: stream SaT waves and fire each wave's
+        # chunk_document tasks immediately, so the next wave's
+        # ``asyncio.to_thread`` runs concurrently with downstream
+        # chunking/embedding for already-segmented docs.
+        resolved = make_segmenter(segmenter)
+        if not isinstance(resolved, BatchSentenceSegmenter):
+            raise ValidationError(
+                "segmenter_batch_size requires a segmenter that "
+                "implements predict_proba_batch (BatchSentenceSegmenter); "
+                "the bundled SaTSegmenter does. Got: "
+                + type(resolved).__name__
+            )
+        batch_fn = resolved.predict_proba_batch
 
-async def _maybe_presegment(
-    documents: list[str],
-    segmenter: SentenceSegmenter | None,
-    segmenter_batch_size: int | None,
-) -> list[SentenceSegmenter | None]:
-    """Pre-segment ``documents`` if a batch size is requested.
-
-    Returns a list of per-document segmenter overrides (or ``None``
-    for the default path). The pre-segmentation is wrapped in
-    ``asyncio.to_thread`` so the event loop is not blocked while the
-    SaT forward pass runs.
-    """
-    if segmenter_batch_size is None:
-        return [segmenter] * len(documents)
-
-    resolved = make_segmenter(segmenter)
-    if not isinstance(resolved, BatchSentenceSegmenter):
-        raise ValidationError(
-            "segmenter_batch_size requires a segmenter that implements "
-            "predict_proba_batch (BatchSentenceSegmenter); the bundled "
-            "SaTSegmenter does. Got: " + type(resolved).__name__
-        )
-
-    batch_fn = resolved.predict_proba_batch
-    tracer = get_tracer()
-    per_doc: list[Vector | None] = [None] * len(documents)
-    with tracer.start_as_current_span(
-        "fancychunk.chunk_documents.presegment"
-    ) as span:
-        span.set_attribute("fancychunk.segmenter_batch_size", segmenter_batch_size)
-        span.set_attribute("fancychunk.documents.count", len(documents))
-        for start in range(0, len(documents), segmenter_batch_size):
-            slice_docs = documents[start : start + segmenter_batch_size]
-            vecs = await asyncio.to_thread(batch_fn, slice_docs)
-            for offset, vec in enumerate(vecs):
-                per_doc[start + offset] = vec
-
-    return [
-        precomputed_segmenter(vec) if vec is not None else None
-        for vec in per_doc
-    ]
+        tasks: list[asyncio.Task[tuple[list[Chunk], NDArray[np.float64]]]] = []
+        tracer = get_tracer()
+        with tracer.start_as_current_span(
+            "fancychunk.chunk_documents.presegment"
+        ) as ps_span:
+            ps_span.set_attribute(
+                "fancychunk.segmenter_batch_size", segmenter_batch_size
+            )
+            ps_span.set_attribute(
+                "fancychunk.documents.count", len(documents)
+            )
+            for start in range(0, len(documents), segmenter_batch_size):
+                slice_docs = documents[start : start + segmenter_batch_size]
+                vecs = await asyncio.to_thread(batch_fn, slice_docs)
+                for offset, vec in enumerate(vecs):
+                    i = start + offset
+                    seg = (
+                        precomputed_segmenter(vec)
+                        if vec is not None
+                        else None
+                    )
+                    tasks.append(
+                        asyncio.create_task(_one(documents[i], seg))
+                    )
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            raise
+        return list(results)

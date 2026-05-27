@@ -230,6 +230,23 @@ Verify the win on your hardware with `python bench_sat_batching.py
 single-document `chunk_document(doc, embedder, segmenter=...)` for
 pipelines that ingest one document at a time.
 
+Measured on a 1,000-doc / 1,500-char corpus (RTX 3090, sat-3l-sm,
+`embedders.noop()`):
+
+| `chunk_documents` config | ms/doc | vs CPU baseline |
+|---|---:|---:|
+| CPU, no batch (baseline) | 33.68 | 1.00× |
+| CUDA, no batch | 7.17 | **4.70×** |
+| CUDA, `segmenter_batch_size=64` | 5.48 | **6.15×** |
+| CPU, `segmenter_batch_size=64` | 59.61 | 0.57× (slower — don't use) |
+
+The headline number is the e2e CUDA win. The SaT-only batched-vs-
+serial ratio on the same GPU is more modest (~1.8×) because GPU
+utilisation during batched runs sits at ~25-66% — wtpsplit-lite's
+CPU-side tokenisation/input-prep is the wall, not the ONNX forward
+pass. Leave `segmenter_batch_size=None` on CPU-only deployments: it
+serialises downstream work behind SaT waves with no payoff.
+
 **Embedders.** Four bundled models trade quality for latency. You
 pick one explicitly — there's no hidden default — and pass it
 through to `chunk_document` (or to the individual primitives). The

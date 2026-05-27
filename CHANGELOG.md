@@ -26,15 +26,24 @@ the project follows [Semantic Versioning](https://semver.org/).
   ``predict_proba_batch``. Lets ``chunk_documents`` opt into the
   batched path; BYO segmenters can satisfy it to participate.
 - ``chunk_documents(..., segmenter_batch_size=N)`` pre-segments
-  documents in groups of N before launching the per-document
-  downstream pipeline. SaT inference runs off the event loop via
-  ``asyncio.to_thread`` so it overlaps with any in-flight embedder
-  work. On a CUDA box this is typically the single largest win
-  available for small-doc workloads — the SaT forward pass on
-  short inputs is dominated by per-call launch + memory-transfer
-  overhead, which batching amortizes. CPU-only callers see no
-  benefit (forward-pass FLOPs scale linearly with batch size under
-  ``CPUExecutionProvider``); leave ``segmenter_batch_size`` unset.
+  documents in groups of N. SaT inference runs off the event loop
+  on a worker thread via ``asyncio.to_thread``, and each wave's
+  downstream chunking/embedding tasks fire immediately so the next
+  wave's forward pass overlaps with the current wave's downstream
+  work.
+
+  Measured on a 1,000-doc / 1,500-char corpus (RTX 3090, sat-3l-sm,
+  ``embedders.noop()``), ``chunk_documents`` is ~6.2× faster than
+  the CPU-no-batch baseline; just turning on ``device="cuda"`` is
+  already ~4.7×. The SaT-only batched-vs-serial ratio on the same
+  GPU is more modest (~1.8×) because wtpsplit-lite's CPU-side
+  tokenisation is the bottleneck (GPU utilisation sits at ~25-66%
+  during batched runs), not the ONNX forward pass.
+
+  CPU-only callers see no benefit (forward-pass FLOPs scale
+  linearly with batch size under ``CPUExecutionProvider``); leave
+  ``segmenter_batch_size`` unset — on CPU the streaming overlap
+  serialises downstream work behind SaT waves with no payoff.
 - ``chunk_document(..., segmenter=...)`` and
   ``chunk_documents(..., segmenter=...)`` accept a segmenter
   override so per-doc callers (e.g. ingestion pipelines that drive

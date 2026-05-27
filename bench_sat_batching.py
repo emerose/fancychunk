@@ -11,9 +11,16 @@ and times three paths:
 
 The win from batching is highly platform-dependent:
 
-* **GPU (CUDAExecutionProvider).** Each ``ort.run`` carries a launch
-  + memory-transfer cost that batching amortizes; expect 3–10×
-  total speedup on a CUDA box with sat-3l-sm.
+* **GPU (CUDAExecutionProvider).** Batching amortises per-call
+  launch + memory-transfer cost. The headline number for this
+  feature is the end-to-end ``chunk_documents`` improvement, not the
+  SaT-only ratio: on RTX 3090 + sat-3l-sm we measure ~4.7×
+  e2e over CPU from ``device="cuda"`` alone and ~6.2× e2e with
+  ``segmenter_batch_size=64`` on top. The SaT-only batched-vs-serial
+  ratio on the same device is more modest (~1.8×) — GPU utilisation
+  during batched runs caps at ~25-66%, with the wall sitting in
+  wtpsplit-lite's CPU-side tokenisation/input-prep, not the GPU
+  forward pass.
 * **CPU (CPUExecutionProvider).** Forward-pass FLOPs scale linearly
   with batch size, so there is no theoretical batch win — the CPU
   just does the same work serially. Observed numbers on Apple

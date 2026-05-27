@@ -173,10 +173,17 @@ async def embed_with_late_chunking(
         # SPEC-CHUNK-470 — compute per-chunk heading prepends once.
         # Empty strings indicate "no heading in scope" (or
         # include_headings=False); those segments skip the prepend.
+        #
+        # Pipeline-produced chunks (from ``split_chunks`` /
+        # ``chunk_document``) already carry ``heading_path`` —
+        # ``_resolve_paths`` reads those directly. For chunks the
+        # caller built by hand, fall back to computing.
         if include_headings:
-            from .headings import heading_paths
+            from .headings import render_heading_path, resolve_heading_paths
 
-            heading_prepends = heading_paths(chunks)
+            heading_prepends = [
+                render_heading_path(p) for p in resolve_heading_paths(chunks)
+            ]
         else:
             heading_prepends = [""] * len(chunks)
 

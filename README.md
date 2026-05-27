@@ -58,8 +58,15 @@ asyncio.run(main())
 ```
 
 Each chunk is a `Chunk` — a frozen dataclass with `text` (always
-present) plus optional metadata. Today: `start` and `end` (half-open
-character offsets, so `document[chunk.start:chunk.end] == chunk.text`).
+present) plus optional metadata:
+- `start` / `end` — half-open character offsets, so
+  `document[chunk.start:chunk.end] == chunk.text`.
+- `heading_path` — tuple of full Markdown heading lines in scope at
+  the chunk's start, e.g. `("# Top", "## **Bold** Sub")`. Marker
+  count encodes level; inline formatting preserved. Useful for
+  filter-by-section in your vector store, breadcrumb rendering, or
+  attaching as metadata. `()` means no heading in scope.
+
 More optional fields may be added over time without breaking
 existing code.
 

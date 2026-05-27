@@ -4,6 +4,50 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-05-27
+
+### Added
+- ``Chunk.heading_path: tuple[str, ...] | None`` — the Markdown
+  heading stack in scope at the chunk's start, as a tuple of full
+  heading lines (e.g. ``("# Top", "## **Bold** Sub")``). Each entry
+  preserves the ``#`` markers and inline markdown formatting but is
+  stripped of trailing whitespace and newlines. The marker count
+  encodes heading level, so documents with skipped levels are
+  faithfully represented (``("# H1", "### H3")`` not the misleading
+  ``("H1", "H3")``). Empty tuple means "no heading in scope";
+  ``None`` means "not computed."
+  
+  ``split_chunks`` and ``chunk_document`` always populate it.
+  Use cases: filter chunks by heading
+  (``if any("Methods" in h for h in c.heading_path)``), render
+  breadcrumbs, or attach as vector-store metadata.
+- ``fancychunk.headings.render_heading_path(path) -> str`` —
+  convert a tuple-form heading path to a single Markdown string
+  (newline-joined with a trailing newline). Used internally by
+  late chunking and ``enrich_with_headings``; exposed for callers
+  who want the same rendering convention.
+- ``fancychunk.headings.resolve_heading_paths(chunks)`` — return
+  per-chunk heading paths, preferring ``chunk.heading_path`` when
+  populated and falling back to a fresh ``heading_paths`` scan
+  otherwise. Lets standalone consumers of ``embed_with_late_chunking``
+  / ``enrich_with_headings`` work whether or not the chunks carry
+  pre-computed metadata.
+
+### Changed (breaking — pre-1.0)
+- ``heading_paths(chunks: list[Chunk]) -> list[tuple[str, ...]]`` —
+  return type changed from rendered Markdown strings
+  (``"# Top\n## Sub\n"``) to tuples of stripped heading lines
+  (``("# Top", "## Sub")``). For the old-style rendered output,
+  apply ``render_heading_path`` to each entry. Trailing whitespace
+  is no longer preserved (per the new tuple-form semantics).
+- ``enrich_with_headings`` uses ``chunk.heading_path`` when
+  populated; falls back to ``heading_paths()`` otherwise. Behavior
+  unchanged for callers; just an internal optimization for chunks
+  that already carry the metadata.
+- ``embed_with_late_chunking`` uses ``chunk.heading_path`` when
+  populated (same fallback). Eliminates an internal pass over the
+  chunks when the metadata is already there.
+
 ## [0.3.0] - 2026-05-27
 
 ### Changed (breaking — pre-1.0)
@@ -170,6 +214,7 @@ the project follows [Semantic Versioning](https://semver.org/).
 - GitHub Actions CI workflow runs pyright (strict mode) and pytest
   against Python 3.12 and 3.13.
 
+[0.4.0]: https://github.com/emerose/fancychunk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/emerose/fancychunk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/emerose/fancychunk/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/emerose/fancychunk/compare/v0.1.0...v0.1.1

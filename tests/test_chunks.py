@@ -317,3 +317,67 @@ def test_chunk_is_hashable() -> None:
     b = Chunk(text="hi", start=0, end=2)
     c = Chunk(text="bye", start=0, end=3)
     assert {a, b, c} == {a, c}
+
+
+def test_split_chunks_populates_heading_path() -> None:
+    """Chunks from split_chunks carry ``heading_path`` populated —
+    tuple of full markdown heading lines in scope at the chunk's start."""
+    chunklets = [
+        "# Top\n\n",
+        "a" * 900,
+        "## Sub\n\n",
+        "b" * 900,
+        "c" * 900,
+    ]
+    matrix = np.eye(5)
+    chunks = asyncio.run(
+        split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    )
+    # All chunks have heading_path populated (not None).
+    assert all(c.heading_path is not None for c in chunks)
+    # First chunk: nothing in scope before it.
+    assert chunks[0].heading_path == ()
+    # Some later chunk starts under "# Top" or "# Top, ## Sub" depending on
+    # where the splits land. Just verify a non-empty path appears at some
+    # point and that '#' markers are preserved.
+    has_top = any("# Top" in p for c in chunks for p in (c.heading_path or ()))
+    assert has_top
+
+
+def test_split_chunks_heading_path_short_circuit() -> None:
+    """Short-circuit paths (single chunklet, total fits) still
+    populate heading_path with the empty tuple (no heading before chunk 0)."""
+    single = asyncio.run(split_chunks(["# Top\n\nBody.\n"], _RaisingEmbedder()))
+    assert single[0].heading_path == ()
+
+    fits = asyncio.run(
+        split_chunks(["# Top\n", "Body.\n"], _RaisingEmbedder(), max_size=1000)
+    )
+    assert fits[0].heading_path == ()
+
+
+def test_split_chunks_heading_path_preserves_level_via_markers() -> None:
+    """Skipped levels (H1 then H3) are visible in the tuple via the
+    '#' marker count — ``("# H1", "### H3")`` not the misleading
+    ``("H1", "H3")``. We size the body so the H3 heading lands in
+    one chunk and additional H3-scoped body lands in a later chunk,
+    putting both H1 and H3 in scope at that later chunk's start."""
+    chunklets = [
+        "# H1\n\n",
+        "a" * 900,
+        "### H3\n\n",
+        "b" * 900,
+        "c" * 900,
+        "d" * 900,
+        "e" * 900,
+    ]
+    matrix = np.eye(7)
+    chunks = asyncio.run(
+        split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    )
+    # Find a chunk whose path includes both H1 and H3.
+    deep_paths = [c.heading_path for c in chunks if c.heading_path and len(c.heading_path) == 2]
+    assert deep_paths, "expected at least one chunk under both H1 and H3"
+    p = deep_paths[0]
+    assert p[0] == "# H1"
+    assert p[1] == "### H3"

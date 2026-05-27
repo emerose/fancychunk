@@ -97,7 +97,7 @@ def test_heading_paths_consistent_with_pipeline() -> None:
     chunks = split_chunks(chunklets, _PreCookedEmbedder(emb), max_size=2048)
     paths = heading_paths(chunks)
     assert len(paths) == len(chunks)
-    assert paths[0] == ""
+    assert paths[0] == ()  # empty path (no heading in scope before chunk 0)
 
 
 # Pipeline composes cleanly through noop() for a no-model-download path.

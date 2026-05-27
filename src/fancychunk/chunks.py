@@ -42,6 +42,17 @@ class Chunk:
         ``"".join(chunklets)``; for :func:`chunk_document` that
         equals the original document (chunklets round-trip per
         SPEC-CHUNK-300).
+    heading_path:
+        Markdown heading stack **in scope at the chunk's start** —
+        a tuple of full heading-line strings (``"# Top"``,
+        ``"## **Bold** Sub"``, …) preserving inline formatting and
+        the ``#`` markers (the marker count encodes the heading
+        level). Trailing whitespace and newlines are stripped from
+        each entry. Empty tuple means "computed, no heading in
+        scope" (e.g. the first chunk before any heading appears).
+        ``None`` means "not computed" — a hand-constructed
+        :class:`Chunk` won't have it populated; :func:`split_chunks`
+        and :func:`chunk_document` always do.
 
     New optional metadata fields may be added in future releases.
     Adding a field is non-breaking: existing keyword-construction
@@ -51,6 +62,7 @@ class Chunk:
     text: str
     start: int | None = None
     end: int | None = None
+    heading_path: tuple[str, ...] | None = None
 
     def __str__(self) -> str:
         """``str(chunk)`` returns the chunk text."""
@@ -125,17 +137,32 @@ async def split_chunks(
                 )
 
         # SPEC-CHUNK-340 — single chunklet. No embedder call.
+        # heading_path is empty () because nothing precedes chunk 0.
         if len(chunklets) == 1:
             span.set_attribute("fancychunk.chunks.count", 1)
             span.set_attribute("fancychunk.short_circuit", "single_chunklet")
-            return [Chunk(text=chunklets[0], start=0, end=lengths[0])]
+            return [
+                Chunk(
+                    text=chunklets[0],
+                    start=0,
+                    end=lengths[0],
+                    heading_path=(),
+                )
+            ]
 
         # SPEC-CHUNK-340 — total fits. No embedder call.
         total_len = sum(lengths)
         if total_len <= max_size:
             span.set_attribute("fancychunk.chunks.count", 1)
             span.set_attribute("fancychunk.short_circuit", "total_fits")
-            return [Chunk(text="".join(chunklets), start=0, end=total_len)]
+            return [
+                Chunk(
+                    text="".join(chunklets),
+                    start=0,
+                    end=total_len,
+                    heading_path=(),
+                )
+            ]
 
         # Multi-chunklet, multi-chunk case: embedder drives the
         # partition decision.
@@ -327,7 +354,9 @@ def _solve_partition(
 
     # Each chunk spans chunklets[a:b]; its character range in
     # ``"".join(chunklets)`` is ``[cum_len_np[a], cum_len_np[b])``.
-    return [
+    # Build chunks first, then populate heading_path in a second
+    # pass (the heading scan needs the chunk text to be assembled).
+    bare_chunks = [
         Chunk(
             text="".join(chunklets[a:b]),
             start=int(cum_len_np[a]),
@@ -335,3 +364,9 @@ def _solve_partition(
         )
         for a, b in zip(cuts[:-1], cuts[1:])
     ]
+    # Local import to avoid a cycle (headings → chunks).
+    from .headings import heading_paths
+    from dataclasses import replace
+
+    paths = heading_paths(bare_chunks)
+    return [replace(c, heading_path=p) for c, p in zip(bare_chunks, paths)]

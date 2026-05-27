@@ -7,7 +7,7 @@ segmenter (fast, deterministic, no model download) by default. Pass
 ``--use-sat`` to run against the SaT model instead — adds 408 MB
 download on first run and ~10× per-call cost.
 
-Run with:  PYENV_VERSION=3.12.8 python bench_pipeline.py
+Run with:  python -m benchmarks.pipeline
 """
 
 from __future__ import annotations

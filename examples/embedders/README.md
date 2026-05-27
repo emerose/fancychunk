@@ -126,5 +126,5 @@ that's already async, drop the `to_thread` wrappers and just
   call. Co-locate the embedder with the chunking logic when possible;
   if you do go remote, use a binary protocol (msgpack, protobuf) —
   the matrix transport dominates JSON serialization cost.
-- **`bench_qwen3.py`** at the repo root has a complete end-to-end
-  benchmark you can adapt for other models.
+- **`benchmarks/qwen3.py`** (`python -m benchmarks.qwen3`) has a
+  complete end-to-end benchmark you can adapt for other models.

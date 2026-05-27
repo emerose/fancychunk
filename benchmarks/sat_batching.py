@@ -29,11 +29,11 @@ The win from batching is highly platform-dependent:
 
 Run::
 
-    python bench_sat_batching.py                # quick: 200 docs
-    python bench_sat_batching.py --n-docs 1000  # the spec's number
-    python bench_sat_batching.py --batch-size 64
-    python bench_sat_batching.py --device cuda  # if onnxruntime-gpu
-    python bench_sat_batching.py --include-e2e  # full chunk_documents path
+    python -m benchmarks.sat_batching                # quick: 200 docs
+    python -m benchmarks.sat_batching --n-docs 1000  # the spec's number
+    python -m benchmarks.sat_batching --batch-size 64
+    python -m benchmarks.sat_batching --device cuda  # if onnxruntime-gpu
+    python -m benchmarks.sat_batching --include-e2e  # full chunk_documents path
 
 The model weights (~408 MB) download lazily on first call.
 """

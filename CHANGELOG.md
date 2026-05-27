@@ -77,11 +77,12 @@ the project follows [Semantic Versioning](https://semver.org/).
   per-character probability vector as a ``SentenceSegmenter``,
   letting advanced callers cache / share boundary probabilities
   across re-ingests of the same document.
-- ``bench_sat_batching.py`` — microbenchmark over a synthetic short-
-  Markdown corpus that prints per-doc vs batched wall time and
-  optionally fails (``--assert-speedup``) below a target ratio.
-  Use ``--device cuda`` on a CUDA box to validate the GPU path;
-  the API surface is also covered by mocked unit tests in
+- ``benchmarks/sat_batching.py`` — microbenchmark over a synthetic
+  short-Markdown corpus that prints per-doc vs batched wall time
+  and optionally fails (``--assert-speedup``) below a target ratio.
+  Run with ``python -m benchmarks.sat_batching --device cuda`` on a
+  CUDA box to validate the GPU path; the API surface is also
+  covered by mocked unit tests in
   ``tests/test_segmenter_batching.py``.
 
 ### Changed

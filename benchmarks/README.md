@@ -1,10 +1,20 @@
 # fancychunk benchmark harness
 
-Two questions this harness tries to answer:
+Two flavors of benchmark live here:
 
-1. **Does fancychunk actually retrieve better chunks** than fixed-size
-   or semantic chunkers, on realistic long scientific documents?
-2. **What does that quality cost** in throughput and per-stage latency?
+1. **Qasper-driven comparison** (`retrieval.py`, `latency.py`) — does
+   fancychunk actually retrieve better chunks than fixed-size or
+   semantic chunkers, and what does that quality cost? Uses the
+   `_chunkers.py` / `_metrics.py` / `_qasper.py` helpers.
+2. **Standalone microbenchmarks** (`embedders.py`, `factories.py`,
+   `pipeline.py`, `qwen3.py`, `sat_batching.py`) — answer narrower
+   questions about a single piece of the pipeline. See
+   [§ Standalone scripts](#standalone-scripts) below.
+
+Captured runs from a Linux + RTX 3090 box are in
+[`results/`](results/) as historical reference data.
+
+## Qasper retrieval + latency
 
 The corpus is [Qasper](https://allenai.org/data/qasper) — questions
 about full NLP papers, with ground-truth evidence spans. Long
@@ -111,3 +121,21 @@ chunk DP, late chunking).
   end-to-end RAG benchmark. Adding answer F1 / exact match on top of
   the retrieved chunks is a natural next step but requires an LLM
   budget you may not want during iteration.
+
+## Standalone scripts
+
+These don't share infrastructure with the Qasper harness — each
+answers a narrow question on synthetic or self-contained inputs.
+
+| Module | What it measures | Notes |
+|--------|-----------------|-------|
+| `python -m benchmarks.embedders` | Candidate embedder models on a fixed ~1.5 KB doc | Loads each model via HF transformers for fairness; cites published MTEB |
+| `python -m benchmarks.factories` | The four bundled `fancychunk.embedders` factories | Auto-uses MLX on Apple Silicon; sweep is `embed_chunklets` over a synthetic batch |
+| `python -m benchmarks.pipeline` | Per-stage span timings for the chunking pipeline (sentences → chunklets → chunks) | Uses OpenTelemetry spans the library emits natively. `--use-sat` switches the segmenter from punctuation to SaT |
+| `python -m benchmarks.qwen3` | Qwen3-Embedding-8B (mxfp8) end-to-end through late chunking | Apple Silicon / MLX-specific |
+| `python -m benchmarks.sat_batching` | Per-doc vs batched SaT segmentation; optional end-to-end with `--include-e2e` | `--device cuda` is the GPU validation path; `--assert-speedup N` exits non-zero below ratio N |
+
+Add `> benchmarks/results/<script>.linux.txt` to capture a run
+snapshot — `results/` is git-tracked reference data, not
+auto-regenerated, so re-run the script for current numbers on your
+hardware.

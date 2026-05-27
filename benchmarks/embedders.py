@@ -13,7 +13,7 @@ Per model:
 - Approximate resident memory after load
 - Published MTEB Multilingual score (cited, not measured)
 
-Run:  PYENV_VERSION=3.12.8 python bench_embedders.py
+Run:  python -m benchmarks.embedders
 """
 
 from __future__ import annotations

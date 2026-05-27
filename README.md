@@ -227,7 +227,7 @@ Under the hood:
   `segmenter_batch_size=None` to force per-doc segmentation, or
   pass an int to force a specific batch size.
 
-Verify the win on your hardware with `python bench_sat_batching.py
+Verify the win on your hardware with `python -m benchmarks.sat_batching
 --device cuda --n-docs 1000`. Measured on a 1,000-doc / 1,500-char
 corpus (RTX 3090, sat-3l-sm, `embedders.noop()`):
 
@@ -315,8 +315,8 @@ runs on torch + MPS / CUDA / CPU.
 driver 580.159.03) with Intel Core i9-10900KF and 32 GB system RAM,
 on Linux 6.17 with PyTorch 2.12.0 + bundled CUDA 13.0 wheels (Python
 3.13). All factories load canonical HuggingFace weights in fp16;
-weights live on VRAM. Same 3-chunklet `bench_factories.py` batch as
-the Mac measurements.
+weights live on VRAM. Same 3-chunklet `benchmarks/factories.py` batch
+as the Mac measurements.
 
 
 ### Bring your own embedder

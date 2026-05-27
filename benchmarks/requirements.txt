@@ -16,6 +16,9 @@ chonkie>=0.5
 scikit-learn>=1.3      # for ndcg_score
 tqdm>=4.66
 
+# Resident-memory probes in benchmarks.embedders / benchmarks.factories.
+psutil>=5.9
+
 # Mostly redundant with fancychunk[torch] but listed explicitly so
 # the benchmark venv works even without the library extras.
 numpy>=1.26

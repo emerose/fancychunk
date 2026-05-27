@@ -1,7 +1,7 @@
 """Benchmark Qwen3-Embedding-8B (mxfp8) end-to-end through fancychunk's
 late-chunking helper on an M2 / 24 GB MacBook Air.
 
-Run with:  PYENV_VERSION=3.12.8 python bench_qwen3.py
+Run with:  python -m benchmarks.qwen3
 """
 
 from __future__ import annotations

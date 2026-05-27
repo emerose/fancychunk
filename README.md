@@ -199,6 +199,55 @@ deployments where you can tolerate lower segmentation quality, pass
 `segmenter=punctuation_segmenter` instead: a ~50-line rule-based
 fallback bundled with the library.
 
+For corpora of many short documents (think BeIR scifact: ~5K
+abstracts at ~1.5K chars each), SaT can become the dominant cost
+in the pipeline. **Install `onnxruntime-gpu` on a CUDA box and the
+defaults do the right thing** — no code changes:
+
+```python
+from fancychunk import chunk_documents
+from fancychunk.embedders import qwen3_600m
+
+# Picks CUDAExecutionProvider automatically if onnxruntime-gpu is
+# installed (else falls back to CPU). Batches the SaT forward
+# passes when running on a GPU; skips batching on CPU (where it
+# wouldn't help).
+await chunk_documents(docs, qwen3_600m())
+```
+
+Under the hood:
+* `SaTSegmenter()` defaults to `device="auto"`, which defers to
+  wtpsplit-lite's GPU-first provider auto-detect.
+* `chunk_documents(..., segmenter_batch_size="auto")` (the default)
+  asks the resolved segmenter whether batching will help via
+  `wants_batching()`. The bundled `SaTSegmenter` says yes on any
+  GPU EP, no on CPU.
+* Power-user overrides still available: pass an explicit
+  `SaTSegmenter(device="cuda"/"cpu")`, set
+  `segmenter_batch_size=None` to force per-doc segmentation, or
+  pass an int to force a specific batch size.
+
+Verify the win on your hardware with `python bench_sat_batching.py
+--device cuda --n-docs 1000`. Measured on a 1,000-doc / 1,500-char
+corpus (RTX 3090, sat-3l-sm, `embedders.noop()`):
+
+| `chunk_documents` config | ms/doc | vs CPU baseline |
+|---|---:|---:|
+| CPU, no batch (baseline) | 33.27 | 1.00× |
+| CUDA, no batch | 6.77 | **4.91×** |
+| **CUDA, default (`"auto"` → batch=64)** | **5.06** | **6.57×** |
+| CUDA, `segmenter_batch_size=128` | 5.05 | 6.58× |
+| CPU, `segmenter_batch_size=64` | 58.55 | 0.57× (slower — auto skips this) |
+
+The headline number is the e2e CUDA win. The SaT-only batched-vs-
+serial ratio on the same GPU is ~2.2× (raw segmenter throughput
+goes from ~1.45 ms/doc serial to ~0.67 ms/doc batched). About half
+the post-`device="cuda"` wall is the actual ORT forward pass; the
+rest sat in a per-document Python loop in `wtpsplit-lite`'s
+`token_to_char_probs`, which `SaTSegmenter` now monkey-patches with
+a vectorised replacement on first load. Set
+`FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1` to opt out.
+
 **Embedders.** Four bundled models trade quality for latency. You
 pick one explicitly — there's no hidden default — and pass it
 through to `chunk_document` (or to the individual primitives). The

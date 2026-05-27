@@ -7,6 +7,8 @@ attribute set. They run quickly because no real exporter is involved.
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pytest
 from opentelemetry import trace
@@ -17,14 +19,23 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 
 from fancychunk import (
-    embed_with_late_chunking,
     heading_paths,
     split_chunklets,
-    split_chunks,
     split_sentences,
 )
+from fancychunk import embed_with_late_chunking as _async_embed_with_late_chunking
+from fancychunk import split_chunks as _async_split_chunks
 
 from ._fake_embedder import FakeEmbedder
+
+
+# Sync shims — see test_late_chunking.py for rationale.
+def embed_with_late_chunking(*args, **kwargs):  # type: ignore[no-untyped-def]
+    return asyncio.run(_async_embed_with_late_chunking(*args, **kwargs))
+
+
+def split_chunks(*args, **kwargs):  # type: ignore[no-untyped-def]
+    return asyncio.run(_async_split_chunks(*args, **kwargs))
 
 
 @pytest.fixture
@@ -99,7 +110,7 @@ class _FixedEmbedder:
     def __init__(self, matrix: np.ndarray) -> None:
         self.matrix = matrix
 
-    def embed_chunklets(self, chunklets: list[str]) -> np.ndarray:
+    async def embed_chunklets(self, chunklets: list[str]) -> np.ndarray:
         return self.matrix
 
 

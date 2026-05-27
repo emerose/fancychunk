@@ -35,9 +35,14 @@ class NoopSegmentEmbedder:
         # embeddings).
         self._unit_value = 1.0 / math.sqrt(embedding_dim)
 
-    # ----- SegmentEmbedder protocol -----
+    # ----- SegmentEmbedder protocol (async-only) -----
+    #
+    # No model, no I/O, no real work — these are async only to satisfy
+    # the protocol. They return immediately without ever yielding to
+    # the event loop, which is fine: the cost of awaiting a finished
+    # coroutine is ~1 μs.
 
-    def count_tokens(self, texts: list[str]) -> list[int]:
+    async def count_tokens(self, texts: list[str]) -> list[int]:
         """Approximate token counts.
 
         Used only for late-chunking segment-budget planning, which
@@ -46,20 +51,18 @@ class NoopSegmentEmbedder:
         """
         return [max(1, len(s) // 4) for s in texts]
 
-    def embed_segment(
+    async def embed_segment(
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         """Return constant per-token embeddings + per-text counts."""
-        counts = self.count_tokens(texts)
+        counts = [max(1, len(s) // 4) for s in texts]
         total = sum(counts)
         mat = np.full(
             (total, self.embedding_dim), self._unit_value, dtype=np.float64
         )
         return mat, counts
 
-    # ----- pooled-chunklet convenience -----
-
-    def embed_chunklets(self, chunklets: list[str]) -> NDArray[np.float64]:
+    async def embed_chunklets(self, chunklets: list[str]) -> NDArray[np.float64]:
         """One identical unit vector per chunklet."""
         return np.full(
             (len(chunklets), self.embedding_dim),

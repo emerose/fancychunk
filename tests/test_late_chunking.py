@@ -10,6 +10,8 @@ and SPEC-CHUNK-470 (per-segment heading prepend).
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pytest
 
@@ -17,8 +19,8 @@ from fancychunk import (
     ChunkExceedsContextError,
     SentenceExceedsContextError,
     ValidationError,
-    embed_with_late_chunking,
 )
+from fancychunk import embed_with_late_chunking as _async_embed_with_late_chunking
 
 from ._fake_embedder import (
     BertLikeFakeEmbedder,
@@ -26,6 +28,14 @@ from ._fake_embedder import (
     RecordingFakeEmbedder,
     WhitespaceDroppingFakeEmbedder,
 )
+
+
+# Sync shim: every test below calls ``embed_with_late_chunking`` as if
+# it were sync. The library entry point is async; this wrapper runs
+# the coroutine to completion via ``asyncio.run``. Lets the test bodies
+# stay readable rather than peppered with ``asyncio.run(...)``.
+def embed_with_late_chunking(*args, **kwargs):  # type: ignore[no-untyped-def]
+    return asyncio.run(_async_embed_with_late_chunking(*args, **kwargs))
 
 
 # ---------------------------------------------------------------------------

@@ -12,13 +12,19 @@ fixture and there as a user-facing example.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, cast
 
 import numpy as np
 import pytest
 
-from fancychunk import embed_with_late_chunking
+from fancychunk import embed_with_late_chunking as _async_embed_with_late_chunking
+
+
+# Sync shim — see test_late_chunking.py for rationale.
+def embed_with_late_chunking(*args, **kwargs):  # type: ignore[no-untyped-def]
+    return asyncio.run(_async_embed_with_late_chunking(*args, **kwargs))
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FANCYCHUNK_TEST_USE_BERT") != "1",
@@ -41,13 +47,13 @@ def bert_embedder() -> Any:
     class HFOffsetEmbedder:
         n_ctx = 512
 
-        def count_tokens(self, sentences: list[str]) -> list[int]:
+        async def count_tokens(self, sentences: list[str]) -> list[int]:
             return [
                 len(tokenizer.encode(s, add_special_tokens=False))
                 for s in sentences
             ]
 
-        def embed_segment(
+        async def embed_segment(
             self, sentences: list[str]
         ) -> tuple[np.ndarray, list[int]]:
             # Join with no separator and use offset_mapping to map

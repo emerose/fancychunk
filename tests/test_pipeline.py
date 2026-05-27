@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 from numpy.typing import NDArray
 
 from fancychunk import (
     heading_paths,
     split_chunklets,
-    split_chunks,
     split_sentences,
 )
+from fancychunk import split_chunks as _async_split_chunks
 from fancychunk.embedders import noop
+
+
+# Sync shim — see test_late_chunking.py for rationale.
+def split_chunks(*args, **kwargs):  # type: ignore[no-untyped-def]
+    return asyncio.run(_async_split_chunks(*args, **kwargs))
 
 
 class _PreCookedEmbedder:
@@ -20,7 +27,7 @@ class _PreCookedEmbedder:
     def __init__(self, matrix: NDArray[np.floating]) -> None:
         self.matrix = np.asarray(matrix, dtype=np.float64)
 
-    def embed_chunklets(
+    async def embed_chunklets(
         self, chunklets: list[str]
     ) -> NDArray[np.float64]:
         assert len(chunklets) == self.matrix.shape[0]

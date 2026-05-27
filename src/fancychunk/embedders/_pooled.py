@@ -35,7 +35,9 @@ over the full representation.
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
 from typing import Any, Literal, cast
 
 import numpy as np
@@ -95,6 +97,13 @@ class PooledSegmentEmbedder:
         self._model: Any = None
         self._tokenizer: Any = None
         self._device: str | None = None
+        # Serializes weight loading and forward passes. Torch and MLX
+        # aren't safe to invoke concurrently on the same model from
+        # multiple Python threads; with this lock, instance throughput
+        # matches one serialized stream (which is what the device can
+        # deliver anyway). RLock so property accessors can call
+        # ``_ensure_loaded`` from within a locked public method.
+        self._lock: threading.RLock = threading.RLock()
 
     # ----- backend selection -----
 
@@ -129,13 +138,14 @@ class PooledSegmentEmbedder:
     # ----- loading -----
 
     def _ensure_loaded(self) -> tuple[Any, Any]:
-        if self._model is None:
-            self._backend = self._resolve_backend()
-            if self._backend == "mlx":
-                self._load_mlx()
-            else:
-                self._load_torch()
-        return self._model, self._tokenizer
+        with self._lock:
+            if self._model is None:
+                self._backend = self._resolve_backend()
+                if self._backend == "mlx":
+                    self._load_mlx()
+                else:
+                    self._load_torch()
+            return self._model, self._tokenizer
 
     def _load_torch(self) -> None:
         try:
@@ -195,15 +205,20 @@ class PooledSegmentEmbedder:
         native = int(model.config.hidden_size)
         return self.output_dim if self.output_dim else native
 
-    # ----- SegmentEmbedder protocol -----
+    # ----- SegmentEmbedder protocol (async-only) -----
+    #
+    # All three protocol methods are ``async def``. The actual work
+    # (tokenization + forward pass) is CPU/GPU-bound; we offload it
+    # to a worker thread via ``asyncio.to_thread`` so the event loop
+    # keeps spinning. The internal lock (``self._lock``) serializes
+    # concurrent worker-thread access to the underlying torch / MLX
+    # model — single-instance throughput equals device throughput,
+    # which is what the hardware delivers anyway.
 
-    def count_tokens(self, texts: list[str]) -> list[int]:
-        _, tokenizer = self._ensure_loaded()
-        return [
-            len(tokenizer.encode(s, add_special_tokens=False)) for s in texts
-        ]
+    async def count_tokens(self, texts: list[str]) -> list[int]:
+        return await asyncio.to_thread(self._count_tokens_sync, texts)
 
-    def embed_segment(
+    async def embed_segment(
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         """Per-token output + per-text counts for late chunking.
@@ -212,27 +227,42 @@ class PooledSegmentEmbedder:
         by character offset; special tokens (offset ``(0, 0)``) are
         absorbed into the first/last text (SPEC-CHUNK-420 option b).
         """
-        model, tokenizer = self._ensure_loaded()
-        joined = "".join(texts)
-        enc = tokenizer(
-            joined,
-            return_offsets_mapping=True,
-            return_tensors="np",
-            add_special_tokens=True,
-            truncation=True,
-            max_length=self.n_ctx,
-        )
-        offsets = enc.pop("offset_mapping")[0].tolist()
-        ids = enc["input_ids"]
-        attention_mask = enc.get("attention_mask")
+        return await asyncio.to_thread(self._embed_segment_sync, texts)
 
-        if self._backend == "mlx":
-            mat = self._forward_mlx_per_token(ids, attention_mask)
-        else:
-            mat = self._forward_torch_per_token(ids, attention_mask)
+    # ----- sync implementations (used by the async wrappers) -----
 
-        counts = _align_counts(texts, offsets)
-        return mat, counts
+    def _count_tokens_sync(self, texts: list[str]) -> list[int]:
+        with self._lock:
+            _, tokenizer = self._ensure_loaded()
+            return [
+                len(tokenizer.encode(s, add_special_tokens=False)) for s in texts
+            ]
+
+    def _embed_segment_sync(
+        self, texts: list[str]
+    ) -> tuple[NDArray[np.float64], list[int]]:
+        with self._lock:
+            _, tokenizer = self._ensure_loaded()
+            joined = "".join(texts)
+            enc = tokenizer(
+                joined,
+                return_offsets_mapping=True,
+                return_tensors="np",
+                add_special_tokens=True,
+                truncation=True,
+                max_length=self.n_ctx,
+            )
+            offsets = enc.pop("offset_mapping")[0].tolist()
+            ids = enc["input_ids"]
+            attention_mask = enc.get("attention_mask")
+
+            if self._backend == "mlx":
+                mat = self._forward_mlx_per_token(ids, attention_mask)
+            else:
+                mat = self._forward_torch_per_token(ids, attention_mask)
+
+            counts = _align_counts(texts, offsets)
+            return mat, counts
 
     def _forward_torch_per_token(
         self, ids: Any, attention_mask: Any
@@ -270,40 +300,46 @@ class PooledSegmentEmbedder:
 
     # ----- pooled-chunklet convenience -----
 
-    def embed_chunklets(self, chunklets: list[str]) -> NDArray[np.float64]:
+    async def embed_chunklets(self, chunklets: list[str]) -> NDArray[np.float64]:
         """Pooled embeddings (one row per chunklet), suitable for
         passing as the ``chunklet_embeddings`` argument to
         :func:`fancychunk.split_chunks`."""
+        return await asyncio.to_thread(self._embed_chunklets_sync, chunklets)
+
+    def _embed_chunklets_sync(
+        self, chunklets: list[str]
+    ) -> NDArray[np.float64]:
         if not chunklets:
             return np.zeros((0, self.embedding_dim), dtype=np.float64)
 
-        _, tokenizer = self._ensure_loaded()
-        rows: list[NDArray[np.float64]] = []
-        for start in range(0, len(chunklets), self.batch_size):
-            batch = chunklets[start : start + self.batch_size]
-            enc = tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=self.n_ctx,
-                return_tensors="np",
-            )
-            if self._backend == "mlx":
-                pooled_np = self._forward_mlx_pooled(
-                    enc["input_ids"], enc["attention_mask"]
+        with self._lock:
+            _, tokenizer = self._ensure_loaded()
+            rows: list[NDArray[np.float64]] = []
+            for start in range(0, len(chunklets), self.batch_size):
+                batch = chunklets[start : start + self.batch_size]
+                enc = tokenizer(
+                    batch,
+                    padding=True,
+                    truncation=True,
+                    max_length=self.n_ctx,
+                    return_tensors="np",
                 )
-            else:
-                pooled_np = self._forward_torch_pooled(
-                    enc["input_ids"], enc["attention_mask"]
-                )
-            rows.append(pooled_np.astype(np.float64))
+                if self._backend == "mlx":
+                    pooled_np = self._forward_mlx_pooled(
+                        enc["input_ids"], enc["attention_mask"]
+                    )
+                else:
+                    pooled_np = self._forward_torch_pooled(
+                        enc["input_ids"], enc["attention_mask"]
+                    )
+                rows.append(pooled_np.astype(np.float64))
 
-        arr = np.vstack(rows)
-        if self.output_dim is not None and self.output_dim < arr.shape[1]:
-            arr = arr[:, : self.output_dim]
-            norms = np.linalg.norm(arr, axis=1, keepdims=True)
-            arr = arr / np.where(norms == 0, 1.0, norms)
-        return arr
+            arr = np.vstack(rows)
+            if self.output_dim is not None and self.output_dim < arr.shape[1]:
+                arr = arr[:, : self.output_dim]
+                norms = np.linalg.norm(arr, axis=1, keepdims=True)
+                arr = arr / np.where(norms == 0, 1.0, norms)
+            return arr
 
     def _forward_torch_pooled(
         self, ids: Any, attention_mask: Any

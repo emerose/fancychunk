@@ -47,8 +47,11 @@ def _line_starts(document: str) -> list[int]:
 
 
 # Module-level CommonMark parser. ``markdown-it-py`` parsing is
-# reentrant, so a single shared instance is safe and avoids the
-# per-call construction overhead.
+# reentrant (``.parse()`` builds a fresh ``StateBlock`` per call;
+# the rule list is read-only after init), so a single shared instance
+# is safe across threads and avoids the per-call construction
+# overhead. ``tests/test_markdown_concurrency.py`` regresses this if
+# a future markdown-it-py release breaks the assumption.
 _PARSER = MarkdownIt("commonmark")
 
 

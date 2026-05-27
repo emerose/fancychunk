@@ -16,6 +16,7 @@ transformers, and a remote HTTP service.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Protocol
 
@@ -48,16 +49,16 @@ class SegmentEmbedder(Protocol):
     Methods
     -------
     count_tokens(texts) -> list[int]
-        Per-text token count for budget planning. May be approximate
-        — subword merges across boundaries can shift counts by ±1,
-        and the largest-remainder safety net in
+        Async — per-text token count for budget planning. May be
+        approximate — subword merges across boundaries can shift
+        counts by ±1, and the largest-remainder safety net in
         :func:`embed_with_late_chunking` absorbs that drift. Used only
         for segment construction.
     embed_segment(texts) -> (per_token_embeddings, per_text_counts)
-        Embed ``texts`` joined into a single contextualized segment.
-        Return the per-token embedding matrix and the per-text token
-        allocation. The allocation must conserve the matrix's row
-        count: ``sum(per_text_counts) == per_token_embeddings.shape[0]``.
+        Async — embed ``texts`` joined into a single contextualized
+        segment. Return the per-token embedding matrix and the per-text
+        token allocation. The allocation must conserve the matrix's
+        row count: ``sum(per_text_counts) == per_token_embeddings.shape[0]``.
         Any leading or trailing special tokens (``[CLS]``, ``[SEP]``,
         BOS, EOS) the embedder injects are the implementation's concern
         — typically absorbed into the first and last texts' allocations
@@ -66,14 +67,14 @@ class SegmentEmbedder(Protocol):
 
     n_ctx: int
 
-    def count_tokens(self, texts: list[str]) -> list[int]: ...
+    async def count_tokens(self, texts: list[str]) -> list[int]: ...
 
-    def embed_segment(
+    async def embed_segment(
         self, texts: list[str]
     ) -> tuple[Matrix, list[int]]: ...
 
 
-def embed_with_late_chunking(
+async def embed_with_late_chunking(
     chunks: list[str],
     embedder: SegmentEmbedder,
     max_tokens_per_segment: int | None = None,
@@ -152,7 +153,7 @@ def embed_with_late_chunking(
 
         if not chunks:
             span.set_attribute("fancychunk.segments.count", 0)
-            dim = _infer_dim(embedder)
+            dim = await _infer_dim(embedder)
             return np.zeros((0, dim), dtype=np.float64)
 
         budget = (
@@ -176,7 +177,7 @@ def embed_with_late_chunking(
         # planning. Isolated-tokenization counts; SPEC-CHUNK-412's
         # largest-remainder safety net absorbs any drift between these
         # and the joined-input counts the embedder ultimately sees.
-        iso_token_counts = embedder.count_tokens(chunks)
+        iso_token_counts = await embedder.count_tokens(chunks)
         if len(iso_token_counts) != len(chunks):
             raise ValidationError(
                 f"embedder.count_tokens returned {len(iso_token_counts)} "
@@ -197,7 +198,7 @@ def embed_with_late_chunking(
         # call is enough; entries for empty heading strings get 0.
         nonempty_paths = [p for p in heading_prepends if p]
         nonempty_counts = (
-            embedder.count_tokens(nonempty_paths) if nonempty_paths else []
+            await embedder.count_tokens(nonempty_paths) if nonempty_paths else []
         )
         if len(nonempty_counts) != len(nonempty_paths):
             raise ValidationError(
@@ -222,22 +223,33 @@ def embed_with_late_chunking(
         out: Matrix | None = None
         filled = np.zeros(n, dtype=bool)
 
-        for seg in segments:
+        # Build the per-segment input lists, then launch every
+        # segment's embed_segment call concurrently. Segments have no
+        # data dependencies on each other (heading prepends are
+        # pre-computed; pooling is local), so this is safe — and for
+        # remote/parallel embedders it overlaps the network/GPU time.
+        # For the bundled embedders the internal lock serializes to
+        # the device anyway; the gather is harmless there.
+        segment_inputs: list[list[str]] = []
+        for seg_start, content_start, _seg_end in segments:
+            heading_text = heading_prepends[content_start]
+            seg_chunks = chunks[seg_start:_seg_end]
+            if heading_text:
+                segment_inputs.append([heading_text] + seg_chunks)
+            else:
+                segment_inputs.append(seg_chunks)
+
+        segment_results = await asyncio.gather(
+            *(embedder.embed_segment(texts) for texts in segment_inputs)
+        )
+
+        for seg, segment_texts, (token_embeddings, per_text_counts) in zip(
+            segments, segment_inputs, segment_results
+        ):
             seg_start, content_start, seg_end = seg
             heading_text = heading_prepends[content_start]
             heading_tokens_est = heading_token_counts[content_start]
-            seg_chunks = chunks[seg_start:seg_end]
 
-            # Build the embedder input. Heading prepend (if any) is
-            # unit 0; the chunks follow.
-            if heading_text:
-                segment_texts = [heading_text] + seg_chunks
-            else:
-                segment_texts = seg_chunks
-
-            token_embeddings, per_text_counts = embedder.embed_segment(
-                segment_texts
-            )
             if len(per_text_counts) != len(segment_texts):
                 raise ValidationError(
                     f"embed_segment returned {len(per_text_counts)} counts "
@@ -306,9 +318,9 @@ def embed_with_late_chunking(
         return out
 
 
-def _infer_dim(embedder: SegmentEmbedder) -> int:
+async def _infer_dim(embedder: SegmentEmbedder) -> int:
     """Probe the embedder for its hidden size by embedding a one-text segment."""
-    mat, _ = embedder.embed_segment(["a"])
+    mat, _ = await embedder.embed_segment(["a"])
     return int(mat.shape[1])
 
 

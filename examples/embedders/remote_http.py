@@ -1,4 +1,4 @@
-"""Reference Embedder over a remote HTTP service.
+"""Reference async Embedder over a remote HTTP service.
 
 The library never embeds anything itself — when you need to share a
 GPU across services, or run the embedder on a different machine from
@@ -11,35 +11,53 @@ The client implements both halves of the protocol — ``embed_segment``
 for late chunking and ``embed_chunklets`` for the partition decision
 — against two endpoints under a shared base URL. The server handles
 tokenization and pooling; the client uses a local tokenizer only for
-the cheap ``count_tokens`` budget-planning call so it doesn't have
-to round-trip just to plan segments.
+the cheap ``count_tokens`` budget-planning call so it doesn't have to
+round-trip just to plan segments.
+
+Async-first: built on ``httpx.AsyncClient`` so the embedder calls
+yield to the event loop while the server works.
+``embed_with_late_chunking`` ``asyncio.gather``s independent segment
+embeddings, giving real parallelism over the network when the server
+can serve concurrent requests.
 
 Install:
-    pip install requests transformers   # tokenizer is local for budgeting
+    pip install httpx transformers     # tokenizer is local for budgeting
 
 Usage:
+    import asyncio
     from examples.embedders.remote_http import RemoteEmbedder
-    embedder = RemoteEmbedder(
-        base_url="https://my-embed-service.example.com",
-        local_tokenizer="bert-base-multilingual-cased",
-        n_ctx=512,
-    )
-    # GET {base_url}/embed_segment   for late chunking
-    # GET {base_url}/embed_chunklets for the partition decision
+    from fancychunk import chunk_document
+
+    async def main():
+        async with RemoteEmbedder(
+            base_url="https://my-embed-service.example.com",
+            local_tokenizer="bert-base-multilingual-cased",
+            n_ctx=512,
+        ) as embedder:
+            chunks, vectors = await chunk_document(open("doc.md").read(), embedder)
+
+    asyncio.run(main())
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
+import httpx
 import numpy as np
-import requests  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 from transformers import AutoTokenizer  # type: ignore[import-untyped]
 
 
 class RemoteEmbedder:
-    """Thin HTTP client implementing the full Embedder protocol."""
+    """Async HTTP client implementing the full Embedder protocol.
+
+    Use as an async context manager so the underlying
+    ``httpx.AsyncClient`` is closed cleanly. Alternatively, pass an
+    externally-managed ``httpx.AsyncClient`` via ``client=`` to share
+    one across multiple embedders or with other code.
+    """
 
     def __init__(
         self,
@@ -47,7 +65,7 @@ class RemoteEmbedder:
         local_tokenizer: str,
         n_ctx: int,
         timeout_seconds: float = 30.0,
-        session: Any = None,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._segment_url = f"{self.base_url}/embed_segment"
@@ -55,22 +73,42 @@ class RemoteEmbedder:
         self.n_ctx = n_ctx
         self._timeout = timeout_seconds
         self._tok: Any = AutoTokenizer.from_pretrained(local_tokenizer)
-        self._session: Any = session or requests.Session()
+        self._owns_client = client is None
+        self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
+
+    async def __aenter__(self) -> RemoteEmbedder:
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Close the owned ``httpx.AsyncClient``, if any."""
+        if self._owns_client:
+            await self._client.aclose()
 
     # ----- SegmentEmbedder contract -----
 
-    def count_tokens(self, texts: list[str]) -> list[int]:
+    async def count_tokens(self, texts: list[str]) -> list[int]:
+        """Local tokenizer — no network round-trip.
+
+        The HF tokenizer is sync; we wrap in ``to_thread`` so a slow
+        tokenizer (long inputs, Python-only fallback) doesn't block
+        the event loop. For the typical Rust-backed fast tokenizer
+        this is microseconds-cheap regardless.
+        """
+        return await asyncio.to_thread(self._count_tokens_sync, texts)
+
+    def _count_tokens_sync(self, texts: list[str]) -> list[int]:
         return [
             len(self._tok.encode(s, add_special_tokens=False)) for s in texts
         ]
 
-    def embed_segment(
+    async def embed_segment(
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
-        resp = self._session.post(
-            self._segment_url,
-            json={"texts": texts},
-            timeout=self._timeout,
+        resp = await self._client.post(
+            self._segment_url, json={"texts": texts}
         )
         resp.raise_for_status()
         body = resp.json()
@@ -85,7 +123,7 @@ class RemoteEmbedder:
 
     # ----- ChunkletEmbedder contract -----
 
-    def embed_chunklets(
+    async def embed_chunklets(
         self, chunklets: list[str]
     ) -> NDArray[np.float64]:
         """One pooled embedding per chunklet — server-owned pooling
@@ -100,10 +138,8 @@ class RemoteEmbedder:
             # placeholder — split_chunks doesn't invoke the embedder
             # on empty input anyway (SPEC-CHUNK-340).
             return np.zeros((0, 0), dtype=np.float64)
-        resp = self._session.post(
-            self._chunklets_url,
-            json={"chunklets": chunklets},
-            timeout=self._timeout,
+        resp = await self._client.post(
+            self._chunklets_url, json={"chunklets": chunklets}
         )
         resp.raise_for_status()
         body = resp.json()
@@ -131,7 +167,7 @@ class RemoteEmbedder:
 # model = AutoModel.from_pretrained(MODEL).eval()
 #
 # @app.post("/embed_segment")
-# def embed_segment(payload: dict) -> dict:
+# async def embed_segment(payload: dict) -> dict:
 #     texts = payload["texts"]
 #     joined = "".join(texts)
 #     enc = tokenizer(
@@ -156,7 +192,7 @@ class RemoteEmbedder:
 #     }
 #
 # @app.post("/embed_chunklets")
-# def embed_chunklets(payload: dict) -> dict:
+# async def embed_chunklets(payload: dict) -> dict:
 #     chunklets = payload["chunklets"]
 #     enc = tokenizer(
 #         chunklets,
@@ -183,6 +219,12 @@ class RemoteEmbedder:
 # # Note: ``mat.tolist()`` is ~10x slower than binary serialization.
 # # For production, swap JSON for msgpack/protobuf — see numpy's
 # # serialization guidance.
+#
+# # The forward passes above are blocking — for real concurrency on
+# # one server process, either (a) wrap the model calls in
+# # ``asyncio.to_thread`` inside each endpoint, or (b) run the server
+# # under a process-per-worker model (uvicorn --workers N) so each
+# # worker owns one GPU stream.
 
 
 if __name__ == "__main__":

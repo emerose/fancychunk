@@ -17,6 +17,7 @@ through the keyword-only ``segmenter`` parameter on
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Callable, Protocol
 
 import numpy as np
@@ -68,21 +69,30 @@ class SaTSegmenter:
     The 408 MB ``sat-3l-sm`` weights are downloaded by Hugging Face on
     first use (subsequent calls use the cache); the import itself is
     cheap because the model is only loaded on the first
-    ``__call__``. Instances are reusable and thread-safe for read
-    (wtpsplit-lite's ONNX backend is itself reentrant).
+    ``__call__``. Instances are thread-safe — lazy loading is
+    serialized so concurrent first callers don't double-download; the
+    ONNX ``predict_proba`` itself is reentrant after load and runs
+    unlocked.
     """
 
     def __init__(self, model_name: str = _DEFAULT_SAT_MODEL) -> None:
         self.model_name: str = model_name
         self._sat: SaT | None = None
+        self._load_lock: threading.Lock = threading.Lock()
 
     def _ensure_loaded(self) -> SaT:
+        # Double-checked locking: the unlocked read is safe under
+        # CPython's GIL (attribute reads are atomic), and the lock only
+        # matters for the not-yet-loaded race.
         if self._sat is None:
-            # Local import keeps ``import fancychunk`` lightweight even
-            # when the SaT weights aren't yet cached.
-            from wtpsplit_lite import SaT as _SaT
+            with self._load_lock:
+                if self._sat is None:
+                    # Local import keeps ``import fancychunk``
+                    # lightweight when the SaT weights aren't cached.
+                    from wtpsplit_lite import SaT as _SaT
 
-            self._sat = _SaT(self.model_name)
+                    self._sat = _SaT(self.model_name)
+        assert self._sat is not None
         return self._sat
 
     def __call__(self, document: str) -> Vector:
@@ -98,13 +108,20 @@ class SaTSegmenter:
 
 # Module-level default singleton (lazy weight load on first call).
 _default_segmenter: SaTSegmenter | None = None
+_default_segmenter_lock = threading.Lock()
 
 
 def get_default_segmenter() -> SaTSegmenter:
-    """Return the process-wide default segmenter (the SaT singleton)."""
+    """Return the process-wide default segmenter (the SaT singleton).
+
+    Thread-safe: concurrent callers on a cold process see exactly one
+    ``SaTSegmenter`` construction.
+    """
     global _default_segmenter
     if _default_segmenter is None:
-        _default_segmenter = SaTSegmenter()
+        with _default_segmenter_lock:
+            if _default_segmenter is None:
+                _default_segmenter = SaTSegmenter()
     return _default_segmenter
 
 

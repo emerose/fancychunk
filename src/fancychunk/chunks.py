@@ -34,14 +34,14 @@ class ChunkletEmbedder(Protocol):
     Methods
     -------
     embed_chunklets(chunklets) -> Matrix
-        Return a 2-D matrix with one row per chunklet, in order.
-        Each row must have nonzero L2 norm (SPEC-CHUNK-342).
+        Async — return a 2-D matrix with one row per chunklet, in
+        order. Each row must have nonzero L2 norm (SPEC-CHUNK-342).
     """
 
-    def embed_chunklets(self, chunklets: list[str]) -> Matrix: ...
+    async def embed_chunklets(self, chunklets: list[str]) -> Matrix: ...
 
 
-def split_chunks(
+async def split_chunks(
     chunklets: list[str],
     embedder: ChunkletEmbedder,
     max_size: int = C.DEFAULT_MAX_SIZE_CHARS,
@@ -103,7 +103,7 @@ def split_chunks(
 
         # Multi-chunklet, multi-chunk case: embedder drives the
         # partition decision.
-        emb = np.asarray(embedder.embed_chunklets(chunklets))
+        emb = np.asarray(await embedder.embed_chunklets(chunklets))
         if emb.ndim != 2:
             raise ValidationError(
                 "embedder.embed_chunklets must return a 2-D matrix"

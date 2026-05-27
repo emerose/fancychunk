@@ -13,8 +13,12 @@ Two layers:
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import os
 import sys
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -126,7 +130,7 @@ def test_noop_returns_noop_segment_embedder() -> None:
 def test_noop_embed_chunklets_constant_unit_vectors() -> None:
     e = noop()
     chunklets = ["alpha", "beta gamma", "delta"]
-    emb = e.embed_chunklets(chunklets)
+    emb = asyncio.run(e.embed_chunklets(chunklets))
     assert emb.shape == (3, e.embedding_dim)
     # All rows identical.
     assert np.allclose(emb[0], emb[1])
@@ -139,7 +143,7 @@ def test_noop_embed_chunklets_constant_unit_vectors() -> None:
 def test_noop_embed_segment_satisfies_row_conservation() -> None:
     e = noop()
     texts = ["one", "two three", "four five six seven"]
-    mat, counts = e.embed_segment(texts)
+    mat, counts = asyncio.run(e.embed_segment(texts))
     assert mat.shape[1] == e.embedding_dim
     assert sum(counts) == mat.shape[0]
     assert len(counts) == len(texts)
@@ -158,7 +162,7 @@ def test_noop_with_split_chunks_structural_only() -> None:
         "Second paragraph.\n",
         "Third paragraph.\n",
     ]
-    chunks = split_chunks(chunklets, noop(), max_size=2048)
+    chunks = asyncio.run(split_chunks(chunklets, noop(), max_size=2048))
     assert "".join(chunks) == "".join(chunklets)
 
 
@@ -202,7 +206,7 @@ SAMPLE_SENTENCES = [
 )
 def test_embed_chunklets_shape_and_norm(factory, expected_dim: int) -> None:
     embedder = factory()
-    emb = embedder.embed_chunklets(SAMPLE_CHUNKLETS)
+    emb = asyncio.run(embedder.embed_chunklets(SAMPLE_CHUNKLETS))
     assert emb.shape == (len(SAMPLE_CHUNKLETS), expected_dim)
     assert np.allclose(np.linalg.norm(emb, axis=1), 1.0, atol=1e-3)
 
@@ -210,7 +214,7 @@ def test_embed_chunklets_shape_and_norm(factory, expected_dim: int) -> None:
 @_requires_models
 def test_embed_chunklets_handles_empty_list() -> None:
     embedder = qwen3_600m()
-    emb = embedder.embed_chunklets([])
+    emb = asyncio.run(embedder.embed_chunklets([]))
     assert emb.shape == (0, embedder.embedding_dim)
 
 
@@ -218,10 +222,10 @@ def test_embed_chunklets_handles_empty_list() -> None:
 @pytest.mark.parametrize("factory", [bge_m3, qwen3_600m, qwen3_4b])
 def test_embedders_implement_segment_embedder_protocol(factory) -> None:
     embedder = factory()
-    counts = embedder.count_tokens(SAMPLE_SENTENCES)
+    counts = asyncio.run(embedder.count_tokens(SAMPLE_SENTENCES))
     assert len(counts) == len(SAMPLE_SENTENCES)
     assert all(c > 0 for c in counts)
-    mat, per_text = embedder.embed_segment(SAMPLE_SENTENCES)
+    mat, per_text = asyncio.run(embedder.embed_segment(SAMPLE_SENTENCES))
     assert mat.ndim == 2
     assert sum(per_text) == mat.shape[0]
     assert len(per_text) == len(SAMPLE_SENTENCES)
@@ -236,7 +240,7 @@ def test_qwen3_600m_end_to_end_with_split_chunks() -> None:
     doc = "\n\n".join(["# Heading\n", "First paragraph. ", "Second paragraph."])
     sentences = split_sentences(doc, max_len=2048, segmenter=punctuation_segmenter)
     chunklets = split_chunklets(sentences, max_size=2048)
-    chunks = split_chunks(chunklets, embedder, max_size=2048)
+    chunks = asyncio.run(split_chunks(chunklets, embedder, max_size=2048))
     assert "".join(chunks) == "".join(chunklets)
 
 
@@ -250,17 +254,188 @@ def test_qwen3_600m_end_to_end_with_late_chunking() -> None:
     sentences = split_sentences(doc, max_len=2048, segmenter=punctuation_segmenter)
     # embed_with_late_chunking takes chunks now; use the sentences
     # directly as a single-chunk approximation for this smoke test.
-    emb = embed_with_late_chunking(sentences, embedder, include_headings=False)
+    emb = asyncio.run(
+        embed_with_late_chunking(sentences, embedder, include_headings=False)
+    )
     assert emb.shape[0] == len(sentences)
     assert np.allclose(np.linalg.norm(emb, axis=1), 1.0, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Thread-safety (fast — uses monkey-patched loader, no model download).
+# ---------------------------------------------------------------------------
+
+
+class _StubModel:
+    """Stand-in for a torch/MLX model. Records concurrent forward calls so
+    tests can assert the embedder's lock serializes them."""
+
+    class _Config:
+        hidden_size = 8
+
+    def __init__(self) -> None:
+        self.config = _StubModel._Config()
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.calls = 0
+        self._counter_lock = threading.Lock()
+
+    def __call__(self, *args, **kwargs):  # pragma: no cover - never called here
+        raise AssertionError("stub model not meant to be invoked directly")
+
+    def _enter(self) -> None:
+        with self._counter_lock:
+            self.in_flight += 1
+            self.calls += 1
+            if self.in_flight > self.max_in_flight:
+                self.max_in_flight = self.in_flight
+
+    def _exit(self) -> None:
+        with self._counter_lock:
+            self.in_flight -= 1
+
+
+class _StubTokenizer:
+    model_max_length = 512
+
+    def encode(self, s: str, add_special_tokens: bool = False) -> list[int]:
+        return [0] * len(s)
+
+
+def _install_stub(emb: PooledSegmentEmbedder, load_delay: float = 0.0):
+    """Replace ``_load_torch`` with a stub that simulates a slow loader.
+    Returns a counter dict the test can read to verify load-once."""
+    state = {"load_count": 0}
+    load_lock = threading.Lock()
+
+    def fake_load() -> None:
+        time.sleep(load_delay)
+        with load_lock:
+            state["load_count"] += 1
+        emb._backend = "torch"
+        emb._device = "cpu"
+        emb._tokenizer = _StubTokenizer()
+        emb._model = _StubModel()
+
+    emb._resolve_backend = lambda: "torch"  # type: ignore[method-assign]
+    emb._load_torch = fake_load  # type: ignore[method-assign]
+    return state
+
+
+def test_concurrent_first_call_does_not_double_load() -> None:
+    """Lazy load is guarded — N threads racing on a fresh embedder
+    see exactly one weight load."""
+    emb = PooledSegmentEmbedder(model_id="fake", pooling="mean")
+    state = _install_stub(emb, load_delay=0.05)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: emb._ensure_loaded(), range(8)))
+
+    assert state["load_count"] == 1
+
+
+def test_concurrent_count_tokens_serialized() -> None:
+    """``count_tokens`` and the lazy load share one lock; gathered
+    coroutines complete without crashing and the model loads once.
+    Post-migration, ``count_tokens`` is async and offloads to a
+    worker thread via ``asyncio.to_thread``; ``gather`` exercises the
+    same code path multi-segment late chunking will use."""
+    emb = PooledSegmentEmbedder(model_id="fake", pooling="mean")
+    state = _install_stub(emb, load_delay=0.01)
+    inputs = [[f"sentence {i}"] for i in range(32)]
+
+    async def _drive() -> list[list[int]]:
+        return await asyncio.gather(*(emb.count_tokens(inp) for inp in inputs))
+
+    results = asyncio.run(_drive())
+
+    assert state["load_count"] == 1
+    assert len(results) == 32
+    assert all(len(r) == 1 and r[0] == len(inp[0]) for r, inp in zip(results, inputs))
+
+
+def test_embed_segment_serializes_forward_calls() -> None:
+    """``embed_segment`` holds the instance lock across the forward
+    pass — gathered coroutines never enter the model concurrently."""
+
+    class _FakeTokenizer:
+        model_max_length = 512
+
+        def __call__(self, joined, **kwargs):
+            return {
+                "input_ids": np.array([[0] * max(1, len(joined))]),
+                "attention_mask": np.array([[1] * max(1, len(joined))]),
+                "offset_mapping": np.array(
+                    [[(i, i + 1) for i in range(max(1, len(joined)))]]
+                ),
+            }
+
+        def encode(self, s, add_special_tokens=False):
+            return [0] * len(s)
+
+    emb = PooledSegmentEmbedder(model_id="fake", pooling="mean")
+    emb._resolve_backend = lambda: "torch"  # type: ignore[method-assign]
+
+    def fake_load() -> None:
+        emb._backend = "torch"
+        emb._device = "cpu"
+        emb._tokenizer = _FakeTokenizer()
+        emb._model = _StubModel()
+
+    emb._load_torch = fake_load  # type: ignore[method-assign]
+
+    def fake_forward(ids, attention_mask) -> np.ndarray:
+        emb._model._enter()
+        try:
+            time.sleep(0.01)
+        finally:
+            emb._model._exit()
+        n = ids.shape[1]
+        return np.zeros((n, 8), dtype=np.float64)
+
+    emb._forward_torch_per_token = fake_forward  # type: ignore[method-assign]
+
+    inputs = [[f"text {i}"] for i in range(16)]
+
+    async def _drive():
+        return await asyncio.gather(*(emb.embed_segment(inp) for inp in inputs))
+
+    results = asyncio.run(_drive())
+
+    assert len(results) == 16
+    assert emb._model.calls == 16
+    assert emb._model.max_in_flight == 1
+
+
+# ---------------------------------------------------------------------------
+# Thread-safety (gated — real model load).
+# ---------------------------------------------------------------------------
+
+
+@_requires_models
+def test_concurrent_embed_segment_is_safe() -> None:
+    """End-to-end: gather many concurrent embed_segment coroutines
+    against a real embedder. Should not crash, hang, or return
+    malformed output."""
+    emb = qwen3_600m()
+    texts = [[f"sentence number {i}"] for i in range(16)]
+
+    async def _drive():
+        return await asyncio.gather(*(emb.embed_segment(t) for t in texts))
+
+    results = asyncio.run(_drive())
+    assert len(results) == 16
+    for mat, counts in results:
+        assert mat.ndim == 2
+        assert sum(counts) == mat.shape[0]
 
 
 @_requires_models
 def test_qwen3_4b_mrl_truncation_changes_output() -> None:
     full = qwen3_4b()  # native 2560
     truncated = qwen3_4b(dim=512)
-    full_out = full.embed_chunklets(SAMPLE_CHUNKLETS)
-    trunc_out = truncated.embed_chunklets(SAMPLE_CHUNKLETS)
+    full_out = asyncio.run(full.embed_chunklets(SAMPLE_CHUNKLETS))
+    trunc_out = asyncio.run(truncated.embed_chunklets(SAMPLE_CHUNKLETS))
     assert full_out.shape == (len(SAMPLE_CHUNKLETS), 2560)
     assert trunc_out.shape == (len(SAMPLE_CHUNKLETS), 512)
     expected = full_out[:, :512]

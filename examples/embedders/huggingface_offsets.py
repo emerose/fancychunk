@@ -39,6 +39,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal, cast
 
 import numpy as np
@@ -93,14 +94,22 @@ class HFOffsetEmbedder:
         """Native hidden size of the loaded model."""
         return int(self._model.config.hidden_size)
 
-    # ----- SegmentEmbedder contract -----
+    # ----- SegmentEmbedder contract (async-only) -----
 
-    def count_tokens(self, texts: list[str]) -> list[int]:
+    async def count_tokens(self, texts: list[str]) -> list[int]:
+        return await asyncio.to_thread(self._count_tokens_sync, texts)
+
+    def _count_tokens_sync(self, texts: list[str]) -> list[int]:
         return [
             len(self._tok.encode(s, add_special_tokens=False)) for s in texts
         ]
 
-    def embed_segment(
+    async def embed_segment(
+        self, texts: list[str]
+    ) -> tuple[NDArray[np.float64], list[int]]:
+        return await asyncio.to_thread(self._embed_segment_sync, texts)
+
+    def _embed_segment_sync(
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         joined = "".join(texts)
@@ -157,9 +166,14 @@ class HFOffsetEmbedder:
 
         return mat, counts
 
-    # ----- ChunkletEmbedder contract -----
+    # ----- ChunkletEmbedder contract (async-only) -----
 
-    def embed_chunklets(
+    async def embed_chunklets(
+        self, chunklets: list[str]
+    ) -> NDArray[np.float64]:
+        return await asyncio.to_thread(self._embed_chunklets_sync, chunklets)
+
+    def _embed_chunklets_sync(
         self, chunklets: list[str]
     ) -> NDArray[np.float64]:
         """Pooled per-chunklet embeddings — used by ``split_chunks``
@@ -219,12 +233,15 @@ if __name__ == "__main__":
     # transformers.
     from fancychunk import chunk_document
 
-    doc = (
-        "# Sorting\n\nQuicksort uses a pivot. It partitions around the pivot.\n\n"
-        "## Random pivots\n\nThey give expected O(n log n) time.\n"
-    )
-    emb = HFOffsetEmbedder("bert-base-multilingual-cased", pooling="cls")
-    chunks, vectors = chunk_document(doc, emb)
-    print(f"chunks: {len(chunks)}")
-    print(f"output shape: {vectors.shape}")
-    print(f"norms: {np.linalg.norm(vectors, axis=1).round(4)}")
+    async def _main() -> None:
+        doc = (
+            "# Sorting\n\nQuicksort uses a pivot. It partitions around the pivot.\n\n"
+            "## Random pivots\n\nThey give expected O(n log n) time.\n"
+        )
+        emb = HFOffsetEmbedder("bert-base-multilingual-cased", pooling="cls")
+        chunks, vectors = await chunk_document(doc, emb)
+        print(f"chunks: {len(chunks)}")
+        print(f"output shape: {vectors.shape}")
+        print(f"norms: {np.linalg.norm(vectors, axis=1).round(4)}")
+
+    asyncio.run(_main())

@@ -11,6 +11,10 @@ single-letter texts ``"b"`` produce zero tokens (SPEC-CHUNK-452).
 ``embed_segment`` call's input list — used by late-chunking tests
 that assert *what* the embedder was asked to embed (e.g., that the
 heading-stack prepend showed up exactly once per segment).
+
+All three methods are ``async def`` to satisfy the post-0.3.0
+async-only protocol. The actual work is trivial (microseconds) so
+no ``to_thread`` wrapping is needed.
 """
 
 from __future__ import annotations
@@ -33,10 +37,10 @@ class FakeEmbedder:
         self.dim = dim
         self.n_ctx = n_ctx
 
-    def count_tokens(self, texts: list[str]) -> list[int]:
+    async def count_tokens(self, texts: list[str]) -> list[int]:
         return [len(s) for s in texts]
 
-    def embed_segment(
+    async def embed_segment(
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         counts = [len(s) for s in texts]
@@ -46,7 +50,7 @@ class FakeEmbedder:
             mat[i, ord(ch) % self.dim] = 1.0
         return mat, counts
 
-    def embed_chunklets(
+    async def embed_chunklets(
         self, chunklets: list[str]
     ) -> NDArray[np.float64]:
         """Pooled per-chunklet embedding — sum of per-character one-hot
@@ -75,10 +79,10 @@ class WhitespaceDroppingFakeEmbedder(FakeEmbedder):
     ``"b"`` produce zero tokens. Exercises SPEC-CHUNK-452.
     """
 
-    def count_tokens(self, texts: list[str]) -> list[int]:  # type: ignore[override]
+    async def count_tokens(self, texts: list[str]) -> list[int]:  # type: ignore[override]
         return [sum(1 for ch in s if ch != "b") for s in texts]
 
-    def embed_segment(  # type: ignore[override]
+    async def embed_segment(  # type: ignore[override]
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         # Strip 'b' per text; counts reflect post-strip lengths.
@@ -102,7 +106,7 @@ class BertLikeFakeEmbedder(FakeEmbedder):
     text's allocation by the embedder's ``embed_segment``.
     """
 
-    def count_tokens(self, texts: list[str]) -> list[int]:  # type: ignore[override]
+    async def count_tokens(self, texts: list[str]) -> list[int]:  # type: ignore[override]
         # Specials are budgeted into the first/last text's count so
         # the segment planner accounts for them too. +1 on the first
         # text for [CLS], +1 on the last for [SEP].
@@ -112,7 +116,7 @@ class BertLikeFakeEmbedder(FakeEmbedder):
             counts[-1] += 1
         return counts
 
-    def embed_segment(  # type: ignore[override]
+    async def embed_segment(  # type: ignore[override]
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         # Concatenate, prepend [CLS], append [SEP], emit one-hot rows.
@@ -147,12 +151,12 @@ class RecordingFakeEmbedder(FakeEmbedder):
         self.calls: list[list[str]] = []
         self.count_calls: list[list[str]] = []
 
-    def count_tokens(self, texts: list[str]) -> list[int]:  # type: ignore[override]
+    async def count_tokens(self, texts: list[str]) -> list[int]:  # type: ignore[override]
         self.count_calls.append(list(texts))
-        return super().count_tokens(texts)
+        return await super().count_tokens(texts)
 
-    def embed_segment(  # type: ignore[override]
+    async def embed_segment(  # type: ignore[override]
         self, texts: list[str]
     ) -> tuple[NDArray[np.float64], list[int]]:
         self.calls.append(list(texts))
-        return super().embed_segment(texts)
+        return await super().embed_segment(texts)

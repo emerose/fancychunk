@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pytest
 from numpy.typing import NDArray
@@ -25,7 +27,7 @@ class _FixedEmbedder:
     def __init__(self, matrix: NDArray[np.floating]) -> None:
         self.matrix = np.asarray(matrix, dtype=np.float64)
 
-    def embed_chunklets(
+    async def embed_chunklets(
         self, chunklets: list[str]
     ) -> NDArray[np.float64]:
         assert len(chunklets) == self.matrix.shape[0], (
@@ -42,7 +44,7 @@ class _RaisingEmbedder:
     call the embedder at all.
     """
 
-    def embed_chunklets(self, chunklets: list[str]) -> NDArray[np.float64]:
+    async def embed_chunklets(self, chunklets: list[str]) -> NDArray[np.float64]:
         raise AssertionError(
             "embedder.embed_chunklets must not be called on the short-circuit path"
         )
@@ -52,7 +54,7 @@ class _RaisingEmbedder:
 def test_partition_preserves_concatenation() -> None:
     chunklets = ["a" * 1000, "b" * 1000, "c" * 1000, "d" * 1000]
     matrix = np.eye(4)
-    chunks = split_chunks(chunklets, _FixedEmbedder(matrix))
+    chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix)))
     assert "".join(chunks) == "".join(chunklets)
 
 
@@ -60,7 +62,7 @@ def test_partition_preserves_concatenation() -> None:
 def test_size_constraint_forces_split() -> None:
     chunklets = ["a" * 1000, "b" * 1000, "c" * 1000]
     matrix = np.tile([[1.0, 0.0]], (3, 1))
-    chunks = split_chunks(chunklets, _FixedEmbedder(matrix))
+    chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix)))
     for c in chunks:
         assert len(c) <= 2048
     assert "".join(chunks) == "".join(chunklets)
@@ -68,21 +70,21 @@ def test_size_constraint_forces_split() -> None:
 
 # SPEC-CHUNK-340 — empty input. No embedder call.
 def test_empty_input_skips_embedder() -> None:
-    chunks = split_chunks([], _RaisingEmbedder())
+    chunks = asyncio.run(split_chunks([], _RaisingEmbedder()))
     assert chunks == []
 
 
 # SPEC-CHUNK-340 — single chunklet. No embedder call.
 def test_single_chunklet_skips_embedder() -> None:
-    chunks = split_chunks(["Single chunklet content."], _RaisingEmbedder())
+    chunks = asyncio.run(split_chunks(["Single chunklet content."], _RaisingEmbedder()))
     assert chunks == ["Single chunklet content."]
 
 
 # SPEC-CHUNK-340 — total fits in max_size. No embedder call.
 def test_total_fits_skips_embedder() -> None:
-    chunks = split_chunks(
+    chunks = asyncio.run(split_chunks(
         ["one ", "two ", "three"], _RaisingEmbedder()
-    )
+    ))
     assert chunks == ["one two three"]
 
 
@@ -90,15 +92,15 @@ def test_total_fits_skips_embedder() -> None:
 # (the embedder is never invoked on these paths). We use the noop
 # embedder here since it's the cheapest valid choice.
 def test_short_circuit_with_noop_embedder() -> None:
-    assert split_chunks([], noop()) == []
-    assert split_chunks(["only one"], noop()) == ["only one"]
-    assert split_chunks(["one ", "two ", "three"], noop()) == ["one two three"]
+    assert asyncio.run(split_chunks([], noop())) == []
+    assert asyncio.run(split_chunks(["only one"], noop())) == ["only one"]
+    assert asyncio.run(split_chunks(["one ", "two ", "three"], noop())) == ["one two three"]
 
 
 # Identical embeddings, total fits: short-circuit before similarity.
 def test_identical_short_circuit() -> None:
     chunklets = ["x" * 100] * 10
-    chunks = split_chunks(chunklets, _RaisingEmbedder())
+    chunks = asyncio.run(split_chunks(chunklets, _RaisingEmbedder()))
     assert chunks == ["x" * 1000]
 
 
@@ -116,7 +118,7 @@ def test_no_split_after_heading() -> None:
             [0.7, 0.7],
         ]
     )
-    chunks = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
     # The heading must not be its own standalone chunk.
     assert chunks[0] != "# Heading\n\n"
 
@@ -132,7 +134,7 @@ def test_split_before_heading() -> None:
             [1.0, 1e-3],
         ]
     )
-    chunks = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
     assert len(chunks) == 2
     assert chunks[1].startswith("## Subhead")
 
@@ -144,22 +146,22 @@ def test_zero_norm_rejected() -> None:
     matrix = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]])
     emb = _FixedEmbedder(matrix)
     with pytest.raises(ZeroNormEmbeddingError):
-        split_chunks(["a" * 1000, "b" * 1000, "c" * 1000], emb, max_size=2048)
+        asyncio.run(split_chunks(["a" * 1000, "b" * 1000, "c" * 1000], emb, max_size=2048))
 
 
 # SPEC-CHUNK-341 — oversized chunklet rejected.
 def test_oversized_chunklet_rejected() -> None:
     emb = _FixedEmbedder(np.eye(2))
     with pytest.raises(OversizedChunkletError):
-        split_chunks(["a" * 3000, "b"], emb, max_size=2048)
+        asyncio.run(split_chunks(["a" * 3000, "b"], emb, max_size=2048))
 
 
 # SPEC-CHUNK-321 — discourse-vector fallback when projection would zero rows.
 def test_discourse_fallback() -> None:
     matrix = np.tile([[1.0, 0.0]], (5, 1))
-    chunks = split_chunks(
+    chunks = asyncio.run(split_chunks(
         ["x" * 1000] * 5, _FixedEmbedder(matrix), max_size=2048
-    )
+    ))
     for c in chunks:
         assert len(c) <= 2048
     assert "".join(chunks) == "".join(["x" * 1000] * 5)
@@ -169,8 +171,8 @@ def test_discourse_fallback() -> None:
 def test_determinism() -> None:
     chunklets = ["a" * 900, "b" * 900, "## Heading\n", "c" * 900]
     matrix = np.array([[1.0, 0.1], [1.0, 0.2], [1.0, 0.05], [1.0, 0.1]])
-    out_a = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
-    out_b = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    out_a = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
+    out_b = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
     assert out_a == out_b
 
 
@@ -180,7 +182,7 @@ def test_determinism() -> None:
 # heading-aware modification shapes where splits land.
 def test_split_chunks_with_noop_embedder() -> None:
     chunklets = ["a" * 1000, "b" * 1000, "c" * 1000]
-    chunks = split_chunks(chunklets, noop(), max_size=2048)
+    chunks = asyncio.run(split_chunks(chunklets, noop(), max_size=2048))
     assert "".join(chunks) == "".join(chunklets)
     assert all(len(c) <= 2048 for c in chunks)
 
@@ -192,7 +194,7 @@ def test_split_chunks_with_noop_prefers_heading_split() -> None:
     # should prefer that split over splitting between two body
     # chunklets.
     chunklets = ["a" * 900, "b" * 900, "## Subhead\n\n", "c" * 900]
-    chunks = split_chunks(chunklets, noop(), max_size=2048)
+    chunks = asyncio.run(split_chunks(chunklets, noop(), max_size=2048))
     assert len(chunks) == 2
     assert chunks[1].startswith("## Subhead")
 
@@ -241,6 +243,6 @@ def test_setext_heading_pulls_split_before() -> None:
             [1.0, 1e-3],
         ]
     )
-    chunks = split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
     assert len(chunks) == 2
     assert chunks[1].startswith("Subhead\n=======")

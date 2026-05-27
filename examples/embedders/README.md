@@ -70,34 +70,50 @@ from its output) is also conforming if your embedder supports it.
 
 ## Skeleton: anatomy of an Embedder
 
+All three protocol methods are **async**. For a CPU/GPU embedder
+(torch, MLX, etc.) wrap your sync forward pass in
+`asyncio.to_thread` so the call yields control while the device
+works; for a remote embedder, `await` your HTTP client directly.
+
 ```python
+import asyncio
+
 class MyEmbedder:
     n_ctx = 4096  # tokens per segment (your context window)
 
-    def count_tokens(self, texts: list[str]) -> list[int]:
+    async def count_tokens(self, texts: list[str]) -> list[int]:
         # Approximate per-text count, used by fancychunk for
         # segment-budget planning. May differ from the actual
         # joined-input tokenization by small amounts — the
         # largest-remainder safety net in fancychunk absorbs drift.
-        return [len(your_tokenizer.encode(s)) for s in texts]
+        return await asyncio.to_thread(
+            lambda: [len(your_tokenizer.encode(s)) for s in texts]
+        )
 
-    def embed_segment(self, texts: list[str]) -> tuple[NDArray, list[int]]:
+    async def embed_segment(
+        self, texts: list[str]
+    ) -> tuple[NDArray, list[int]]:
         # 1. Tokenize the joined input however you like.
         # 2. Run the model, get last_hidden_state (per-token output).
         # 3. Compute per-text counts that conserve the row count.
         # 4. Return (matrix, counts).
-        return matrix, counts
+        return await asyncio.to_thread(self._embed_segment_sync, texts)
 
-    def embed_chunklets(self, chunklets: list[str]) -> NDArray:
+    async def embed_chunklets(
+        self, chunklets: list[str]
+    ) -> NDArray:
         # 1. Tokenize each chunklet (batched is fine).
         # 2. Run the model, get last_hidden_state.
         # 3. Pool per the model's training: CLS / mean / last_token.
         # 4. L2-normalize each row (SPEC-CHUNK-342 requires nonzero).
-        return pooled
+        return await asyncio.to_thread(self._embed_chunklets_sync, chunklets)
 ```
 
 That's it. ~30 lines of glue per backend; the rest is the
-algorithm, which lives in fancychunk.
+algorithm, which lives in fancychunk. For a remote-HTTP embedder
+that's already async, drop the `to_thread` wrappers and just
+`await` your `httpx.AsyncClient.post` calls directly — see
+[`remote_http.py`](remote_http.py).
 
 ## Performance notes
 

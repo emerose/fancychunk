@@ -37,13 +37,22 @@ NDCG@10/Recall@10/MRR@10 stats from ragkit.  compare:
 
 ## Quick start
 
+fancychunk is async-first — the entry points that touch an embedder
+are `async def`. Sync callers wrap with `asyncio.run(...)`.
+
 ```python
+import asyncio
 from fancychunk import chunk_document
 from fancychunk.embedders import qwen3_600m
 
-embedder = qwen3_600m()                          # probably the right pick for most uses
-chunks, vectors = chunk_document(open("my-document.md").read(), embedder)
-# chunks[i] ⇄ vectors[i] — drop straight into your vector store.
+async def main():
+    embedder = qwen3_600m()                                 # probably the right pick
+    chunks, vectors = await chunk_document(
+        open("my-document.md").read(), embedder
+    )
+    # chunks[i] ⇄ vectors[i] — drop straight into your vector store.
+
+asyncio.run(main())
 ```
 
 
@@ -52,9 +61,14 @@ chunks, vectors = chunk_document(open("my-document.md").read(), embedder)
 `chunk_document` is sugar over the four primitives. Compose them
 directly when you want more control — different embedders per
 stage, different `max_size` per stage, a structural-only split, or
-storage-time heading breadcrumbs:
+storage-time heading breadcrumbs.
+
+`split_sentences` and `split_chunklets` are sync (no await points);
+`split_chunks` and `embed_with_late_chunking` are async (they call
+the embedder):
 
 ```python
+import asyncio
 from fancychunk import (
     split_sentences,
     split_chunklets,
@@ -64,13 +78,16 @@ from fancychunk import (
 )
 from fancychunk.embedders import qwen3_600m
 
-embedder = qwen3_600m()
-doc = open("my-document.md").read()
+async def main():
+    embedder = qwen3_600m()
+    doc = open("my-document.md").read()
 
-sentences = split_sentences(doc, max_len=2048)
-chunklets = split_chunklets(sentences, max_size=2048)
-chunks    = split_chunks(chunklets, embedder, max_size=2048)
-vectors   = embed_with_late_chunking(chunks, embedder)
+    sentences = split_sentences(doc, max_len=2048)
+    chunklets = split_chunklets(sentences, max_size=2048)
+    chunks    = await split_chunks(chunklets, embedder, max_size=2048)
+    vectors   = await embed_with_late_chunking(chunks, embedder)
+
+asyncio.run(main())
 ```
 
 ## What it does
@@ -242,16 +259,16 @@ the Mac measurements.
 
 fancychunk ships four bundled embedders (see [Models](#models)).
 If you need your own — different backend, custom model, remote
-service — implement the protocol:
+service — implement the protocol. All three methods are **async**:
 
 ```python
 class Embedder(Protocol):
     n_ctx: int
-    def count_tokens(self, texts: list[str]) -> list[int]: ...
-    def embed_segment(
+    async def count_tokens(self, texts: list[str]) -> list[int]: ...
+    async def embed_segment(
         self, texts: list[str]
     ) -> tuple[NDArray, list[int]]: ...
-    def embed_chunklets(self, chunklets: list[str]) -> NDArray: ...
+    async def embed_chunklets(self, chunklets: list[str]) -> NDArray: ...
 ```
 
 `embed_chunklets` is the pooled per-chunklet path for `split_chunks`;
@@ -259,14 +276,64 @@ class Embedder(Protocol):
 `embed_with_late_chunking`. A single class implements both — the
 bundled embedders do.
 
+For a CPU/GPU embedder (torch, MLX, etc.) wrap your sync forward
+pass in `asyncio.to_thread` inside each async method so the call
+yields control while the device works; for a remote embedder, await
+your HTTP client directly. The bundled `PooledSegmentEmbedder`
+shows the former; `examples/embedders/remote_http.py` shows the
+latter against `httpx.AsyncClient`.
+
 Three runnable reference adapters in
 [`examples/embedders/`](examples/embedders/): MLX + Qwen3-Embedding,
-HuggingFace transformers, and a remote HTTP client. They currently
-implement just the late-chunking half of the protocol; add a
-`embed_chunklets` method (one batched forward pass over each
-chunklet, pooled the same way the model was trained) to use them
-with `split_chunks` or `chunk_document`.
+HuggingFace transformers, and an async-HTTP remote client. All
+three now implement both halves of the protocol so they're
+drop-in for `split_chunks` and `chunk_document`.
 
+
+## Concurrency
+
+The public async API (`split_chunks`, `embed_with_late_chunking`,
+`chunk_document`) is safe to drive from multiple coroutines
+concurrently — `asyncio.gather(chunk_document(doc1, emb),
+chunk_document(doc2, emb), ...)` works. Inside
+`embed_with_late_chunking`, independent segments are themselves
+embedded via `asyncio.gather`, so each document overlaps its own
+segments' embedding calls.
+
+For a batch of documents, `chunk_documents` wraps that gather with
+an optional concurrency cap:
+
+```python
+import asyncio
+from fancychunk import chunk_documents
+from fancychunk.embedders import qwen3_600m
+
+async def main():
+    embedder = qwen3_600m()
+    docs = [open(p).read() for p in paths]
+    results = await chunk_documents(docs, embedder, max_concurrency=8)
+    # results[i] is (chunks, vectors) for docs[i].
+
+asyncio.run(main())
+```
+
+Pass `max_concurrency=N` to cap fan-in (sensible for remote
+embedders so you don't hammer the server). Omit it to gather all
+documents at once — fine for bundled embedders since the internal
+lock serializes to device throughput anyway.
+
+Bundled embedder instances are also safe to drive from multiple
+threads — internal locking serializes worker-thread access to the
+underlying model. This covers any code that uses the embedder via
+`asyncio.to_thread` or a `ThreadPoolExecutor` directly. The lock
+matches what the device can actually deliver — one forward pass at
+a time — so callers don't need their own synchronization.
+
+For higher throughput, create multiple embedder instances; each
+loads its own copy of the weights. A remote / true-parallel embedder
+(`examples/embedders/remote_http.py`) gets real concurrency from
+`asyncio.gather` since it isn't bottlenecked on a single local
+device.
 
 ## Observability
 

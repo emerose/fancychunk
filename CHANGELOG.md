@@ -4,6 +4,58 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-05-27
+
+### Added
+- ``SaTSegmenter(device=...)`` selects the onnxruntime execution
+  provider. ``"auto"`` (the default) defers to wtpsplit-lite's own
+  GPU-first auto-detect — installing ``onnxruntime-gpu`` and asking
+  for ``device="cuda"`` is enough to run SaT on the GPU. ``"cpu"``
+  forces the CPU EP. The power-user escape hatch
+  ``ort_providers=[...]`` is also exposed for explicit provider
+  lists (e.g. ROCm, OpenVINO), as is ``ort_kwargs=`` for
+  ``InferenceSession`` options.
+- ``SaTSegmenter.predict_proba_batch(documents)`` runs one batched
+  SaT forward pass over a list of documents and returns a vector
+  per input. Empty / whitespace-only documents are passed through
+  as zero-length / zero-filled vectors (the downstream
+  ``split_sentences`` short-circuits them anyway). Required by the
+  new ``BatchSentenceSegmenter`` protocol.
+- ``BatchSentenceSegmenter(Protocol)`` — runtime-checkable
+  extension of ``SentenceSegmenter`` that adds
+  ``predict_proba_batch``. Lets ``chunk_documents`` opt into the
+  batched path; BYO segmenters can satisfy it to participate.
+- ``chunk_documents(..., segmenter_batch_size=N)`` pre-segments
+  documents in groups of N before launching the per-document
+  downstream pipeline. SaT inference runs off the event loop via
+  ``asyncio.to_thread`` so it overlaps with any in-flight embedder
+  work. On a CUDA box this is typically the single largest win
+  available for small-doc workloads — the SaT forward pass on
+  short inputs is dominated by per-call launch + memory-transfer
+  overhead, which batching amortizes. CPU-only callers see no
+  benefit (forward-pass FLOPs scale linearly with batch size under
+  ``CPUExecutionProvider``); leave ``segmenter_batch_size`` unset.
+- ``chunk_document(..., segmenter=...)`` and
+  ``chunk_documents(..., segmenter=...)`` accept a segmenter
+  override so per-doc callers (e.g. ingestion pipelines that drive
+  ``chunk_document`` one document at a time) can install a
+  CUDA-configured ``SaTSegmenter`` once and reuse it.
+- ``precomputed_segmenter(probas)`` — wraps a precomputed
+  per-character probability vector as a ``SentenceSegmenter``,
+  letting advanced callers cache / share boundary probabilities
+  across re-ingests of the same document.
+- ``bench_sat_batching.py`` — microbenchmark over a synthetic short-
+  Markdown corpus that prints per-doc vs batched wall time and
+  optionally fails (``--assert-speedup``) below a target ratio.
+  Use ``--device cuda`` on a CUDA box to validate the GPU path;
+  the API surface is also covered by mocked unit tests in
+  ``tests/test_segmenter_batching.py``.
+
+### Changed
+- ``chunk_document`` and ``chunk_documents`` accept a keyword-only
+  ``segmenter=`` argument; existing callers (``segmenter`` unset)
+  see no behavior change.
+
 ## [0.4.0] - 2026-05-27
 
 ### Added

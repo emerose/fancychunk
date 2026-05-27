@@ -199,6 +199,37 @@ deployments where you can tolerate lower segmentation quality, pass
 `segmenter=punctuation_segmenter` instead: a ~50-line rule-based
 fallback bundled with the library.
 
+For corpora of many short documents (think BeIR scifact: ~5K
+abstracts at ~1.5K chars each), SaT can become the dominant cost
+in the pipeline. Two knobs help:
+
+```python
+from fancychunk import SaTSegmenter, chunk_document, chunk_documents
+from fancychunk.embedders import qwen3_600m
+
+# 1) GPU. Install onnxruntime-gpu and ask for CUDA. device="auto"
+# (the default) already picks GPU when one is visible.
+seg = SaTSegmenter(device="cuda")
+chunks, vectors = await chunk_document(doc, qwen3_600m(), segmenter=seg)
+
+# 2) Batched SaT. chunk_documents pre-segments groups of N docs
+# in one forward pass, off the event loop. The win is on GPU
+# (where launch + memory-transfer per call is amortized) — on
+# CPU-only setups the forward pass scales linearly with batch
+# size, so leave segmenter_batch_size=None.
+await chunk_documents(
+    docs,
+    qwen3_600m(),
+    segmenter=SaTSegmenter(device="cuda"),
+    segmenter_batch_size=64,
+)
+```
+
+Verify the win on your hardware with `python bench_sat_batching.py
+--device cuda --n-docs 1000`. The plumbing is also exposed on the
+single-document `chunk_document(doc, embedder, segmenter=...)` for
+pipelines that ingest one document at a time.
+
 **Embedders.** Four bundled models trade quality for latency. You
 pick one explicitly — there's no hidden default — and pass it
 through to `chunk_document` (or to the individual primitives). The

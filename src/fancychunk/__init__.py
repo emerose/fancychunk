@@ -26,7 +26,13 @@ from .errors import (
 )
 from .headings import enrich_with_headings, heading_paths
 from .late_chunking import SegmentEmbedder, embed_with_late_chunking
-from ._segmenter import SaTSegmenter, SentenceSegmenter, punctuation_segmenter
+from ._segmenter import (
+    BatchSentenceSegmenter,
+    SaTSegmenter,
+    SentenceSegmenter,
+    precomputed_segmenter,
+    punctuation_segmenter,
+)
 from .sentences import split_sentences
 
 __all__ = [
@@ -43,7 +49,9 @@ __all__ = [
     "Embedder",
     "SaTSegmenter",
     "SentenceSegmenter",
+    "BatchSentenceSegmenter",
     "punctuation_segmenter",
+    "precomputed_segmenter",
     "SegmentEmbedder",
     "FancyChunkError",
     "ValidationError",

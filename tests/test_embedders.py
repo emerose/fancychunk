@@ -163,7 +163,7 @@ def test_noop_with_split_chunks_structural_only() -> None:
         "Third paragraph.\n",
     ]
     chunks = asyncio.run(split_chunks(chunklets, noop(), max_size=2048))
-    assert "".join(chunks) == "".join(chunklets)
+    assert "".join(c.text for c in chunks) == "".join(chunklets)
 
 
 # ---------------------------------------------------------------------------
@@ -241,21 +241,22 @@ def test_qwen3_600m_end_to_end_with_split_chunks() -> None:
     sentences = split_sentences(doc, max_len=2048, segmenter=punctuation_segmenter)
     chunklets = split_chunklets(sentences, max_size=2048)
     chunks = asyncio.run(split_chunks(chunklets, embedder, max_size=2048))
-    assert "".join(chunks) == "".join(chunklets)
+    assert "".join(c.text for c in chunks) == "".join(chunklets)
 
 
 @_requires_models
 def test_qwen3_600m_end_to_end_with_late_chunking() -> None:
-    from fancychunk import embed_with_late_chunking, split_sentences
+    from fancychunk import Chunk, embed_with_late_chunking, split_sentences
     from fancychunk._segmenter import punctuation_segmenter
 
     embedder = qwen3_600m()
     doc = "# Heading\n\nFirst sentence. Second sentence. Third sentence.\n"
     sentences = split_sentences(doc, max_len=2048, segmenter=punctuation_segmenter)
     # embed_with_late_chunking takes chunks now; use the sentences
-    # directly as a single-chunk approximation for this smoke test.
+    # wrapped as Chunks for this smoke test.
+    pseudo_chunks = [Chunk(text=s) for s in sentences]
     emb = asyncio.run(
-        embed_with_late_chunking(sentences, embedder, include_headings=False)
+        embed_with_late_chunking(pseudo_chunks, embedder, include_headings=False)
     )
     assert emb.shape[0] == len(sentences)
     assert np.allclose(np.linalg.norm(emb, axis=1), 1.0, atol=1e-3)

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from fancychunk import (
+    Chunk,
     ChunkExceedsContextError,
     SentenceExceedsContextError,
     ValidationError,
@@ -32,10 +33,14 @@ from ._fake_embedder import (
 
 # Sync shim: every test below calls ``embed_with_late_chunking`` as if
 # it were sync. The library entry point is async; this wrapper runs
-# the coroutine to completion via ``asyncio.run``. Lets the test bodies
-# stay readable rather than peppered with ``asyncio.run(...)``.
-def embed_with_late_chunking(*args, **kwargs):  # type: ignore[no-untyped-def]
-    return asyncio.run(_async_embed_with_late_chunking(*args, **kwargs))
+# the coroutine to completion via ``asyncio.run``. Additionally,
+# tests pass plain string chunks for brevity — the library wants
+# ``list[Chunk]``, so we auto-wrap. Lets the test bodies stay readable
+# rather than peppered with ``asyncio.run(...)`` and Chunk-wrapping.
+def embed_with_late_chunking(chunks, *args, **kwargs):  # type: ignore[no-untyped-def]
+    if chunks and isinstance(chunks[0], str):
+        chunks = [Chunk(text=s) for s in chunks]
+    return asyncio.run(_async_embed_with_late_chunking(chunks, *args, **kwargs))
 
 
 # ---------------------------------------------------------------------------

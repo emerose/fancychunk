@@ -11,13 +11,14 @@ import re
 
 from . import _constants as C
 from ._telemetry import get_tracer
+from .chunks import Chunk
 
 # Anchoring is done manually by the scanner (only call ``.match`` at
 # line-start positions), so this pattern does not include ``^``.
 _HEADING_LINE_RE = re.compile(r"(#{1,6})(\s|$)")
 
 
-def heading_paths(chunks: list[str]) -> list[str]:
+def heading_paths(chunks: list[Chunk]) -> list[str]:
     """Return the per-chunk Markdown heading path.
 
     Implements ``docs/specs/05-contextual-headings.md``.
@@ -29,7 +30,7 @@ def heading_paths(chunks: list[str]) -> list[str]:
 
         for chunk in chunks:
             paths.append(_render_path(stack))
-            _scan_and_update(chunk, stack)
+            _scan_and_update(chunk.text, stack)
         span.set_attribute(
             "fancychunk.paths.non_empty",
             sum(1 for p in paths if p),
@@ -92,26 +93,32 @@ def _render_path(stack: list[str | None]) -> str:
     return C.HEADING_PATH_SEPARATOR.join(parts)
 
 
-def enrich_with_headings(chunks: list[str]) -> list[str]:
-    """Return ``chunks`` with each one prepended by its Markdown
-    heading path (per :func:`heading_paths`), separated by a blank
-    line. Chunks whose path is empty are returned unchanged.
+def enrich_with_headings(chunks: list[Chunk]) -> list[Chunk]:
+    """Return chunks with their Markdown heading path prepended to
+    ``text``, separated by a blank line. Chunks whose path is empty
+    are returned unchanged. Metadata (``start`` / ``end``) is
+    preserved from the input — they still reference the original
+    source's character offsets, even though ``len(chunk.text)`` no
+    longer equals ``end - start`` after enrichment.
 
     The output preserves ``len(chunks)``; the i-th output element
     corresponds to the i-th input element.
 
-    Implements SPEC-CHUNK-520. ``"".join(enrich_with_headings(chunks))
-    == "".join(chunks)`` does **not** hold — this helper deliberately
-    breaks the concatenation round-trip in exchange for embedding-
-    time outline context.
+    Implements SPEC-CHUNK-520. The concatenation round-trip
+    (SPEC-CHUNK-300) does **not** hold after enrichment — this
+    helper deliberately breaks it in exchange for storage-time
+    outline context.
     """
+    from dataclasses import replace
+
     with get_tracer().start_as_current_span(
         "fancychunk.enrich_with_headings"
     ) as span:
         span.set_attribute("fancychunk.chunks.count", len(chunks))
         paths = heading_paths(chunks)
         out = [
-            (p + "\n" + c) if p else c for p, c in zip(paths, chunks)
+            replace(c, text=(p + "\n" + c.text)) if p else c
+            for p, c in zip(paths, chunks)
         ]
         span.set_attribute(
             "fancychunk.paths.non_empty",

@@ -4,6 +4,41 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-05-27
+
+### Changed (breaking — pre-1.0)
+- **Chunks are now a typed object, not raw strings.** New
+  ``fancychunk.Chunk`` frozen dataclass with:
+  - ``text: str`` — always present, the chunk content.
+  - ``start: int | None`` — character offset (inclusive) into the
+    source, when computed.
+  - ``end: int | None`` — character offset (exclusive) into the
+    source, when computed. ``source[chunk.start:chunk.end] == chunk.text``.
+
+  The signature changes are: ``split_chunks(...) -> list[Chunk]``,
+  ``chunk_document(...) -> tuple[list[Chunk], NDArray]``,
+  ``chunk_documents(...) -> list[tuple[list[Chunk], NDArray]]``,
+  ``embed_with_late_chunking(chunks: list[Chunk], ...)``,
+  ``heading_paths(chunks: list[Chunk]) -> list[str]``, and
+  ``enrich_with_headings(chunks: list[Chunk]) -> list[Chunk]``.
+
+  Callers that did ``"".join(chunks)`` need
+  ``"".join(c.text for c in chunks)``. Callers that passed raw
+  string lists to ``embed_with_late_chunking`` /
+  ``heading_paths`` / ``enrich_with_headings`` need
+  ``[Chunk(text=s) for s in strings]``. The pipeline producers
+  (``split_chunks`` and ``chunk_document``) always populate
+  ``start`` / ``end``; ``Chunk(text=s)`` (no offsets) is fine for
+  ad-hoc construction. ``str(chunk)`` returns ``chunk.text``.
+
+  Future optional metadata fields can be added without further
+  breakage — they'll default to ``None``.
+
+- ``enrich_with_headings`` returns ``list[Chunk]`` with enriched
+  ``text`` and the original ``start`` / ``end`` preserved. After
+  enrichment, ``len(chunk.text) != chunk.end - chunk.start`` —
+  metadata still references the original source range.
+
 ## [0.2.0] - 2026-05-26
 
 ### Changed (breaking — pre-1.0)
@@ -135,6 +170,7 @@ the project follows [Semantic Versioning](https://semver.org/).
 - GitHub Actions CI workflow runs pyright (strict mode) and pytest
   against Python 3.12 and 3.13.
 
+[0.3.0]: https://github.com/emerose/fancychunk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/emerose/fancychunk/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/emerose/fancychunk/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/emerose/fancychunk/releases/tag/v0.1.0

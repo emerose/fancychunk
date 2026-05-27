@@ -10,7 +10,7 @@ from __future__ import annotations
 from . import _constants as constants
 from . import embedders
 from .chunklets import split_chunklets
-from .chunks import ChunkletEmbedder, split_chunks
+from .chunks import Chunk, ChunkletEmbedder, split_chunks
 from .document import Embedder, chunk_document, chunk_documents
 from .errors import (
     ChunkExceedsContextError,
@@ -33,6 +33,7 @@ __all__ = [
     "split_sentences",
     "split_chunklets",
     "split_chunks",
+    "Chunk",
     "ChunkletEmbedder",
     "embed_with_late_chunking",
     "heading_paths",

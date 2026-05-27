@@ -32,7 +32,7 @@ from numpy.typing import NDArray
 from ._telemetry import get_tracer
 from ._typing import Matrix
 from .chunklets import split_chunklets
-from .chunks import split_chunks
+from .chunks import Chunk, split_chunks
 from .errors import ValidationError
 from .late_chunking import embed_with_late_chunking
 from .sentences import split_sentences
@@ -70,7 +70,7 @@ async def chunk_document(
     document: str,
     embedder: Embedder,
     max_size: int = 2048,
-) -> tuple[list[str], NDArray[np.float64]]:
+) -> tuple[list[Chunk], NDArray[np.float64]]:
     """Chunk ``document`` and return ``(chunks, vectors)``.
 
     Composes the full pipeline:
@@ -112,7 +112,7 @@ async def chunk_documents(
     embedder: Embedder,
     max_size: int = 2048,
     max_concurrency: int | None = None,
-) -> list[tuple[list[str], NDArray[np.float64]]]:
+) -> list[tuple[list[Chunk], NDArray[np.float64]]]:
     """Chunk a batch of documents concurrently against one embedder.
 
     Equivalent to
@@ -166,7 +166,7 @@ async def chunk_documents(
 
         async def _one(
             doc: str,
-        ) -> tuple[list[str], NDArray[np.float64]]:
+        ) -> tuple[list[Chunk], NDArray[np.float64]]:
             async with sem:
                 return await chunk_document(doc, embedder, max_size=max_size)
 

@@ -19,6 +19,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 
 from fancychunk import (
+    Chunk,
     heading_paths,
     split_chunklets,
     split_sentences,
@@ -30,12 +31,19 @@ from ._fake_embedder import FakeEmbedder
 
 
 # Sync shims — see test_late_chunking.py for rationale.
-def embed_with_late_chunking(*args, **kwargs):  # type: ignore[no-untyped-def]
-    return asyncio.run(_async_embed_with_late_chunking(*args, **kwargs))
+def embed_with_late_chunking(chunks, *args, **kwargs):  # type: ignore[no-untyped-def]
+    if chunks and isinstance(chunks[0], str):
+        chunks = [Chunk(text=s) for s in chunks]
+    return asyncio.run(_async_embed_with_late_chunking(chunks, *args, **kwargs))
 
 
 def split_chunks(*args, **kwargs):  # type: ignore[no-untyped-def]
     return asyncio.run(_async_split_chunks(*args, **kwargs))
+
+
+def heading_paths_via_wrap(texts):  # type: ignore[no-untyped-def]
+    """Wrap raw strings as Chunks and call the real heading_paths."""
+    return heading_paths([Chunk(text=t) for t in texts])
 
 
 @pytest.fixture
@@ -123,7 +131,7 @@ def test_split_chunks_emits_span_short_circuit(captured_spans) -> None:
 
     exporter, provider = captured_spans
     chunks = split_chunks(["a chunklet."], noop())
-    assert chunks == ["a chunklet."]
+    assert [c.text for c in chunks] == ["a chunklet."]
     provider.force_flush()
     span = next(
         s
@@ -184,7 +192,7 @@ def test_embed_with_late_chunking_emits_span(captured_spans) -> None:
 
 def test_heading_paths_emits_span(captured_spans) -> None:
     exporter, provider = captured_spans
-    heading_paths(["# Title\n", "Body.\n"])
+    heading_paths_via_wrap(["# Title\n", "Body.\n"])
     provider.force_flush()
     span = next(
         s for s in exporter.get_finished_spans() if s.name == "fancychunk.heading_paths"

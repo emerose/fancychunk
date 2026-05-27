@@ -1,11 +1,14 @@
 """Stage 3 — semantic chunking (SPEC-CHUNK-3xx).
 
-Public entry point: ``split_chunks``.
+Public entry point: ``split_chunks``. Public data type:
+:class:`Chunk` (a frozen dataclass with the chunk text plus
+optional character-offset metadata).
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
@@ -20,6 +23,38 @@ from .errors import (
     ValidationError,
     ZeroNormEmbeddingError,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    """A piece of a document with optional metadata.
+
+    Attributes
+    ----------
+    text:
+        The chunk's content. Always present.
+    start, end:
+        Character offsets into the source the chunk was produced
+        from, with half-open ``[start, end)`` semantics so
+        ``source[chunk.start:chunk.end] == chunk.text``. ``None``
+        when not computed (e.g. a hand-constructed :class:`Chunk`).
+        For :func:`split_chunks` the "source" is
+        ``"".join(chunklets)``; for :func:`chunk_document` that
+        equals the original document (chunklets round-trip per
+        SPEC-CHUNK-300).
+
+    New optional metadata fields may be added in future releases.
+    Adding a field is non-breaking: existing keyword-construction
+    calls still work, and existing field accesses still resolve.
+    """
+
+    text: str
+    start: int | None = None
+    end: int | None = None
+
+    def __str__(self) -> str:
+        """``str(chunk)`` returns the chunk text."""
+        return self.text
 
 
 class ChunkletEmbedder(Protocol):
@@ -45,7 +80,7 @@ async def split_chunks(
     chunklets: list[str],
     embedder: ChunkletEmbedder,
     max_size: int = C.DEFAULT_MAX_SIZE_CHARS,
-) -> list[str]:
+) -> list[Chunk]:
     """Partition ``chunklets`` into chunks.
 
     Implements ``docs/specs/03-semantic-chunking.md``.
@@ -93,13 +128,14 @@ async def split_chunks(
         if len(chunklets) == 1:
             span.set_attribute("fancychunk.chunks.count", 1)
             span.set_attribute("fancychunk.short_circuit", "single_chunklet")
-            return [chunklets[0]]
+            return [Chunk(text=chunklets[0], start=0, end=lengths[0])]
 
         # SPEC-CHUNK-340 — total fits. No embedder call.
-        if sum(lengths) <= max_size:
+        total_len = sum(lengths)
+        if total_len <= max_size:
             span.set_attribute("fancychunk.chunks.count", 1)
             span.set_attribute("fancychunk.short_circuit", "total_fits")
-            return ["".join(chunklets)]
+            return [Chunk(text="".join(chunklets), start=0, end=total_len)]
 
         # Multi-chunklet, multi-chunk case: embedder drives the
         # partition decision.
@@ -234,7 +270,7 @@ def _apply_heading_modification_inplace(
 
 def _solve_partition(
     chunklets: list[str], lengths: list[int], sim: Vector, max_size: int
-) -> list[str]:
+) -> list[Chunk]:
     """SPEC-CHUNK-310/-311 — minimize total partition similarity under the
     covering constraint that every chunk fits in ``max_size``.
 
@@ -289,4 +325,13 @@ def _solve_partition(
     cuts.reverse()
     cuts.append(n)
 
-    return ["".join(chunklets[a:b]) for a, b in zip(cuts[:-1], cuts[1:])]
+    # Each chunk spans chunklets[a:b]; its character range in
+    # ``"".join(chunklets)`` is ``[cum_len_np[a], cum_len_np[b])``.
+    return [
+        Chunk(
+            text="".join(chunklets[a:b]),
+            start=int(cum_len_np[a]),
+            end=int(cum_len_np[b]),
+        )
+        for a, b in zip(cuts[:-1], cuts[1:])
+    ]

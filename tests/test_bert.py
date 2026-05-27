@@ -19,12 +19,16 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
+from fancychunk import Chunk
 from fancychunk import embed_with_late_chunking as _async_embed_with_late_chunking
 
 
-# Sync shim — see test_late_chunking.py for rationale.
-def embed_with_late_chunking(*args, **kwargs):  # type: ignore[no-untyped-def]
-    return asyncio.run(_async_embed_with_late_chunking(*args, **kwargs))
+# Sync shim — see test_late_chunking.py for rationale. Auto-wraps
+# raw string chunks as Chunk objects (the typed API since 0.3.0).
+def embed_with_late_chunking(chunks, *args, **kwargs):  # type: ignore[no-untyped-def]
+    if chunks and isinstance(chunks[0], str):
+        chunks = [Chunk(text=s) for s in chunks]
+    return asyncio.run(_async_embed_with_late_chunking(chunks, *args, **kwargs))
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FANCYCHUNK_TEST_USE_BERT") != "1",

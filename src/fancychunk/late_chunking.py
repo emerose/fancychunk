@@ -25,6 +25,7 @@ import numpy as np
 from . import _constants as C
 from ._telemetry import get_tracer
 from ._typing import Matrix
+from .chunks import Chunk
 from .errors import ChunkExceedsContextError, ValidationError
 
 
@@ -75,7 +76,7 @@ class SegmentEmbedder(Protocol):
 
 
 async def embed_with_late_chunking(
-    chunks: list[str],
+    chunks: list[Chunk],
     embedder: SegmentEmbedder,
     max_tokens_per_segment: int | None = None,
     preamble_fraction: float = C.DEFAULT_PREAMBLE_FRACTION,
@@ -156,6 +157,12 @@ async def embed_with_late_chunking(
             dim = await _infer_dim(embedder)
             return np.zeros((0, dim), dtype=np.float64)
 
+        # Extract chunk texts once — the embedder protocol works in
+        # strings, and downstream slicing / tokenization needs them
+        # repeatedly. Chunk metadata (start/end) is not used here;
+        # callers preserve it on the input list for their own use.
+        chunk_texts = [c.text for c in chunks]
+
         budget = (
             max_tokens_per_segment if max_tokens_per_segment is not None else n_ctx
         )
@@ -177,7 +184,7 @@ async def embed_with_late_chunking(
         # planning. Isolated-tokenization counts; SPEC-CHUNK-412's
         # largest-remainder safety net absorbs any drift between these
         # and the joined-input counts the embedder ultimately sees.
-        iso_token_counts = await embedder.count_tokens(chunks)
+        iso_token_counts = await embedder.count_tokens(chunk_texts)
         if len(iso_token_counts) != len(chunks):
             raise ValidationError(
                 f"embedder.count_tokens returned {len(iso_token_counts)} "
@@ -233,11 +240,11 @@ async def embed_with_late_chunking(
         segment_inputs: list[list[str]] = []
         for seg_start, content_start, _seg_end in segments:
             heading_text = heading_prepends[content_start]
-            seg_chunks = chunks[seg_start:_seg_end]
+            seg_chunk_texts = chunk_texts[seg_start:_seg_end]
             if heading_text:
-                segment_inputs.append([heading_text] + seg_chunks)
+                segment_inputs.append([heading_text] + seg_chunk_texts)
             else:
-                segment_inputs.append(seg_chunks)
+                segment_inputs.append(seg_chunk_texts)
 
         segment_results = await asyncio.gather(
             *(embedder.embed_segment(texts) for texts in segment_inputs)

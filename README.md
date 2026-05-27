@@ -50,10 +50,18 @@ async def main():
     chunks, vectors = await chunk_document(
         open("my-document.md").read(), embedder
     )
-    # chunks[i] ⇄ vectors[i] — drop straight into your vector store.
+    # chunks[i].text is the chunk content; chunks[i].start / .end are
+    # character offsets into the original document; vectors[i] is the
+    # storage embedding for chunks[i]. Drop straight into your store.
 
 asyncio.run(main())
 ```
+
+Each chunk is a `Chunk` — a frozen dataclass with `text` (always
+present) plus optional metadata. Today: `start` and `end` (half-open
+character offsets, so `document[chunk.start:chunk.end] == chunk.text`).
+More optional fields may be added over time without breaking
+existing code.
 
 
 ### Building blocks

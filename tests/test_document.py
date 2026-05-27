@@ -26,9 +26,11 @@ def test_chunk_document_returns_chunks_and_vectors() -> None:
     embedder = FakeEmbedder(dim=8, n_ctx=512)
     chunks, vectors = asyncio.run(chunk_document(doc, embedder))
 
+    from fancychunk import Chunk
+
     assert isinstance(chunks, list)
-    assert all(isinstance(c, str) for c in chunks)
-    assert "".join(chunks) == doc  # SPEC-CHUNK-300 round-trip
+    assert all(isinstance(c, Chunk) for c in chunks)
+    assert "".join(c.text for c in chunks) == doc  # SPEC-CHUNK-300 round-trip
     assert vectors.shape == (len(chunks), 8)
 
 
@@ -58,7 +60,7 @@ def test_chunk_document_single_short_input() -> None:
     chunks, vectors = asyncio.run(chunk_document(doc, embedder))
     assert len(chunks) == 1
     assert vectors.shape == (1, 8)
-    assert "".join(chunks) == doc
+    assert "".join(c.text for c in chunks) == doc
 
 
 def test_chunk_document_reuses_embedder_instance() -> None:
@@ -105,7 +107,7 @@ def test_chunk_document_with_noop_embedder_works() -> None:
     function doesn't crash)."""
     doc = "# Heading\n\nFirst body. Second body.\n"
     chunks, vectors = asyncio.run(chunk_document(doc, noop()))
-    assert "".join(chunks) == doc
+    assert "".join(c.text for c in chunks) == doc
     assert vectors.shape[0] == len(chunks)
     # noop's late-chunking output is constants → all rows identical.
     if len(chunks) > 1:
@@ -120,7 +122,7 @@ def test_chunk_document_respects_max_size() -> None:
     embedder = FakeEmbedder(dim=8, n_ctx=4096)
     chunks, _ = asyncio.run(chunk_document(doc, embedder, max_size=2048))
     for c in chunks:
-        assert len(c) <= 2048
+        assert len(c.text) <= 2048
 
 
 def test_chunk_document_determinism() -> None:
@@ -148,7 +150,7 @@ def test_chunk_documents_returns_one_tuple_per_input_in_order() -> None:
     results = asyncio.run(chunk_documents(docs, embedder))
     assert len(results) == 3
     for doc, (chunks, vectors) in zip(docs, results):
-        assert "".join(chunks) == doc
+        assert "".join(c.text for c in chunks) == doc
         assert vectors.shape == (len(chunks), 8)
 
 

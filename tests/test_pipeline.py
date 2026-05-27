@@ -57,7 +57,7 @@ def test_concatenation_round_trip_all_stages() -> None:
     # Make sure no row has near-zero norm.
     emb = emb + 0.01 * np.sign(emb)
     chunks = split_chunks(chunklets, _PreCookedEmbedder(emb), max_size=2048)
-    assert "".join(chunks) == "".join(chunklets)
+    assert "".join(c.text for c in chunks) == "".join(chunklets)
 
 
 # SPEC-CHUNK-901 — determinism across runs.
@@ -109,4 +109,4 @@ def test_pipeline_with_noop_embedder() -> None:
     sentences = split_sentences(document, max_len=2048)
     chunklets = split_chunklets(sentences, max_size=2048)
     chunks = split_chunks(chunklets, noop(), max_size=2048)
-    assert "".join(chunks) == "".join(chunklets)
+    assert "".join(c.text for c in chunks) == "".join(chunklets)

@@ -9,11 +9,18 @@ import pytest
 from numpy.typing import NDArray
 
 from fancychunk import (
+    Chunk,
     OversizedChunkletError,
     ZeroNormEmbeddingError,
     split_chunks,
 )
 from fancychunk.embedders import noop
+
+
+def _texts(chunks: list[Chunk]) -> list[str]:
+    """Extract the ``.text`` of each chunk — most assertions in this
+    file compare against raw strings, so this is a readability hack."""
+    return [c.text for c in chunks]
 
 
 class _FixedEmbedder:
@@ -55,7 +62,7 @@ def test_partition_preserves_concatenation() -> None:
     chunklets = ["a" * 1000, "b" * 1000, "c" * 1000, "d" * 1000]
     matrix = np.eye(4)
     chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix)))
-    assert "".join(chunks) == "".join(chunklets)
+    assert "".join(_texts(chunks)) == "".join(chunklets)
 
 
 # SPEC-CHUNK-301, -311 — hard size constraint.
@@ -64,8 +71,8 @@ def test_size_constraint_forces_split() -> None:
     matrix = np.tile([[1.0, 0.0]], (3, 1))
     chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix)))
     for c in chunks:
-        assert len(c) <= 2048
-    assert "".join(chunks) == "".join(chunklets)
+        assert len(c.text) <= 2048
+    assert "".join(_texts(chunks)) == "".join(chunklets)
 
 
 # SPEC-CHUNK-340 — empty input. No embedder call.
@@ -77,7 +84,7 @@ def test_empty_input_skips_embedder() -> None:
 # SPEC-CHUNK-340 — single chunklet. No embedder call.
 def test_single_chunklet_skips_embedder() -> None:
     chunks = asyncio.run(split_chunks(["Single chunklet content."], _RaisingEmbedder()))
-    assert chunks == ["Single chunklet content."]
+    assert _texts(chunks) == ["Single chunklet content."]
 
 
 # SPEC-CHUNK-340 — total fits in max_size. No embedder call.
@@ -85,7 +92,7 @@ def test_total_fits_skips_embedder() -> None:
     chunks = asyncio.run(split_chunks(
         ["one ", "two ", "three"], _RaisingEmbedder()
     ))
-    assert chunks == ["one two three"]
+    assert _texts(chunks) == ["one two three"]
 
 
 # SPEC-CHUNK-340 — short-circuits hold for any embedder argument
@@ -93,15 +100,17 @@ def test_total_fits_skips_embedder() -> None:
 # embedder here since it's the cheapest valid choice.
 def test_short_circuit_with_noop_embedder() -> None:
     assert asyncio.run(split_chunks([], noop())) == []
-    assert asyncio.run(split_chunks(["only one"], noop())) == ["only one"]
-    assert asyncio.run(split_chunks(["one ", "two ", "three"], noop())) == ["one two three"]
+    assert _texts(asyncio.run(split_chunks(["only one"], noop()))) == ["only one"]
+    assert _texts(asyncio.run(split_chunks(["one ", "two ", "three"], noop()))) == [
+        "one two three"
+    ]
 
 
 # Identical embeddings, total fits: short-circuit before similarity.
 def test_identical_short_circuit() -> None:
     chunklets = ["x" * 100] * 10
     chunks = asyncio.run(split_chunks(chunklets, _RaisingEmbedder()))
-    assert chunks == ["x" * 1000]
+    assert _texts(chunks) == ["x" * 1000]
 
 
 # SPEC-CHUNK-322 — no split immediately after a heading.
@@ -120,7 +129,7 @@ def test_no_split_after_heading() -> None:
     )
     chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
     # The heading must not be its own standalone chunk.
-    assert chunks[0] != "# Heading\n\n"
+    assert chunks[0].text != "# Heading\n\n"
 
 
 # SPEC-CHUNK-322 — encourage split before heading.
@@ -136,7 +145,7 @@ def test_split_before_heading() -> None:
     )
     chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
     assert len(chunks) == 2
-    assert chunks[1].startswith("## Subhead")
+    assert chunks[1].text.startswith("## Subhead")
 
 
 # SPEC-CHUNK-342 — zero-norm embedding rejected.
@@ -163,8 +172,8 @@ def test_discourse_fallback() -> None:
         ["x" * 1000] * 5, _FixedEmbedder(matrix), max_size=2048
     ))
     for c in chunks:
-        assert len(c) <= 2048
-    assert "".join(chunks) == "".join(["x" * 1000] * 5)
+        assert len(c.text) <= 2048
+    assert "".join(_texts(chunks)) == "".join(["x" * 1000] * 5)
 
 
 # SPEC-CHUNK-330 — determinism.
@@ -183,8 +192,8 @@ def test_determinism() -> None:
 def test_split_chunks_with_noop_embedder() -> None:
     chunklets = ["a" * 1000, "b" * 1000, "c" * 1000]
     chunks = asyncio.run(split_chunks(chunklets, noop(), max_size=2048))
-    assert "".join(chunks) == "".join(chunklets)
-    assert all(len(c) <= 2048 for c in chunks)
+    assert "".join(_texts(chunks)) == "".join(chunklets)
+    assert all(len(c.text) <= 2048 for c in chunks)
 
 
 def test_split_chunks_with_noop_prefers_heading_split() -> None:
@@ -196,7 +205,7 @@ def test_split_chunks_with_noop_prefers_heading_split() -> None:
     chunklets = ["a" * 900, "b" * 900, "## Subhead\n\n", "c" * 900]
     chunks = asyncio.run(split_chunks(chunklets, noop(), max_size=2048))
     assert len(chunks) == 2
-    assert chunks[1].startswith("## Subhead")
+    assert chunks[1].text.startswith("## Subhead")
 
 
 # SPEC-CHUNK-322 — heading detection accepts ATX and Setext forms,
@@ -245,4 +254,66 @@ def test_setext_heading_pulls_split_before() -> None:
     )
     chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
     assert len(chunks) == 2
-    assert chunks[1].startswith("Subhead\n=======")
+    assert chunks[1].text.startswith("Subhead\n=======")
+
+
+# ---------------------------------------------------------------------------
+# Chunk metadata — start/end character offsets.
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_offsets_index_into_joined_chunklets() -> None:
+    """For every chunk produced from chunklets, ``joined[start:end] == text``
+    where joined is ``"".join(chunklets)``."""
+    chunklets = ["a" * 1000, "b" * 1000, "c" * 1000, "d" * 1000]
+    matrix = np.eye(4)
+    chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix)))
+    joined = "".join(chunklets)
+    for c in chunks:
+        assert c.start is not None and c.end is not None
+        assert joined[c.start : c.end] == c.text
+
+
+def test_chunk_offsets_short_circuit_single_chunklet() -> None:
+    chunks = asyncio.run(
+        split_chunks(["Lone chunklet."], _RaisingEmbedder())
+    )
+    assert len(chunks) == 1
+    assert chunks[0].start == 0
+    assert chunks[0].end == len("Lone chunklet.")
+
+
+def test_chunk_offsets_short_circuit_total_fits() -> None:
+    chunklets = ["abc", "def", "ghi"]
+    chunks = asyncio.run(split_chunks(chunklets, _RaisingEmbedder()))
+    assert len(chunks) == 1
+    assert chunks[0].start == 0
+    assert chunks[0].end == sum(len(c) for c in chunklets)
+
+
+def test_chunk_offsets_are_contiguous_and_cover_input() -> None:
+    """Adjacent chunks meet at a shared offset; first starts at 0;
+    last ends at total length."""
+    chunklets = ["abc" * 200, "def" * 200, "ghi" * 200, "jkl" * 200]
+    matrix = np.eye(4)
+    chunks = asyncio.run(
+        split_chunks(chunklets, _FixedEmbedder(matrix), max_size=1500)
+    )
+    assert chunks[0].start == 0
+    assert chunks[-1].end == sum(len(c) for c in chunklets)
+    for prev, nxt in zip(chunks, chunks[1:]):
+        assert prev.end == nxt.start
+
+
+def test_chunk_str_returns_text() -> None:
+    """``str(chunk)`` returns chunk.text — usability check."""
+    c = Chunk(text="hello", start=0, end=5)
+    assert str(c) == "hello"
+
+
+def test_chunk_is_hashable() -> None:
+    """frozen dataclass means we can put Chunks in sets / dict keys."""
+    a = Chunk(text="hi", start=0, end=2)
+    b = Chunk(text="hi", start=0, end=2)
+    c = Chunk(text="bye", start=0, end=3)
+    assert {a, b, c} == {a, c}

@@ -235,17 +235,22 @@ Measured on a 1,000-doc / 1,500-char corpus (RTX 3090, sat-3l-sm,
 
 | `chunk_documents` config | ms/doc | vs CPU baseline |
 |---|---:|---:|
-| CPU, no batch (baseline) | 33.68 | 1.00× |
-| CUDA, no batch | 7.17 | **4.70×** |
-| CUDA, `segmenter_batch_size=64` | 5.48 | **6.15×** |
-| CPU, `segmenter_batch_size=64` | 59.61 | 0.57× (slower — don't use) |
+| CPU, no batch (baseline) | 33.27 | 1.00× |
+| CUDA, no batch | 6.77 | **4.91×** |
+| CUDA, `segmenter_batch_size=64` | 5.19 | **6.41×** |
+| CUDA, `segmenter_batch_size=128` | 5.05 | **6.58×** |
+| CPU, `segmenter_batch_size=64` | 58.55 | 0.57× (slower — don't use) |
 
 The headline number is the e2e CUDA win. The SaT-only batched-vs-
-serial ratio on the same GPU is more modest (~1.8×) because GPU
-utilisation during batched runs sits at ~25-66% — wtpsplit-lite's
-CPU-side tokenisation/input-prep is the wall, not the ONNX forward
-pass. Leave `segmenter_batch_size=None` on CPU-only deployments: it
-serialises downstream work behind SaT waves with no payoff.
+serial ratio on the same GPU is ~2.2× (raw segmenter throughput
+goes from ~1.45 ms/doc serial to ~0.67 ms/doc batched). About half
+the post-`device="cuda"` wall is the actual ORT forward pass; the
+rest sat in a per-document Python loop in `wtpsplit-lite`'s
+`token_to_char_probs`, which `SaTSegmenter` now monkey-patches with
+a vectorised replacement on first load. Set
+`FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1` to opt out. Leave
+`segmenter_batch_size=None` on CPU-only deployments: it serialises
+downstream work behind SaT waves with no payoff.
 
 **Embedders.** Four bundled models trade quality for latency. You
 pick one explicitly — there's no hidden default — and pass it

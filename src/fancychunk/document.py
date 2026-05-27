@@ -159,10 +159,9 @@ async def chunk_documents(
     wave's forward pass overlaps with the current wave's downstream
     work. Measured numbers on this layout (RTX 3090, sat-3l-sm,
     1,000 × 1,500-char docs, ``embedders.noop()``): SaT-only batched
-    vs serial on GPU is ~1.8× (GPU utilisation is ~25%, capped by
-    wtpsplit's CPU-side tokenisation); the full ``chunk_documents``
-    pipeline is 4.7× over CPU just from ``device="cuda"`` and 6.2×
-    with batching on top.
+    vs serial on GPU is ~2.2× (0.67 ms/doc batched, 1.45 ms/doc
+    serial); the full ``chunk_documents`` pipeline is 4.9× over CPU
+    just from ``device="cuda"`` and 6.6× with batching on top.
 
     The segmenter must satisfy
     :class:`~fancychunk._segmenter.BatchSentenceSegmenter` (i.e. expose

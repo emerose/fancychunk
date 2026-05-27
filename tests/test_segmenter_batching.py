@@ -472,3 +472,121 @@ def test_chunk_documents_batched_with_max_concurrency() -> None:
     assert len(results) == 5
     # ceil(5/2) = 3 batched segmenter calls.
     assert seg.batch_calls == 3
+
+
+# ---------------------------------------------------------------------------
+# Fast token_to_char_probs monkey-patch.
+# ---------------------------------------------------------------------------
+
+
+class _FakeTokenizer:
+    cls_token = "<s>"
+    sep_token = "</s>"
+    pad_token = "<pad>"
+
+
+def _make_token_inputs(
+    text: str,
+    spans: list[tuple[int, int]],
+    cols: int = 4,
+    rng_seed: int = 0,
+) -> tuple[list[str], np.ndarray, list[tuple[int, int]]]:
+    """Build a (tokens, token_logits, offsets) triple where the first
+    and last tokens are specials (CLS / SEP) and the middle ones cover
+    ``spans``."""
+    rng = np.random.default_rng(rng_seed)
+    tokens = ["<s>", *[f"tok{i}" for i in range(len(spans))], "</s>"]
+    offsets = [(0, 0), *spans, (0, 0)]
+    token_logits = rng.standard_normal((len(tokens), cols))
+    return tokens, token_logits, offsets
+
+
+def test_fast_token_to_char_probs_matches_upstream_reference() -> None:
+    """The vectorised postprocess must produce the same output as the
+    upstream Python loop on realistic token offsets."""
+    from fancychunk._segmenter import _fast_token_to_char_probs
+    from wtpsplit_lite._utils import token_to_char_probs as upstream_ttc
+
+    text = "The cat sat on the mat. A bird flew."  # len 36
+    spans = [(0, 3), (4, 7), (8, 11), (12, 14), (15, 18), (19, 22)]
+    spans += [(23, 24), (25, 26), (27, 31), (32, 36)]
+    tokens, logits, offsets = _make_token_inputs(text, spans, cols=5)
+    tok = _FakeTokenizer()
+    ref = upstream_ttc(text, tokens, logits, tok, offsets)
+    fast = _fast_token_to_char_probs(text, tokens, logits, tok, offsets)
+    assert ref.shape == fast.shape
+    assert np.allclose(ref, fast, equal_nan=True)
+
+
+def test_fast_token_to_char_probs_handles_all_specials() -> None:
+    """A degenerate input with only special tokens must produce an
+    all--inf output (one row per character)."""
+    from fancychunk._segmenter import _fast_token_to_char_probs
+
+    text = "abc"
+    tokens = ["<s>", "</s>"]
+    logits = np.zeros((2, 3))
+    offsets = [(0, 0), (0, 0)]
+    out = _fast_token_to_char_probs(text, tokens, logits, _FakeTokenizer(), offsets)
+    assert out.shape == (3, 3)
+    assert np.all(np.isneginf(out))
+
+
+def test_fast_token_to_char_probs_skips_out_of_bounds() -> None:
+    """A token whose offset.end falls past the end of ``text`` must
+    not raise — the bounds-safe replacement silently drops it."""
+    from fancychunk._segmenter import _fast_token_to_char_probs
+
+    text = "abcd"
+    tokens = ["<s>", "ab", "ef", "</s>"]
+    # second token "ef" has end=10, past text length 4 — must be skipped.
+    offsets = [(0, 0), (0, 2), (4, 10), (0, 0)]
+    logits = np.arange(12, dtype=np.float64).reshape(4, 3)
+    out = _fast_token_to_char_probs(text, tokens, logits, _FakeTokenizer(), offsets)
+    assert out.shape == (4, 3)
+    # row at index 1 (end-1 of token "ab" = 2-1) should match token 1's logits.
+    assert np.array_equal(out[1], logits[1])
+    # all other rows stay at -inf (out-of-bounds token dropped).
+    expected_neginf = np.array([True, False, True, True])
+    assert np.array_equal(np.all(np.isneginf(out), axis=1), expected_neginf)
+
+
+def test_install_fast_postprocess_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Calling the installer twice must not double-patch or break the
+    binding. Also covers the env-var kill switch."""
+    import fancychunk._segmenter as fcs
+    import wtpsplit_lite._sat as wsat
+
+    original = wsat.token_to_char_probs
+    monkeypatch.setattr(fcs, "_fast_postprocess_installed", False)
+    try:
+        fcs._install_fast_postprocess()
+        assert wsat.token_to_char_probs is fcs._fast_token_to_char_probs
+        # Idempotent — second call is a no-op.
+        fcs._install_fast_postprocess()
+        assert wsat.token_to_char_probs is fcs._fast_token_to_char_probs
+    finally:
+        wsat.token_to_char_probs = original
+        monkeypatch.setattr(fcs, "_fast_postprocess_installed", False)
+
+
+def test_install_fast_postprocess_respects_env_kill_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fancychunk._segmenter as fcs
+    import wtpsplit_lite._sat as wsat
+
+    original = wsat.token_to_char_probs
+    monkeypatch.setattr(fcs, "_fast_postprocess_installed", False)
+    monkeypatch.setenv(fcs._FAST_POSTPROCESS_DISABLE_ENV, "1")
+    try:
+        fcs._install_fast_postprocess()
+        # Kill switch set → upstream binding unchanged.
+        assert wsat.token_to_char_probs is original
+        # Flag still flipped so we don't re-check the env on every call.
+        assert fcs._fast_postprocess_installed is True
+    finally:
+        wsat.token_to_char_probs = original
+        monkeypatch.setattr(fcs, "_fast_postprocess_installed", False)

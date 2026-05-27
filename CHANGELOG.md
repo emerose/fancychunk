@@ -33,17 +33,29 @@ the project follows [Semantic Versioning](https://semver.org/).
   work.
 
   Measured on a 1,000-doc / 1,500-char corpus (RTX 3090, sat-3l-sm,
-  ``embedders.noop()``), ``chunk_documents`` is ~6.2× faster than
+  ``embedders.noop()``), ``chunk_documents`` is ~6.6× faster than
   the CPU-no-batch baseline; just turning on ``device="cuda"`` is
-  already ~4.7×. The SaT-only batched-vs-serial ratio on the same
-  GPU is more modest (~1.8×) because wtpsplit-lite's CPU-side
-  tokenisation is the bottleneck (GPU utilisation sits at ~25-66%
-  during batched runs), not the ONNX forward pass.
+  already ~4.9×. The SaT-only batched-vs-serial ratio on the same
+  GPU is ~2.2× (raw segmenter cost ~1.45 ms/doc serial, ~0.67
+  ms/doc batched).
 
   CPU-only callers see no benefit (forward-pass FLOPs scale
   linearly with batch size under ``CPUExecutionProvider``); leave
   ``segmenter_batch_size`` unset — on CPU the streaming overlap
   serialises downstream work behind SaT waves with no payoff.
+- ``SaTSegmenter`` installs a vectorised replacement for
+  ``wtpsplit_lite._utils.token_to_char_probs`` on first load —
+  upstream's per-document Python loop scattering per-token logits
+  onto a per-character array was consuming ~45% of the batched SaT
+  wall on CUDA. The replacement does the same projection in two
+  numpy operations and round-trips bit-identically to upstream on
+  realistic inputs; correctness covered by
+  ``tests/test_segmenter_batching.py``. Set
+  ``FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1`` to keep upstream's
+  binding (e.g. if a future ``wtpsplit-lite`` release ships its
+  own fix). Effect: the SaT-only batched path drops from ~1.06
+  ms/doc to ~0.67 ms/doc (1.58×); ``chunk_documents`` e2e CUDA
+  +batched improves from ~5.5 ms/doc to ~5.0 ms/doc (~9%).
 - ``chunk_document(..., segmenter=...)`` and
   ``chunk_documents(..., segmenter=...)`` accept a segmenter
   override so per-doc callers (e.g. ingestion pipelines that drive

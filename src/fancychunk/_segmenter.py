@@ -17,6 +17,7 @@ through the keyword-only ``segmenter`` parameter on
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
@@ -79,6 +80,99 @@ def punctuation_segmenter(document: str) -> Vector:
 
 
 _DEFAULT_SAT_MODEL = "sat-3l-sm"
+
+_FAST_POSTPROCESS_DISABLE_ENV = "FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS"
+
+
+def _fast_token_to_char_probs(
+    text: str,
+    tokens: list[str],
+    token_logits: np.ndarray,
+    tokenizer: Any,
+    offsets_mapping: list[tuple[int, int]],
+) -> np.ndarray:
+    """Vectorised replacement for ``wtpsplit_lite._utils.token_to_char_probs``.
+
+    The upstream implementation is a Python ``for`` loop over every
+    non-special token (~400 iterations per 1,500-char doc), which on
+    a CUDA box dominates the SaT post-process and ends up taking
+    nearly as much wall-clock as the actual ORT forward pass. This
+    version performs the same projection — last-character of each
+    non-special token's span gets the token's logit row, everything
+    else stays at ``-inf`` — but in two numpy operations.
+
+    Bounds-safe: token spans whose ``end`` falls outside
+    ``[0, len(text))`` are dropped. The upstream version silently
+    wraps negatively (``char_probs[-1]``) on ``end == 0``; for the
+    SaT models that exists is benign on realistic text but worth
+    being explicit about.
+    """
+    n = len(text)
+    cols = token_logits.shape[1]
+    out = np.full((n, cols), -np.inf)
+    specials = (tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token)
+    # offsets_mapping is a list of (start, end) tuples; convert in one shot.
+    om = np.asarray(offsets_mapping, dtype=np.int64)
+    keep_pylist = [t not in specials for t in tokens]
+    keep = np.fromiter(keep_pylist, dtype=bool, count=len(keep_pylist))
+    # Upstream guards with ``idx < len(offsets_mapping)``; mirror it.
+    m = min(len(keep), om.shape[0])
+    if m == 0:
+        return out
+    keep = keep[:m]
+    om = om[:m]
+    valid_idx = np.flatnonzero(keep)
+    if valid_idx.size == 0:
+        return out
+    ends = om[valid_idx, 1] - 1
+    in_bounds = (ends >= 0) & (ends < n)
+    if not in_bounds.any():
+        return out
+    out[ends[in_bounds]] = token_logits[valid_idx[in_bounds]]
+    return out
+
+
+_fast_postprocess_installed: bool = False
+_fast_postprocess_lock = threading.Lock()
+
+
+def _install_fast_postprocess() -> None:
+    """Replace ``wtpsplit_lite._sat.token_to_char_probs`` with the
+    vectorised variant.
+
+    Idempotent: only the first caller actually patches. The patch
+    targets the binding inside ``_sat`` (where ``predict_proba``
+    looks it up), not ``_utils`` (where it's defined) — anything
+    that imported the helper before this runs would otherwise keep
+    the slow version.
+
+    Set ``FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1`` to opt out;
+    useful as an escape hatch if a future wtpsplit-lite release
+    changes the function and our shim becomes stale before we can
+    update the pin.
+    """
+    global _fast_postprocess_installed
+    if _fast_postprocess_installed:
+        return
+    if os.environ.get(_FAST_POSTPROCESS_DISABLE_ENV):
+        # Still flip the flag so we don't keep re-checking.
+        with _fast_postprocess_lock:
+            _fast_postprocess_installed = True
+        return
+    with _fast_postprocess_lock:
+        if _fast_postprocess_installed:
+            return
+        try:
+            from wtpsplit_lite import _sat as _wtpsplit_sat
+        except ImportError:
+            # Test suites stub ``wtpsplit_lite`` in ``sys.modules`` to
+            # avoid loading 400 MB of weights; the stub doesn't expose
+            # the private ``_sat`` submodule. Treat as installed so we
+            # don't keep retrying.
+            _fast_postprocess_installed = True
+            return
+        _wtpsplit_sat.token_to_char_probs = _fast_token_to_char_probs
+        _fast_postprocess_installed = True
 
 
 def _providers_for_device(device: str) -> list[str]:
@@ -169,6 +263,7 @@ class SaTSegmenter:
                     # lightweight when the SaT weights aren't cached.
                     from wtpsplit_lite import SaT as _SaT
 
+                    _install_fast_postprocess()
                     kwargs: dict[str, Any] = {}
                     if self._ort_providers is not None:
                         kwargs["ort_providers"] = list(self._ort_providers)

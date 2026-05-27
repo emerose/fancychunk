@@ -19,7 +19,14 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Protocol,
+    cast,
+    runtime_checkable,
+)
 
 import numpy as np
 
@@ -281,14 +288,13 @@ class SaTSegmenter:
         the ``True`` answer can lie. The check is cheap (no model
         load), so callers are free to consult it on every dispatch.
         """
-        providers = self._ort_providers
+        providers: list[str] | None = self._ort_providers
         if providers is None:
             try:
-                import onnxruntime as ort
-
-                providers = ort.get_available_providers()
+                import onnxruntime as ort  # type: ignore[import-untyped]
             except ImportError:
                 return False
+            providers = cast(list[str], ort.get_available_providers())
         gpu_eps = {
             "CUDAExecutionProvider",
             "TensorrtExecutionProvider",

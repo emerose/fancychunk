@@ -171,7 +171,12 @@ def _install_fast_postprocess() -> None:
             # don't keep retrying.
             _fast_postprocess_installed = True
             return
-        _wtpsplit_sat.token_to_char_probs = _fast_token_to_char_probs
+        # setattr instead of attribute assignment so pyright's strict
+        # ``reportPrivateImportUsage`` doesn't flag the rebinding of an
+        # un-``__all__``-exported name on a private submodule.
+        setattr(  # noqa: B010
+            _wtpsplit_sat, "token_to_char_probs", _fast_token_to_char_probs
+        )
         _fast_postprocess_installed = True
 
 

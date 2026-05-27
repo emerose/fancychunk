@@ -279,15 +279,14 @@ async def chunk_documents(
             for start in range(0, len(documents), segmenter_batch_size):
                 slice_docs = documents[start : start + segmenter_batch_size]
                 vecs = await asyncio.to_thread(batch_fn, slice_docs)
+                # BatchSentenceSegmenter.predict_proba_batch returns one
+                # Vector per input — no Nones to filter.
                 for offset, vec in enumerate(vecs):
                     i = start + offset
-                    seg = (
-                        precomputed_segmenter(vec)
-                        if vec is not None
-                        else None
-                    )
                     tasks.append(
-                        asyncio.create_task(_one(documents[i], seg))
+                        asyncio.create_task(
+                            _one(documents[i], precomputed_segmenter(vec))
+                        )
                     )
         try:
             results = await asyncio.gather(*tasks)

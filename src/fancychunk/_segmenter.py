@@ -252,6 +252,47 @@ class SaTSegmenter:
         """Return the resolved provider list (``None`` = auto-detect)."""
         return None if self._ort_providers is None else list(self._ort_providers)
 
+    def wants_batching(self) -> bool:
+        """Whether batched inference is expected to be faster than
+        per-document calls for this segmenter's resolved device.
+
+        Returns ``True`` iff a GPU execution provider is what will (or
+        is most likely to) run the forward pass. CPU EPs see no batch
+        win — forward FLOPs scale linearly with batch size — so the
+        answer is ``False`` for ``device="cpu"`` and for boxes without
+        ``onnxruntime-gpu`` installed.
+
+        Decision rule, in order of precedence:
+
+        1. If ``ort_providers`` was explicitly configured (via
+           ``device="cuda"/"cpu"`` or ``ort_providers=[...]``), look
+           at the list — any GPU EP wins.
+        2. Otherwise (``device="auto"``), peek at
+           ``onnxruntime.get_available_providers()`` and check for a
+           GPU EP.
+
+        This is a heuristic, not a guarantee — if the actual session
+        creation falls back from CUDA to CPU (e.g. cuDNN missing),
+        the ``True`` answer can lie. The check is cheap (no model
+        load), so callers are free to consult it on every dispatch.
+        """
+        providers = self._ort_providers
+        if providers is None:
+            try:
+                import onnxruntime as ort
+
+                providers = ort.get_available_providers()
+            except ImportError:
+                return False
+        gpu_eps = {
+            "CUDAExecutionProvider",
+            "TensorrtExecutionProvider",
+            "ROCMExecutionProvider",
+            "DmlExecutionProvider",
+            "MIGraphXExecutionProvider",
+        }
+        return any(p in gpu_eps for p in providers)
+
     def _ensure_loaded(self) -> SaT:
         # Double-checked locking: the unlocked read is safe under
         # CPython's GIL (attribute reads are atomic), and the lock only

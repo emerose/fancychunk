@@ -24,7 +24,7 @@ underlying primitives directly:
 from __future__ import annotations
 
 import asyncio
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -42,6 +42,11 @@ from .chunks import Chunk, split_chunks
 from .errors import ValidationError
 from .late_chunking import embed_with_late_chunking
 from .sentences import split_sentences
+
+#: Default batch size when ``segmenter_batch_size="auto"`` resolves to
+#: "on". Sat-3l-sm saturates by ~16 on RTX 3090; 64 stays well in the
+#: plateau and matches the example in the README.
+_AUTO_BATCH_SIZE = 64
 
 
 class Embedder(Protocol):
@@ -127,7 +132,7 @@ async def chunk_documents(
     max_concurrency: int | None = None,
     *,
     segmenter: SentenceSegmenter | None = None,
-    segmenter_batch_size: int | None = None,
+    segmenter_batch_size: int | None | Literal["auto"] = "auto",
 ) -> list[tuple[list[Chunk], NDArray[np.float64]]]:
     """Chunk a batch of documents concurrently against one embedder.
 
@@ -153,28 +158,40 @@ async def chunk_documents(
 
     Segmenter batching (``segmenter_batch_size``):
 
-    Set ``segmenter_batch_size=N`` to pre-segment documents in groups
-    of N. SaT runs in waves on a worker thread; each wave's
-    downstream chunking/embedding tasks fire immediately so the next
-    wave's forward pass overlaps with the current wave's downstream
-    work. Measured numbers on this layout (RTX 3090, sat-3l-sm,
-    1,000 × 1,500-char docs, ``embedders.noop()``): SaT-only batched
-    vs serial on GPU is ~2.2× (0.67 ms/doc batched, 1.45 ms/doc
-    serial); the full ``chunk_documents`` pipeline is 4.9× over CPU
-    just from ``device="cuda"`` and 6.6× with batching on top.
+    * ``"auto"`` (the default) — turn batching on iff the resolved
+      segmenter wants it. The bundled ``SaTSegmenter`` reports
+      ``wants_batching() == True`` when a GPU execution provider is
+      available, ``False`` on CPU. With the default singleton
+      segmenter that means: install ``onnxruntime-gpu`` on a CUDA
+      box and batching happens; otherwise it doesn't. Batch size is
+      64 (well into the plateau on RTX 3090 + sat-3l-sm).
+    * ``None`` — never batch. Pre-existing semantics; useful if you
+      want to force per-doc segmentation even on a GPU.
+    * ``int`` — always batch with that size, regardless of device.
+
+    Under the hood: SaT runs in waves on a worker thread; each
+    wave's downstream chunking/embedding tasks fire immediately so
+    the next wave's forward pass overlaps with the current wave's
+    downstream work. Measured numbers on this layout (RTX 3090,
+    sat-3l-sm, 1,000 × 1,500-char docs, ``embedders.noop()``):
+    SaT-only batched vs serial on GPU is ~2.2× (0.67 ms/doc batched,
+    1.45 ms/doc serial); the full ``chunk_documents`` pipeline is
+    4.9× over CPU just from ``device="cuda"`` and 6.6× with batching
+    on top.
 
     The segmenter must satisfy
     :class:`~fancychunk._segmenter.BatchSentenceSegmenter` (i.e. expose
     a ``predict_proba_batch`` method) — the bundled
-    :class:`SaTSegmenter` does. Passing
+    :class:`SaTSegmenter` does. Passing an explicit
     ``segmenter_batch_size`` with a non-batchable custom segmenter
-    raises :class:`ValidationError`.
+    raises :class:`ValidationError`; ``"auto"`` resolves to "no batch"
+    for those segmenters.
 
     CPU-only callers see no benefit (forward FLOPs scale linearly
-    with batch size under ``CPUExecutionProvider``); leave
-    ``segmenter_batch_size`` unset — the streaming overlap can
-    actually make it slower because SaT waves serialise behind
-    downstream work that would otherwise overlap per-doc.
+    with batch size under ``CPUExecutionProvider``) — ``"auto"``
+    correctly stays off there; the streaming overlap can actually
+    make it slower because SaT waves serialise behind downstream
+    work that would otherwise overlap per-doc.
 
     Errors propagate via ``asyncio.gather``'s default semantics: the
     first exception aborts the batch and cancels in-flight siblings.
@@ -183,10 +200,17 @@ async def chunk_documents(
     """
     if max_concurrency is not None and max_concurrency <= 0:
         raise ValidationError("max_concurrency must be positive when set")
-    if segmenter_batch_size is not None and segmenter_batch_size <= 0:
+    if (
+        segmenter_batch_size != "auto"
+        and segmenter_batch_size is not None
+        and segmenter_batch_size <= 0
+    ):
         raise ValidationError(
             "segmenter_batch_size must be positive when set"
         )
+
+    if segmenter_batch_size == "auto":
+        segmenter_batch_size = _resolve_auto_batch_size(segmenter)
 
     with get_tracer().start_as_current_span("fancychunk.chunk_documents") as span:
         span.set_attribute("fancychunk.documents.count", len(documents))
@@ -273,3 +297,23 @@ async def chunk_documents(
                     t.cancel()
             raise
         return list(results)
+
+
+def _resolve_auto_batch_size(
+    segmenter: SentenceSegmenter | None,
+) -> int | None:
+    """Decide whether ``segmenter_batch_size="auto"`` means batch-on
+    or batch-off for the given (or default) segmenter.
+
+    Returns :data:`_AUTO_BATCH_SIZE` if the segmenter signals a batch
+    win via ``wants_batching()`` (the bundled :class:`SaTSegmenter`
+    does so when a GPU EP is available), ``None`` (no batching)
+    otherwise. Custom segmenters without that method get a
+    conservative ``None`` — callers who know their segmenter benefits
+    from batching can pass an explicit ``int``.
+    """
+    resolved = make_segmenter(segmenter)
+    wants = getattr(resolved, "wants_batching", None)
+    if callable(wants) and wants():
+        return _AUTO_BATCH_SIZE
+    return None

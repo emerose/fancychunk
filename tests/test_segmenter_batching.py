@@ -590,3 +590,193 @@ def test_install_fast_postprocess_respects_env_kill_switch(
     finally:
         wsat.token_to_char_probs = original
         monkeypatch.setattr(fcs, "_fast_postprocess_installed", False)
+
+
+# ---------------------------------------------------------------------------
+# wants_batching() + segmenter_batch_size="auto".
+# ---------------------------------------------------------------------------
+
+
+def test_wants_batching_true_for_explicit_cuda() -> None:
+    seg = SaTSegmenter(device="cuda")
+    assert seg.wants_batching() is True
+
+
+def test_wants_batching_false_for_explicit_cpu() -> None:
+    seg = SaTSegmenter(device="cpu")
+    assert seg.wants_batching() is False
+
+
+def test_wants_batching_true_for_explicit_gpu_alias() -> None:
+    assert SaTSegmenter(device="gpu").wants_batching() is True
+
+
+def test_wants_batching_respects_explicit_ort_providers() -> None:
+    # ROCm — counts as GPU.
+    seg = SaTSegmenter(ort_providers=["ROCMExecutionProvider", "CPUExecutionProvider"])
+    assert seg.wants_batching() is True
+    # Custom CPU-only list.
+    seg = SaTSegmenter(ort_providers=["CPUExecutionProvider"])
+    assert seg.wants_batching() is False
+
+
+def test_wants_batching_auto_peeks_at_available_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``device="auto"`` consults onnxruntime.get_available_providers."""
+    import onnxruntime as ort
+
+    seg = SaTSegmenter(device="auto")
+    monkeypatch.setattr(
+        ort, "get_available_providers", lambda: ["CPUExecutionProvider"]
+    )
+    assert seg.wants_batching() is False
+    monkeypatch.setattr(
+        ort,
+        "get_available_providers",
+        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    assert seg.wants_batching() is True
+
+
+def test_chunk_documents_auto_batches_when_segmenter_wants_it() -> None:
+    """``segmenter_batch_size="auto"`` (the default) hits the batched
+    path when the segmenter reports wants_batching()."""
+    calls: dict[str, int] = {"single": 0, "batch": 0}
+
+    class WantingSeg:
+        def __call__(self, document: str) -> np.ndarray:
+            calls["single"] += 1
+            return np.zeros(len(document), dtype=np.float64)
+
+        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
+            calls["batch"] += 1
+            return [np.zeros(len(d), dtype=np.float64) for d in documents]
+
+        def wants_batching(self) -> bool:
+            return True
+
+    docs = [f"Doc {i}. Body.\n" for i in range(5)]
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    asyncio.run(chunk_documents(docs, embedder, segmenter=WantingSeg()))
+    assert calls["batch"] >= 1
+    assert calls["single"] == 0
+
+
+def test_chunk_documents_auto_skips_batch_when_segmenter_declines() -> None:
+    """A SaTSegmenter-on-CPU declines batching; auto-mode honors that."""
+    calls: dict[str, int] = {"single": 0, "batch": 0}
+
+    class DecliningSeg:
+        def __call__(self, document: str) -> np.ndarray:
+            calls["single"] += 1
+            return np.zeros(len(document), dtype=np.float64)
+
+        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
+            calls["batch"] += 1
+            return [np.zeros(len(d), dtype=np.float64) for d in documents]
+
+        def wants_batching(self) -> bool:
+            return False
+
+    docs = [f"Doc {i}. Body.\n" for i in range(5)]
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    asyncio.run(chunk_documents(docs, embedder, segmenter=DecliningSeg()))
+    assert calls["batch"] == 0
+    # No-batch path goes through the per-doc segmenter inside chunk_document.
+    assert calls["single"] == 5
+
+
+def test_chunk_documents_explicit_none_overrides_auto() -> None:
+    """Explicit ``segmenter_batch_size=None`` forces no batching even
+    when the segmenter wants it — preserves pre-v0.5 semantics."""
+    calls: dict[str, int] = {"single": 0, "batch": 0}
+
+    class WantingSeg:
+        def __call__(self, document: str) -> np.ndarray:
+            calls["single"] += 1
+            return np.zeros(len(document), dtype=np.float64)
+
+        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
+            calls["batch"] += 1
+            return [np.zeros(len(d), dtype=np.float64) for d in documents]
+
+        def wants_batching(self) -> bool:
+            return True
+
+    docs = [f"Doc {i}. Body.\n" for i in range(5)]
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    asyncio.run(
+        chunk_documents(
+            docs, embedder, segmenter=WantingSeg(), segmenter_batch_size=None
+        )
+    )
+    assert calls["batch"] == 0
+    assert calls["single"] == 5
+
+
+def test_chunk_documents_explicit_int_overrides_auto() -> None:
+    """Explicit ``segmenter_batch_size=N`` always batches, even for a
+    segmenter that says wants_batching() is False (the caller knows
+    something we don't)."""
+    calls: dict[str, int] = {"single": 0, "batch": 0}
+
+    class DecliningSeg:
+        def __call__(self, document: str) -> np.ndarray:
+            calls["single"] += 1
+            return np.zeros(len(document), dtype=np.float64)
+
+        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
+            calls["batch"] += 1
+            return [np.zeros(len(d), dtype=np.float64) for d in documents]
+
+        def wants_batching(self) -> bool:
+            return False
+
+    docs = [f"Doc {i}. Body.\n" for i in range(5)]
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    asyncio.run(
+        chunk_documents(
+            docs, embedder, segmenter=DecliningSeg(), segmenter_batch_size=2
+        )
+    )
+    assert calls["batch"] == 3  # ceil(5/2)
+    assert calls["single"] == 0
+
+
+def test_chunk_documents_auto_for_segmenter_without_wants_batching() -> None:
+    """A custom segmenter that doesn't implement wants_batching() — e.g.
+    a plain callable, or a BatchSentenceSegmenter from before the
+    protocol existed — defaults to no batching under auto-mode."""
+    calls: dict[str, int] = {"single": 0, "batch": 0}
+
+    class LegacyBatchSeg:
+        def __call__(self, document: str) -> np.ndarray:
+            calls["single"] += 1
+            return np.zeros(len(document), dtype=np.float64)
+
+        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
+            calls["batch"] += 1
+            return [np.zeros(len(d), dtype=np.float64) for d in documents]
+
+    docs = [f"Doc {i}. Body.\n" for i in range(5)]
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    asyncio.run(chunk_documents(docs, embedder, segmenter=LegacyBatchSeg()))
+    # auto-mode is conservative for segmenters without the hint.
+    assert calls["batch"] == 0
+    assert calls["single"] == 5
+
+
+def test_chunk_documents_auto_with_plain_callable_segmenter() -> None:
+    """A plain SentenceSegmenter callable goes through the no-batch
+    path under auto-mode — no ValidationError because we never tried
+    to batch."""
+    from fancychunk import punctuation_segmenter
+
+    docs = [f"Doc {i}. Body.\n" for i in range(3)]
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    # Should not raise; auto-mode resolves to no batch for a callable.
+    results = asyncio.run(
+        chunk_documents(docs, embedder, segmenter=punctuation_segmenter)
+    )
+    assert len(results) == 3

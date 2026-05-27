@@ -201,45 +201,43 @@ fallback bundled with the library.
 
 For corpora of many short documents (think BeIR scifact: ~5K
 abstracts at ~1.5K chars each), SaT can become the dominant cost
-in the pipeline. Two knobs help:
+in the pipeline. **Install `onnxruntime-gpu` on a CUDA box and the
+defaults do the right thing** — no code changes:
 
 ```python
-from fancychunk import SaTSegmenter, chunk_document, chunk_documents
+from fancychunk import chunk_documents
 from fancychunk.embedders import qwen3_600m
 
-# 1) GPU. Install onnxruntime-gpu and ask for CUDA. device="auto"
-# (the default) already picks GPU when one is visible.
-seg = SaTSegmenter(device="cuda")
-chunks, vectors = await chunk_document(doc, qwen3_600m(), segmenter=seg)
-
-# 2) Batched SaT. chunk_documents pre-segments groups of N docs
-# in one forward pass, off the event loop. The win is on GPU
-# (where launch + memory-transfer per call is amortized) — on
-# CPU-only setups the forward pass scales linearly with batch
-# size, so leave segmenter_batch_size=None.
-await chunk_documents(
-    docs,
-    qwen3_600m(),
-    segmenter=SaTSegmenter(device="cuda"),
-    segmenter_batch_size=64,
-)
+# Picks CUDAExecutionProvider automatically if onnxruntime-gpu is
+# installed (else falls back to CPU). Batches the SaT forward
+# passes when running on a GPU; skips batching on CPU (where it
+# wouldn't help).
+await chunk_documents(docs, qwen3_600m())
 ```
 
-Verify the win on your hardware with `python bench_sat_batching.py
---device cuda --n-docs 1000`. The plumbing is also exposed on the
-single-document `chunk_document(doc, embedder, segmenter=...)` for
-pipelines that ingest one document at a time.
+Under the hood:
+* `SaTSegmenter()` defaults to `device="auto"`, which defers to
+  wtpsplit-lite's GPU-first provider auto-detect.
+* `chunk_documents(..., segmenter_batch_size="auto")` (the default)
+  asks the resolved segmenter whether batching will help via
+  `wants_batching()`. The bundled `SaTSegmenter` says yes on any
+  GPU EP, no on CPU.
+* Power-user overrides still available: pass an explicit
+  `SaTSegmenter(device="cuda"/"cpu")`, set
+  `segmenter_batch_size=None` to force per-doc segmentation, or
+  pass an int to force a specific batch size.
 
-Measured on a 1,000-doc / 1,500-char corpus (RTX 3090, sat-3l-sm,
-`embedders.noop()`):
+Verify the win on your hardware with `python bench_sat_batching.py
+--device cuda --n-docs 1000`. Measured on a 1,000-doc / 1,500-char
+corpus (RTX 3090, sat-3l-sm, `embedders.noop()`):
 
 | `chunk_documents` config | ms/doc | vs CPU baseline |
 |---|---:|---:|
 | CPU, no batch (baseline) | 33.27 | 1.00× |
 | CUDA, no batch | 6.77 | **4.91×** |
-| CUDA, `segmenter_batch_size=64` | 5.19 | **6.41×** |
-| CUDA, `segmenter_batch_size=128` | 5.05 | **6.58×** |
-| CPU, `segmenter_batch_size=64` | 58.55 | 0.57× (slower — don't use) |
+| **CUDA, default (`"auto"` → batch=64)** | **5.06** | **6.57×** |
+| CUDA, `segmenter_batch_size=128` | 5.05 | 6.58× |
+| CPU, `segmenter_batch_size=64` | 58.55 | 0.57× (slower — auto skips this) |
 
 The headline number is the e2e CUDA win. The SaT-only batched-vs-
 serial ratio on the same GPU is ~2.2× (raw segmenter throughput
@@ -248,9 +246,7 @@ the post-`device="cuda"` wall is the actual ORT forward pass; the
 rest sat in a per-document Python loop in `wtpsplit-lite`'s
 `token_to_char_probs`, which `SaTSegmenter` now monkey-patches with
 a vectorised replacement on first load. Set
-`FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1` to opt out. Leave
-`segmenter_batch_size=None` on CPU-only deployments: it serialises
-downstream work behind SaT waves with no payoff.
+`FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1` to opt out.
 
 **Embedders.** Four bundled models trade quality for latency. You
 pick one explicitly — there's no hidden default — and pass it

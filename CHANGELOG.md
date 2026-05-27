@@ -7,6 +7,18 @@ the project follows [Semantic Versioning](https://semver.org/).
 ## [0.5.0] - 2026-05-27
 
 ### Added
+- ``chunk_documents`` now defaults ``segmenter_batch_size="auto"``:
+  the batched SaT path turns itself on when the resolved segmenter
+  reports a GPU execution provider, off on CPU. The bundled
+  ``SaTSegmenter`` exposes ``wants_batching()`` for this decision —
+  ``True`` for ``device="cuda"/"gpu"``, ``False`` for
+  ``device="cpu"``, and for ``device="auto"`` it peeks at
+  ``onnxruntime.get_available_providers()``. Net effect: install
+  ``fancychunk`` plus ``onnxruntime-gpu`` on a CUDA box and
+  ``chunk_documents(docs, embedder)`` runs at GPU + batched speeds
+  with no further configuration. Explicit ``segmenter_batch_size``
+  (``None`` to force off, ``int`` to force a specific size) still
+  overrides.
 - ``SaTSegmenter(device=...)`` selects the onnxruntime execution
   provider. ``"auto"`` (the default) defers to wtpsplit-lite's own
   GPU-first auto-detect — installing ``onnxruntime-gpu`` and asking

@@ -294,7 +294,10 @@ class SaTSegmenter:
                 import onnxruntime as ort  # type: ignore[import-untyped]
             except ImportError:
                 return False
-            providers = cast(list[str], ort.get_available_providers())
+            providers = cast(
+                list[str],
+                ort.get_available_providers(),  # pyright: ignore[reportUnknownMemberType]
+            )
         gpu_eps = {
             "CUDAExecutionProvider",
             "TensorrtExecutionProvider",

@@ -4,7 +4,7 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.1] - 2026-05-28
 
 ### Fixed
 - Sentence splitting no longer breaks a sentence mid-phrase at a

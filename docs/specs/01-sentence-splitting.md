@@ -240,10 +240,11 @@ SPEC-CHUNK-103 and SPEC-CHUNK-104.
 > `"Tab. TABREF21"` (boundary on the abbreviation period) or a year
 > before a capitalised word like `"SemEval-2014 Task"` (boundary on the
 > digit). The default implementation addresses these by choosing a
-> higher-capacity checkpoint and the `weighting="hat"` inference mode
-> (which de-weights low-context window edges) rather than by
-> post-processing the probability vector. A caller using a lighter
-> segmenter may reintroduce these artifacts.
+> sufficiently high-capacity checkpoint (`sat-9l-sm`) and the
+> `weighting="hat"` inference mode (which de-weights low-context window
+> edges) rather than by post-processing the probability vector. A
+> caller using a lighter segmenter (e.g. `sat-3l-sm`) may reintroduce
+> these artifacts.
 
 ## Determinism and tie-breaking
 

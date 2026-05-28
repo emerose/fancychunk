@@ -4,25 +4,31 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - 2026-05-28
 
 ### Changed
-- The default sentence segmenter is now **`sat-12l-sm`** (was
+- The default sentence segmenter is now **`sat-9l-sm`** (was
   `sat-3l-sm`), run with **`weighting="hat"`** inference
   (`stride=128, block_size=256`). The previous defaults
   (`weighting="uniform"`, larger blocks) averaged every overlapping
   window equally, producing *context-sensitive* boundary artifacts at
-  low-context window edges; `hat` weighting plus the higher-capacity
+  low-context window edges; `hat` weighting plus a higher-capacity
   checkpoint segment scientific-prose constructs — abbreviation
   references (`Tab. TABREF21`, `Eq. EQREF9`) and years before a
   capitalised word (`SemEval-2014 Task`) — correctly with no
-  post-processing. Trade-off: ~4× more segmentation compute per
-  character (one-time per document; amortized on the batched GPU path).
-  `~530 MB` download. Pass
-  `segmenter=SaTSegmenter(model_name="sat-3l-sm")` for the old
-  speed/quality point.
+  post-processing. `sat-9l-sm` is artifact-free like `sat-12l-sm`,
+  tracks its boundary placement closely (corpus F1 0.97), and is ~1.3×
+  faster on the batched GPU path; see
+  `benchmarks/sat-model-selection.md`. Trade-off vs the old default:
+  more segmentation compute per character (a one-time per-document cost,
+  amortized on the batched GPU path).
 
 ### Added
+- `fancychunk.segmenters` — factories for the bundled SaT checkpoints
+  (`sat_3l()`, `sat_9l()`, `sat_12l()`, `sat_default()`) and the
+  rule-based `punctuation()` fallback, mirroring `fancychunk.embedders`.
+  Each SaT factory forwards kwargs to `SaTSegmenter` (e.g.
+  `segmenters.sat_12l(device="cuda")`).
 - Chunk grouping prefers paragraph boundaries (SPEC-CHUNK-324): a
   partition point that would cut between two sentences of the *same*
   paragraph is penalized (`MID_PARAGRAPH_PENALTY`), so the optimizer
@@ -33,10 +39,10 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ### Removed
 - The numeral-before-capital boundary guard (SPEC-CHUNK-118, added in
-  0.5.1). With `sat-12l-sm` the model segments these correctly on its
-  own (e.g. the `SemEval-2014` boundary probability drops from ~0.74 to
-  ~0.00), so the probability post-processing is no longer needed. A
-  caller who switches to a lighter checkpoint may reintroduce the
+  0.5.1). The default model now segments these correctly on its own
+  (e.g. the `SemEval-2014` boundary probability drops from ~0.52 to
+  ~0.06), so the probability post-processing is no longer needed. A
+  caller who switches to the lighter `sat-3l-sm` may reintroduce the
   artifact.
 
 ## [0.5.1] - 2026-05-28

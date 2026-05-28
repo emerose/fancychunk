@@ -32,9 +32,9 @@ def test_tv_150_period_separated_sentences() -> None:
 
 
 # Scientific-prose segmentation: the default model + inference params
-# (sat-12l-sm, weighting="hat") segment these constructs correctly with
+# (sat-9l-sm, weighting="hat") segment these constructs correctly with
 # no post-processing. Guards the model/params choice against regressions
-# (a lighter model such as sat-3l-sm mis-splits all of these).
+# (the lighter sat-3l-sm mis-splits all of these).
 def test_sat_segments_scientific_prose_correctly() -> None:
     # Abbreviation reference: no split after "Tab." / "Eq.".
     assert split_sentences(

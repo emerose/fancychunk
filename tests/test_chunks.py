@@ -389,6 +389,38 @@ def test_trailing_heading_only_chunk_merges_backward() -> None:
 
 
 # ---------------------------------------------------------------------------
+# SPEC-CHUNK-324 — paragraph-boundary preference.
+# ---------------------------------------------------------------------------
+
+
+# SPEC-CHUNK-324 — the penalty mechanism: a mid-paragraph partition point
+# is penalized; a paragraph (blank-line) break is not.
+def test_paragraph_preference_mechanism() -> None:
+    from fancychunk.chunks import _apply_paragraph_preference_inplace, _ends_block
+
+    assert _ends_block("text.\n\n") and not _ends_block("text. ")
+    chunklets = ["a. ", "b.\n\n", "c. ", "d"]  # mid, block, mid (3 points)
+    sim = np.array([0.5, 0.5, 0.5])
+    _apply_paragraph_preference_inplace(sim, chunklets)
+    assert sim[0] == 0.75  # mid-paragraph -> +0.25
+    assert sim[1] == 0.5  # paragraph break -> unchanged
+    assert sim[2] == 0.75  # mid-paragraph -> +0.25
+
+
+# SPEC-CHUNK-324 — with a uniform (noop) similarity signal, the forced
+# cut lands at the paragraph break rather than the mid-paragraph point.
+def test_paragraph_preference_routes_cut_to_block_break() -> None:
+    c0 = "x" * 900  # ends mid-paragraph
+    c1 = "y" * 898 + "\n\n"  # ends a paragraph (blank line)
+    c2 = "z" * 900
+    chunks = asyncio.run(split_chunks([c0, c1, c2], noop(), max_size=2048))
+    assert "".join(_texts(chunks)) == c0 + c1 + c2
+    assert len(chunks) == 2
+    # The cut is after the paragraph break (c0+c1), not mid-paragraph (c0).
+    assert chunks[0].text == c0 + c1
+
+
+# ---------------------------------------------------------------------------
 # Chunk metadata — start/end character offsets.
 # ---------------------------------------------------------------------------
 

@@ -4,14 +4,16 @@ Two segmenters are bundled:
 
 * :class:`SaTSegmenter` (the default) wraps a Segment Any Text (SaT)
   model from `wtpsplit-lite` and returns per-character boundary
-  probabilities exactly as SPEC-CHUNK-106 prescribes. The ~530 MB
-  ``sat-12l-sm`` weights download lazily on first call so importing
-  ``fancychunk`` stays cheap. (The lighter ``sat-3l-sm`` is ~4× faster
-  per character but mis-segments some scientific-prose constructs —
-  abbreviation references like ``Tab. TABREF21`` and years before a
-  capitalised word like ``SemEval-2014 Task`` — that ``sat-12l-sm``
-  handles correctly; pass ``model_name="sat-3l-sm"`` to trade quality
-  for speed.)
+  probabilities exactly as SPEC-CHUNK-106 prescribes. The default
+  checkpoint is ``sat-9l-sm`` (weights download lazily on first call so
+  importing ``fancychunk`` stays cheap). The bundled checkpoints trade
+  speed for quality — ``sat-3l-sm`` is fastest but mis-segments some
+  scientific-prose constructs (abbreviation references like
+  ``Tab. TABREF21``, years before a capitalised word like
+  ``SemEval-2014 Task``); ``sat-9l-sm`` (default) fixes those and
+  tracks ``sat-12l-sm`` closely at ~1.3× the throughput; ``sat-12l-sm``
+  is highest quality. See ``fancychunk.segmenters`` for the factories
+  and ``benchmarks/sat-model-selection.md`` for the data.
 * :func:`punctuation_segmenter` is a no-dependencies fallback that
   marks ``.``/``!``/``?`` followed by whitespace or end-of-document.
 
@@ -91,7 +93,7 @@ def punctuation_segmenter(document: str) -> Vector:
     return probs
 
 
-_DEFAULT_SAT_MODEL = "sat-12l-sm"
+_DEFAULT_SAT_MODEL = "sat-9l-sm"
 
 # ``predict_proba`` inference parameters. wtpsplit-lite's defaults
 # (``stride=256, block_size=512, weighting="uniform"``) average every
@@ -239,16 +241,17 @@ def _providers_for_device(device: str) -> list[str]:
 class SaTSegmenter:
     """SPEC-CHUNK-106 segmenter backed by wtpsplit-lite's SaT model.
 
-    The ~530 MB ``sat-12l-sm`` weights are downloaded by Hugging Face on
-    first use (subsequent calls use the cache); the import itself is
-    cheap because the model is only loaded on the first
-    ``__call__``. Instances are thread-safe — lazy loading is
-    serialized so concurrent first callers don't double-download; the
-    ONNX ``predict_proba`` itself is reentrant after load and runs
-    unlocked.
+    The ``sat-9l-sm`` weights are downloaded by Hugging Face on first
+    use (subsequent calls use the cache); the import itself is cheap
+    because the model is only loaded on the first ``__call__``.
+    Instances are thread-safe — lazy loading is serialized so concurrent
+    first callers don't double-download; the ONNX ``predict_proba``
+    itself is reentrant after load and runs unlocked.
 
     Args:
-        model_name: SaT checkpoint to load (defaults to ``sat-12l-sm``).
+        model_name: SaT checkpoint to load (defaults to ``sat-9l-sm``;
+            see ``fancychunk.segmenters`` for ``sat-3l-sm`` /
+            ``sat-12l-sm``).
         device: ``"auto"`` (default) lets wtpsplit-lite pick the best
             available ONNX execution provider — typically
             ``CUDAExecutionProvider`` when ``onnxruntime-gpu`` is

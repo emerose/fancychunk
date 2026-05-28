@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from . import _constants as constants
 from . import embedders
+from . import segmenters
 from .chunklets import split_chunklets
 from .chunks import Chunk, ChunkletEmbedder, split_chunks
 from .document import Embedder, chunk_document, chunk_documents
@@ -65,6 +66,7 @@ __all__ = [
     "SegmenterError",
     "constants",
     "embedders",
+    "segmenters",
 ]
 
 try:

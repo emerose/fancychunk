@@ -24,6 +24,16 @@ TYPICAL_CHUNKLET_UPPER_QUANTILE = 0.85
 HEADING_SPLIT_BEFORE_DIVISOR = 4.0
 HEADING_SPLIT_AFTER_FORBID = 1.0
 
+# SPEC-CHUNK-324 — paragraph-boundary preference. Cutting between two
+# sentences of the *same paragraph* breaks the argument flow. This
+# penalty is added to a partition point's similarity when the boundary
+# is not a paragraph (or stronger) break, so the optimizer prefers
+# paragraph breaks when one is available within budget. It is additive
+# and modest: when a paragraph exceeds ``max_size`` every feasible cut
+# in the window is mid-paragraph and the uniform penalty cancels, so the
+# embedder signal still decides where to cut.
+MID_PARAGRAPH_PENALTY = 0.25
+
 # SPEC-CHUNK-323 — small-chunk badness. The chunk-partition DP adds a
 # per-chunk badness term, graded ``penalty × max(0, 1 − size/(fraction ×
 # max_size))`` (relative to the [0, 1] partition-similarity cut cost), so

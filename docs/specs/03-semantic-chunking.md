@@ -372,6 +372,38 @@ which return a single chunk.
 | `SMALL_CHUNK_PENALTY` | `1.5` | Weight of the gentle general badness applied to every chunk. |
 | `SMALL_CHUNK_TARGET_FRACTION` | `0.2` | Any chunk below this fraction of `max_size` gets the general badness (graded); at or above it, `0`. |
 
+### SPEC-CHUNK-324 — Paragraph-boundary preference
+
+A split between two sentences of the *same paragraph* breaks the
+argument flow; the document's natural unit is the paragraph. After the
+heading and badness terms, each partition point whose left chunklet
+does **not** end a Markdown block (its trailing whitespace contains no
+blank line — i.e. the next chunklet continues the same paragraph) has
+`MID_PARAGRAPH_PENALTY` added to its similarity. The optimizer then
+prefers paragraph (or stronger) breaks among the cuts the covering
+constraint requires.
+
+The term is additive and modest by design:
+
+* **Self-cancelling when forced.** If a single paragraph is larger than
+  `max_size`, every feasible cut in that window is mid-paragraph, so the
+  uniform penalty cancels and the embedder signal decides where to cut.
+  The bias only takes effect when a paragraph break is actually
+  available within budget.
+* **Composes with the other terms.** It is applied on top of the
+  heading modification (SPEC-CHUNK-322) and is independent of the
+  small-chunk badness (SPEC-CHUNK-323). It never penalizes a
+  paragraph/heading boundary, which already ends a block.
+
+It is *not* a forbid: a strong semantic boundary (a near-zero `sim`)
+mid-paragraph can still outweigh the penalty. This deliberately
+respects the embedder when topics genuinely shift mid-paragraph, while
+breaking ties and weak preferences toward paragraph edges.
+
+| Named constant | Value | Role |
+|---|---|---|
+| `MID_PARAGRAPH_PENALTY` | `0.25` | Added to a partition point's similarity when the boundary is not a paragraph (or stronger) break. |
+
 ## Determinism and tie-breaking
 
 ### SPEC-CHUNK-330 — Deterministic given the solver

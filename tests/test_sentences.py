@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from numpy.typing import NDArray
 
 from fancychunk import (
     UnsplittableDocumentError,
     split_sentences,
 )
-from fancychunk._segmenter import SentenceSegmenter
 
 
 # ---------------------------------------------------------------------------
@@ -177,82 +175,3 @@ def test_spec_chunk_116_no_boundaries_above_threshold() -> None:
     # No max_len, so the single-sentence partition is valid.
     out = split_sentences(doc, min_len=4, known_boundary_probas=known)
     assert out == [doc]
-
-
-# ---------------------------------------------------------------------------
-# Numeral-boundary artifact suppression (TV-118).
-#
-# SaT assigns a spuriously high boundary probability to a numeral
-# (typically a year) directly followed by whitespace and a capitalized
-# word — e.g. the final "4" of "SemEval-2014" in "...SemEval-2014 Task
-# 4..." — which makes the DP break the sentence mid-phrase. These tests
-# inject that artifact directly via a synthetic segmenter so they are
-# model-independent; the real-model versions live in test_sat.py.
-# ---------------------------------------------------------------------------
-
-
-def _fixed_segmenter(probs: NDArray[np.float64]) -> SentenceSegmenter:
-    def _seg(document: str) -> NDArray[np.float64]:
-        assert len(document) == len(probs)
-        return probs
-
-    return _seg
-
-
-# TV-118 — a numeral followed by whitespace and a Capitalized word does
-# not trigger a boundary; the genuine break at the period is kept.
-def test_tv_118_numeral_capital_artifact_suppressed() -> None:
-    doc = (
-        "We achieve results on SemEval-2014 Task 4 datasets. "
-        "The next sentence is here."
-    )
-    probs = np.zeros(len(doc))
-    probs[doc.index("2014") + 3] = 0.52  # artifact spike on the final '4'
-    probs[doc.index("datasets.") + len("datasets")] = 0.9  # the period
-    out = split_sentences(doc, segmenter=_fixed_segmenter(probs))
-    assert "".join(out) == doc
-    assert out == [
-        "We achieve results on SemEval-2014 Task 4 datasets. ",
-        "The next sentence is here.",
-    ]
-
-
-# TV-118 — the same artifact with a space instead of a hyphen in the
-# token preceding the year ("SemEval 2014 Task") is suppressed too.
-def test_tv_118_numeral_capital_artifact_space_variant() -> None:
-    doc = "We report on SemEval 2014 Task 4 here. Next one follows."
-    probs = np.zeros(len(doc))
-    probs[doc.index("2014") + 3] = 0.5
-    probs[doc.index("here.") + len("here")] = 0.9
-    out = split_sentences(doc, segmenter=_fixed_segmenter(probs))
-    assert out == [
-        "We report on SemEval 2014 Task 4 here. ",
-        "Next one follows.",
-    ]
-
-
-# TV-118 — no regression: a year followed by a period and a Capitalized
-# word still splits, because the boundary sits on the period (not the
-# digit), which the suppression rule never touches.
-def test_tv_118_year_period_capital_still_splits() -> None:
-    doc = "We finished in 2014. Later, we extended the work."
-    probs = np.zeros(len(doc))
-    probs[doc.index("2014.") + 4] = 0.9  # the period
-    out = split_sentences(doc, segmenter=_fixed_segmenter(probs))
-    assert out == ["We finished in 2014. ", "Later, we extended the work."]
-
-
-# TV-118 — the suppression helper is scoped precisely: it zeroes the
-# digit only when the following word is capitalized, leaving lowercase
-# followers and period-terminated numbers untouched.
-def test_tv_118_suppression_helper_scope() -> None:
-    from fancychunk.sentences import _suppress_numeral_boundary_artifacts
-
-    doc = "a 2014 Task and 2014 task and 2014. Then"
-    p = np.full(len(doc), 0.5)
-    out = _suppress_numeral_boundary_artifacts(doc, p)
-    assert out[doc.index("2014 Task") + 3] == 0.0  # capital -> suppressed
-    assert out[doc.index("2014 task") + 3] == 0.5  # lowercase -> kept
-    assert out[doc.index("2014. Then") + 3] == 0.5  # period -> kept
-    # Input vector is not mutated in place.
-    assert p[doc.index("2014 Task") + 3] == 0.5

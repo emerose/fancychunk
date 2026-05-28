@@ -213,33 +213,6 @@ shorter than `min_len = 5`. The constraints are jointly infeasible.
 valid partition exists under the length constraints. The exception
 type is implementation-defined.
 
-## TV-118 — Numeral-before-capital artifact suppression (model-independent)
-
-Validates SPEC-CHUNK-118. The artifact is injected directly via a
-synthetic segmenter so the vector does not depend on a real model; the
-real-model counterpart is in the model-dependent section below.
-
-| Input | Value |
-|-------|-------|
-| `document` | `"We achieve results on SemEval-2014 Task 4 datasets. The next sentence is here."` |
-| `min_len` | `4` |
-| `max_len` | `None` |
-| `segmenter` | returns `0.0` everywhere except `0.52` at the final `4` of `2014` (the artifact spike) and `0.9` at the `.` after `datasets` |
-
-**Expected output:**
-`["We achieve results on SemEval-2014 Task 4 datasets. ", "The next sentence is here."]`
-
-The artifact spike on the digit is forced to `0`, so the only boundary
-is the period (shifted onto the trailing space by SPEC-CHUNK-109). No
-sentence ends mid-phrase at `"...SemEval-2014 "`.
-
-**No-regression companion.** With `document = "We finished in 2014.
-Later, we extended the work."` and a segmenter that spikes `0.9` on the
-`.` after `2014`, the expected output is `["We finished in 2014. ",
-"Later, we extended the work."]` — the period boundary is untouched
-because the suppression rule never fires on a digit that is followed by
-punctuation rather than whitespace.
-
 ## Model-dependent vectors (informational only)
 
 The following tests depend on the specific sentence segmenter and
@@ -260,19 +233,17 @@ segmenter that fails to identify period+space as a strong boundary
 may produce a different partition; this is a model quality issue, not
 a spec violation, provided round-trip and length constraints hold.
 
-### TV-151 — Numeral-before-capital artifact (SaT)
+### TV-151 — Scientific-prose constructs (SaT, default model)
 
-Validates SPEC-CHUNK-118 against the real SaT model. This is the exact
-repro from the v0.4.0 bug report.
+With the default segmenter (`sat-12l-sm`, `weighting="hat"`) these
+construct types segment correctly with no probability post-processing:
 
-| Input | Value |
-|-------|-------|
-| `document` | `"We achieve new state-of-the-art results on SentiHood and SemEval-2014 Task 4 datasets. The next sentence is here."` |
-| `min_len` | `4` |
-| `max_len` | `None` |
+| `document` | Expected |
+|-----------|----------|
+| `"The results can be seen in Tab. TABREF21 and TABREF22 ."` | one sentence (no split on the `Tab.` period) |
+| `"We optimize the loss in Eq. EQREF9 ."` | one sentence |
+| `"...on SentiHood and SemEval-2014 Task 4 datasets. The next sentence is here."` | two sentences, split only at the period (not at the year) |
+| `"We finished the work in 2014. Later, we extended the analysis."` | two sentences (a year genuinely ending a sentence still splits) |
 
-**Expected output (with the default SaT segmenter):** two sentences,
-split only at the period — `["...SemEval-2014 Task 4 datasets. ", "The
-next sentence is here."]`. The space-instead-of-hyphen variant
-(`"SemEval 2014 Task 4"`) behaves identically. A `"...in 2014. Later,
-we..."` document still splits at the period.
+A lighter checkpoint (e.g. `sat-3l-sm`) mis-splits these; this is a
+model-quality property, not a spec violation.

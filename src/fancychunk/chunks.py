@@ -217,6 +217,8 @@ def _partition_similarities(
 
     # Step 4 — heading-aware modification (in place).
     _apply_heading_modification_inplace(sim, chunklets, floor)
+    # Step 5 — paragraph-boundary preference (SPEC-CHUNK-324, in place).
+    _apply_paragraph_preference_inplace(sim, chunklets)
     return sim
 
 
@@ -293,6 +295,27 @@ def _apply_heading_modification_inplace(
             previous_is_heading = True
         else:
             previous_is_heading = False
+
+
+def _ends_block(text: str) -> bool:
+    """True iff ``text`` ends a Markdown block — its trailing whitespace
+    contains a blank line (a paragraph or stronger break). A single
+    trailing newline is a soft line break (still the same paragraph)."""
+    return text[len(text.rstrip()) :].count("\n") >= 2
+
+
+def _apply_paragraph_preference_inplace(
+    sim: Vector, chunklets: list[str]
+) -> None:
+    """SPEC-CHUNK-324 — discourage cutting mid-paragraph. Adds
+    ``MID_PARAGRAPH_PENALTY`` to a partition point whose left chunklet
+    does not end a block, so the optimizer prefers paragraph (or
+    stronger) breaks when one is available within budget. Applied after
+    the heading modification; paragraph/heading boundaries already
+    ``_ends_block`` so heading handling is preserved."""
+    for i in range(len(chunklets) - 1):
+        if not _ends_block(chunklets[i]):
+            sim[i] = float(sim[i]) + C.MID_PARAGRAPH_PENALTY
 
 
 def _solve_partition(

@@ -46,7 +46,12 @@ class _StubSaT:
         # 2-D thread safety for the global init counter:
         self.lock = threading.Lock()
 
-    def predict_proba(self, text_or_texts: str | list[str]):
+    def predict_proba(
+        self, text_or_texts: str | list[str], **kwargs: Any
+    ):
+        # The segmenter passes inference params (stride/block_size/
+        # weighting); record them so tests can assert they're forwarded.
+        self.predict_kwargs = kwargs
         if isinstance(text_or_texts, str):
             with self.lock:
                 self.calls.append([text_or_texts])

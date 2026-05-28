@@ -4,9 +4,14 @@ Two segmenters are bundled:
 
 * :class:`SaTSegmenter` (the default) wraps a Segment Any Text (SaT)
   model from `wtpsplit-lite` and returns per-character boundary
-  probabilities exactly as SPEC-CHUNK-106 prescribes. The 408 MB
-  ``sat-3l-sm`` weights download lazily on first call so importing
-  ``fancychunk`` stays cheap.
+  probabilities exactly as SPEC-CHUNK-106 prescribes. The ~530 MB
+  ``sat-12l-sm`` weights download lazily on first call so importing
+  ``fancychunk`` stays cheap. (The lighter ``sat-3l-sm`` is ~4× faster
+  per character but mis-segments some scientific-prose constructs —
+  abbreviation references like ``Tab. TABREF21`` and years before a
+  capitalised word like ``SemEval-2014 Task`` — that ``sat-12l-sm``
+  handles correctly; pass ``model_name="sat-3l-sm"`` to trade quality
+  for speed.)
 * :func:`punctuation_segmenter` is a no-dependencies fallback that
   marks ``.``/``!``/``?`` followed by whitespace or end-of-document.
 
@@ -86,7 +91,30 @@ def punctuation_segmenter(document: str) -> Vector:
     return probs
 
 
-_DEFAULT_SAT_MODEL = "sat-3l-sm"
+_DEFAULT_SAT_MODEL = "sat-12l-sm"
+
+# ``predict_proba`` inference parameters. wtpsplit-lite's defaults
+# (``stride=256, block_size=512, weighting="uniform"``) average every
+# overlapping window equally, so a character predicted near a window
+# edge — with truncated left/right context — contributes as much as one
+# predicted at a window's centre. That produces *context-sensitive*
+# boundary artifacts: the same clause scores differently depending on
+# where the sliding window happens to fall (e.g. the period of an
+# abbreviation, or a year before a capitalised word, can spuriously
+# cross the threshold in one document but not another).
+#
+# ``weighting="hat"`` weights each window's predictions by a triangular
+# function so centre-of-window (full-context) predictions dominate, and
+# the smaller ``block_size``/``stride`` give every character more
+# windows to be near-centre in. These are the values wtpsplit-lite's
+# own maintainers ship in raglite. Empirically this removes the
+# window-edge artifacts (e.g. a full-document ``Tab.`` period drops from
+# 0.345 to 0.039) without disturbing genuine high-confidence boundaries.
+_SAT_PREDICT_KWARGS: dict[str, Any] = {
+    "stride": 128,
+    "block_size": 256,
+    "weighting": "hat",
+}
 
 _FAST_POSTPROCESS_DISABLE_ENV = "FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS"
 
@@ -211,7 +239,7 @@ def _providers_for_device(device: str) -> list[str]:
 class SaTSegmenter:
     """SPEC-CHUNK-106 segmenter backed by wtpsplit-lite's SaT model.
 
-    The 408 MB ``sat-3l-sm`` weights are downloaded by Hugging Face on
+    The ~530 MB ``sat-12l-sm`` weights are downloaded by Hugging Face on
     first use (subsequent calls use the cache); the import itself is
     cheap because the model is only loaded on the first
     ``__call__``. Instances are thread-safe — lazy loading is
@@ -220,7 +248,7 @@ class SaTSegmenter:
     unlocked.
 
     Args:
-        model_name: SaT checkpoint to load (defaults to ``sat-3l-sm``).
+        model_name: SaT checkpoint to load (defaults to ``sat-12l-sm``).
         device: ``"auto"`` (default) lets wtpsplit-lite pick the best
             available ONNX execution provider — typically
             ``CUDAExecutionProvider`` when ``onnxruntime-gpu`` is
@@ -330,7 +358,7 @@ class SaTSegmenter:
 
     def __call__(self, document: str) -> Vector:
         sat = self._ensure_loaded()
-        raw = sat.predict_proba(document)
+        raw = sat.predict_proba(document, **_SAT_PREDICT_KWARGS)
         arr = np.asarray(raw, dtype=np.float64)
         if arr.ndim != 1 or arr.shape[0] != len(document):
             raise SegmenterError(
@@ -363,7 +391,9 @@ class SaTSegmenter:
         nonempty_docs = [documents[i] for i in nonempty_idx]
 
         sat = self._ensure_loaded()
-        for idx, raw in zip(nonempty_idx, sat.predict_proba(nonempty_docs)):
+        for idx, raw in zip(
+            nonempty_idx, sat.predict_proba(nonempty_docs, **_SAT_PREDICT_KWARGS)
+        ):
             arr = np.asarray(raw, dtype=np.float64)
             expected_len = len(documents[idx])
             if arr.ndim != 1 or arr.shape[0] != expected_len:

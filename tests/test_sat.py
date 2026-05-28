@@ -31,40 +31,26 @@ def test_tv_150_period_separated_sentences() -> None:
         assert not s[0].isspace()
 
 
-# TV-118 — a numeral/year followed by a Capitalized word must not split
-# the sentence mid-phrase. The real-model counterpart of the
-# model-independent TV-118 vectors in test_sentences.py; this is the
-# exact repro from the v0.4.0 bug report.
-def test_tv_118_numeral_capital_no_midphrase_split() -> None:
-    doc = (
+# Scientific-prose segmentation: the default model + inference params
+# (sat-12l-sm, weighting="hat") segment these constructs correctly with
+# no post-processing. Guards the model/params choice against regressions
+# (a lighter model such as sat-3l-sm mis-splits all of these).
+def test_sat_segments_scientific_prose_correctly() -> None:
+    # Abbreviation reference: no split after "Tab." / "Eq.".
+    assert split_sentences(
+        "The results of our experiments can be seen in Tab. TABREF21 and TABREF22 ."
+    ) == ["The results of our experiments can be seen in Tab. TABREF21 and TABREF22 ."]
+    assert split_sentences("We optimize the loss in Eq. EQREF9 .") == [
+        "We optimize the loss in Eq. EQREF9 ."
+    ]
+    # Year before a capitalized word: split only at the period, not the year.
+    out = split_sentences(
         "We achieve new state-of-the-art results on SentiHood and "
         "SemEval-2014 Task 4 datasets. The next sentence is here."
     )
-    assert split_sentences(doc) == [
-        "We achieve new state-of-the-art results on SentiHood and "
-        "SemEval-2014 Task 4 datasets. ",
-        "The next sentence is here.",
-    ]
-
-
-# TV-118 — the space-instead-of-hyphen variant ("SemEval 2014 Task")
-# triggers the same artifact and must also be suppressed.
-def test_tv_118_numeral_capital_space_variant() -> None:
-    doc = (
-        "We achieve new state-of-the-art results on SentiHood and "
-        "SemEval 2014 Task 4 datasets. The next sentence is here."
+    assert len(out) == 2 and out[0].rstrip().endswith("datasets.")
+    # No regression: a year genuinely ending a sentence still splits.
+    out = split_sentences(
+        "We finished the work in 2014. Later, we extended the analysis."
     )
-    out = split_sentences(doc)
-    assert "".join(out) == doc
-    assert len(out) == 2
-    assert out[0].endswith("datasets. ")
-
-
-# TV-118 — no regression: a year ending a sentence ("...in 2014.")
-# still splits, because the boundary sits on the period.
-def test_tv_118_year_terminated_sentence_still_splits() -> None:
-    doc = "We finished the work in 2014. Later, we extended the analysis."
-    out = split_sentences(doc)
-    assert "".join(out) == doc
-    assert len(out) == 2
-    assert out[0].endswith("2014. ")
+    assert len(out) == 2 and out[0].rstrip().endswith("2014.")

@@ -298,59 +298,31 @@ def _apply_heading_modification_inplace(
 def _solve_partition(
     chunklets: list[str], lengths: list[int], sim: Vector, max_size: int
 ) -> list[Chunk]:
-    """SPEC-CHUNK-310/-311 — minimize total partition similarity under the
+    """SPEC-CHUNK-310/-311/-323 — minimize total partition cost under the
     covering constraint that every chunk fits in ``max_size``.
 
-    Returns the partitioned chunks (each chunk is the concatenation
-    of one or more contiguous chunklets).
-
-    ``dp_cost[i] = min_{j} dp_cost[j] + (sim[j-1] if j > 0 else 0)``
-    over all ``j`` such that the chunk ``chunklets[j:i]`` fits in
-    ``max_size``. With ``cum_len`` available, the feasibility window
-    ``[j_lo, i)`` is a single ``np.searchsorted``; the argmin over
-    the window is a single ``np.argmin`` (smallest-index tie-break
-    matches SPEC-CHUNK-251).
+    The cost is the sum of selected partition-point similarities plus a
+    small-chunk badness term (SPEC-CHUNK-323). Returns the partitioned
+    chunks (each the concatenation of contiguous chunklets).
     """
     n = len(chunklets)
     lengths_np: NDArray[np.int64] = np.asarray(lengths, dtype=np.int64)
     cum_len_np: NDArray[np.int64] = np.concatenate(
         ([np.int64(0)], np.cumsum(lengths_np))
     )
-    # transition_to_j[j] = sim[j-1] for 1 <= j <= n-1; transition for
-    # j=0 is 0 (no preceding chunk) and for j=n is irrelevant (no
-    # state has predecessor n). sim has length n-1.
-    transition_to_j: NDArray[np.float64] = np.zeros(n + 1, dtype=np.float64)
-    if n >= 2:
-        transition_to_j[1:n] = sim.astype(np.float64)
 
-    inf = np.inf
-    dp_cost: NDArray[np.float64] = np.full(n + 1, inf, dtype=np.float64)
-    dp_prev: NDArray[np.int64] = np.full(n + 1, -1, dtype=np.int64)
-    dp_cost[0] = 0.0
+    # SPEC-CHUNK-323 — does the document lead with a title that has no
+    # body of its own (a front-matter preamble, e.g. ``# Title`` then
+    # ``## Abstract``)? Only then does the front-matter badness apply.
+    front_matter_eligible = _leading_is_stacked_headings(chunklets)
 
-    for i in range(1, n + 1):
-        threshold_val = int(cum_len_np[i]) - max_size
-        j_lo = int(np.searchsorted(cum_len_np, threshold_val, side="left"))
-        j_hi = i  # exclusive
-        if j_lo >= j_hi:
-            continue
-        candidates = dp_cost[j_lo:j_hi] + transition_to_j[j_lo:j_hi]
-        local_argmin = int(np.argmin(candidates))
-        dp_cost[i] = float(candidates[local_argmin])
-        dp_prev[i] = j_lo + local_argmin
-
-    # Unreachable in practice: every chunklet ≤ max_size (validated
-    # above), so the per-chunklet partition is always feasible.
-    assert np.isfinite(dp_cost[n]), "internal: chunks DP left dp_cost[n] non-finite"
-
-    cuts: list[int] = []
-    i = n
-    while i > 0:
-        j = int(dp_prev[i])
-        cuts.append(j)
-        i = j
-    cuts.reverse()
-    cuts.append(n)
+    cuts = _dp_cuts(
+        cum_len_np,
+        sim,
+        max_size,
+        n,
+        front_matter_eligible=front_matter_eligible,
+    )
 
     # Each chunk spans chunklets[a:b]; its character range in
     # ``"".join(chunklets)`` is ``[cum_len_np[a], cum_len_np[b])``.
@@ -370,3 +342,106 @@ def _solve_partition(
 
     paths = heading_paths(bare_chunks)
     return [replace(c, heading_path=p) for c, p in zip(bare_chunks, paths)]
+
+
+def _dp_cuts(
+    cum_len_np: NDArray[np.int64],
+    sim: Vector,
+    max_size: int,
+    n: int,
+    *,
+    front_matter_eligible: bool,
+) -> list[int]:
+    """The SPEC-CHUNK-310/-311/-323 dynamic program over partition points.
+
+    Returns the chunklet-boundary cuts ``[0, c1, …, n]`` of the
+    minimum-cost partition, where the cost of a partition is
+
+        Σ_selected sim[k]  +  Σ_chunks badness(chunk)
+
+    ``dp_cost[i] = min_{j} dp_cost[j] + (sim[j-1] if j > 0 else 0)
+    + badness(chunklets[j:i])`` over all ``j`` such that the chunk
+    ``chunklets[j:i]`` fits in ``max_size``. With ``cum_len`` available,
+    the feasibility window ``[j_lo, i)`` is a single ``np.searchsorted``;
+    the argmin over the window is a single ``np.argmin`` (smallest-index
+    tie-break matches SPEC-CHUNK-251).
+
+    ``badness(chunk)`` (SPEC-CHUNK-323) is the larger of two graded
+    ``penalty × max(0, 1 − size/(fraction × max_size))`` terms:
+
+    * a strong **front-matter** term over a wide size range, applied
+      only to the leading chunk ``[0, i)`` of a ``front_matter_eligible``
+      document; and
+    * a gentle **general** term applied to every chunk, short-range
+      enough that it bites only on a genuinely tiny fragment.
+
+    A chunk is merged forward only when its badness exceeds the
+    split-quality it would surrender, so the effective size cutoff scales
+    with how distinct the neighbouring chunks are.
+    """
+    # transition_to_j[j] = sim[j-1] for 1 <= j <= n-1; transition for
+    # j=0 is 0 (no preceding chunk) and for j=n is irrelevant (no
+    # state has predecessor n). sim has length n-1.
+    transition_to_j: NDArray[np.float64] = np.zeros(n + 1, dtype=np.float64)
+    if n >= 2:
+        transition_to_j[1:n] = sim.astype(np.float64)
+
+    fm_penalty = C.FRONT_MATTER_CHUNK_PENALTY
+    fm_ceiling = C.FRONT_MATTER_CHUNK_TARGET_FRACTION * max_size
+    sm_penalty = C.SMALL_CHUNK_PENALTY
+    sm_ceiling = C.SMALL_CHUNK_TARGET_FRACTION * max_size
+
+    inf = np.inf
+    dp_cost: NDArray[np.float64] = np.full(n + 1, inf, dtype=np.float64)
+    dp_prev: NDArray[np.int64] = np.full(n + 1, -1, dtype=np.int64)
+    dp_cost[0] = 0.0
+
+    for i in range(1, n + 1):
+        threshold_val = int(cum_len_np[i]) - max_size
+        j_lo = int(np.searchsorted(cum_len_np, threshold_val, side="left"))
+        j_hi = i  # exclusive
+        if j_lo >= j_hi:
+            continue
+        candidates = dp_cost[j_lo:j_hi] + transition_to_j[j_lo:j_hi]
+
+        # SPEC-CHUNK-323 — badness of the chunk [j, i) for each j: the
+        # gentle general term for all, the strong front-matter term for
+        # the leading chunk [0, i) of a front-matter document.
+        sizes = (cum_len_np[i] - cum_len_np[j_lo:j_hi]).astype(np.float64)
+        badness = sm_penalty * np.maximum(0.0, 1.0 - sizes / sm_ceiling)
+        if front_matter_eligible and j_lo == 0:
+            fm = fm_penalty * max(0.0, 1.0 - float(sizes[0]) / fm_ceiling)
+            badness[0] = max(float(badness[0]), fm)
+        candidates = candidates + badness
+
+        local_argmin = int(np.argmin(candidates))
+        dp_cost[i] = float(candidates[local_argmin])
+        dp_prev[i] = j_lo + local_argmin
+
+    # Unreachable in practice: every chunklet ≤ max_size (validated
+    # above), so the per-chunklet partition is always feasible.
+    assert np.isfinite(dp_cost[n]), "internal: chunks DP left dp_cost[n] non-finite"
+
+    cuts: list[int] = []
+    i = n
+    while i > 0:
+        j = int(dp_prev[i])
+        cuts.append(j)
+        i = j
+    cuts.reverse()
+    cuts.append(n)
+    return cuts
+
+
+def _leading_is_stacked_headings(chunklets: list[str]) -> bool:
+    """True iff the document leads with a title that has no body of its
+    own — its first two block elements are both headings (e.g. ``# Title``
+    immediately followed by ``## Abstract``). Only the start matters, so
+    parse the shortest chunklet prefix that yields two block openers."""
+    text = ""
+    for c in chunklets:
+        text += c
+        opens = [t.type for t in _MD_PARSER.parse(text) if t.type.endswith("_open")]
+        if len(opens) >= 2:
+            return opens[0] == "heading_open" and opens[1] == "heading_open"
+    return False

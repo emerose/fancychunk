@@ -234,6 +234,32 @@ The two-pass structure is implementation-defined behavior. A single
 constrained solve is conforming, provided the final output satisfies
 SPEC-CHUNK-103 and SPEC-CHUNK-104.
 
+### SPEC-CHUNK-118 — Numeral-before-capital boundary artifact
+
+Some sentence-segmentation models (notably the SaT family, see
+SPEC-CHUNK-106) assign a spuriously high boundary probability to a
+numeral — typically a year — that is *directly* followed by whitespace
+and a capitalized word. For example, in
+`"...SemEval-2014 Task 4 datasets."` the final `4` of `2014` scores
+above `BOUNDARY_SCORE_THRESHOLD`, so the splitter breaks the sentence
+mid-phrase (`"...SemEval-2014 "` | `"Task 4 datasets."`). The pattern
+is common in scientific writing (`"WMT 2016 Task"`,
+`"ICLR 2020 Workshop"`, `"SemEval-2014 Task 4"`).
+
+Before the heading override (SPEC-CHUNK-108) and merge
+(SPEC-CHUNK-107), the predicted probability is forced to `0` at any
+digit position that is immediately followed by whitespace and then an
+uppercase letter. A genuine sentence end at a number sits on the
+*terminating punctuation* (`"...in 2014. Later, we..."` — the boundary
+is on the `.`), never on the digit, so this correction removes the
+artifact without suppressing legitimate breaks. The rule fires only
+when the following token is capitalized — the model assigns ~0 to a
+numeral followed by a lowercase word, so the override is a no-op there.
+
+Because the correction is applied to the *predicted* vector before the
+merge, an explicit caller-supplied `known_boundary_probas`
+(SPEC-CHUNK-107) still takes precedence at these positions.
+
 ## Determinism and tie-breaking
 
 ### SPEC-CHUNK-112 — Deterministic given a deterministic segmenter

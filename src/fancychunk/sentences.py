@@ -25,6 +25,11 @@ from numpy.typing import NDArray
 
 _WHITESPACE_RUN = re.compile(r"\s+")
 
+# A digit immediately followed by a whitespace run and then a
+# non-whitespace character. Used to detect the "<numeral> <Capital>"
+# segmentation artifact (see ``_suppress_numeral_boundary_artifacts``).
+_NUMERAL_WS_NONSPACE = re.compile(r"[0-9]\s+\S")
+
 from . import _constants as C
 from ._markdown import heading_spans
 from ._segmenter import SentenceSegmenter, make_segmenter
@@ -100,6 +105,8 @@ def split_sentences(
                 f"segmenter returned shape {predicted.shape}; expected ({n},)"
             )
 
+        with tracer.start_as_current_span("fancychunk.sentences.numeral_artifact"):
+            predicted = _suppress_numeral_boundary_artifacts(document, predicted)
         with tracer.start_as_current_span("fancychunk.sentences.heading_override"):
             known = _resolve_known(known_boundary_probas, document, n)
         with tracer.start_as_current_span("fancychunk.sentences.merge"):
@@ -151,6 +158,44 @@ def _default_known_overrides(document: str, n: int) -> Vector:
             known[span.first : span.last] = 0.0
         known[span.last] = 1.0
     return known
+
+
+def _suppress_numeral_boundary_artifacts(
+    document: str, predicted: Vector
+) -> Vector:
+    """Correct a SaT segmentation artifact: a numeral (typically a
+    year) directly followed by whitespace and a *capitalized* word is
+    assigned a spuriously high boundary probability — e.g. the final
+    ``4`` of ``SemEval-2014`` in ``"...SemEval-2014 Task 4..."`` scores
+    ~0.5, well above ``BOUNDARY_SCORE_THRESHOLD``, so the DP breaks the
+    sentence mid-phrase. This pattern (``"WMT 2016 Task"``,
+    ``"ICLR 2020 Workshop"``, …) is common in scientific writing.
+
+    A genuine sentence end at a number would sit on the *terminating
+    punctuation* (``"...in 2014. Later, we..."`` — the boundary is on
+    the ``.``), never on the digit itself, so forcing the predicted
+    probability to ``0`` at the digit position removes the artifact
+    without suppressing any legitimate break. The rule fires only when
+    the following token is capitalized, matching the model's own
+    trigger — a numeral followed by a lowercase word already scores
+    ~0, so the override is a no-op there.
+
+    Applied to the *predicted* vector before the heading override and
+    merge, so an explicit caller-supplied ``known_boundary_probas``
+    (SPEC-CHUNK-107) still takes precedence at these positions.
+    """
+    out = predicted
+    copied = False
+    for m in _NUMERAL_WS_NONSPACE.finditer(document):
+        # ``m`` spans ``<digit><whitespace...><non-space>``; the final
+        # character of the match is the next token's first character.
+        if not document[m.end() - 1].isupper():
+            continue
+        if not copied:
+            out = predicted.copy()
+            copied = True
+        out[m.start()] = 0.0
+    return out
 
 
 def _merge_known(predicted: Vector, known: Vector) -> Vector:

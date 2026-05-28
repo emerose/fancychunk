@@ -258,6 +258,137 @@ def test_setext_heading_pulls_split_before() -> None:
 
 
 # ---------------------------------------------------------------------------
+# SPEC-CHUNK-323 — small-chunk badness (front-matter + general).
+# ---------------------------------------------------------------------------
+
+
+def _is_heading_only_text(text: str) -> bool:
+    """A chunk whose every block-level element is a Markdown heading."""
+    from markdown_it import MarkdownIt
+
+    opens = [t.type for t in MarkdownIt("commonmark").parse(text) if t.type.endswith("_open")]
+    return bool(opens) and all(t == "heading_open" for t in opens)
+
+
+# SPEC-CHUNK-323 — a leading front-matter chunk (title + abstract, with
+# no body section) is bundled forward into the first body section
+# rather than emitted standalone. This is the deterministic, model-free
+# analogue of the qasper "1903.09588" repro: the bare similarity DP
+# isolates the front-matter chunklet, the small-chunk badness term in
+# the objective makes the DP bundle it forward instead.
+def test_front_matter_chunk_is_bundled_forward() -> None:
+    from fancychunk.chunks import _dp_cuts, _partition_similarities
+
+    front = "# Title\n\n## Abstract\n\n" + "a" * 579  # title + abstract head + body
+    intro = "## Introduction\n\n" + "b" * 583
+    body1 = "c" * 600
+    body2 = "d" * 600
+    chunklets = [front, intro, body1, body2]
+    lengths = [len(c) for c in chunklets]
+
+    # Embeddings: the front matter is dissimilar from the body, which is
+    # internally uniform — so the cheapest single split lands right
+    # after the front matter, isolating it.
+    matrix = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [0.0, 1.0]])
+
+    # With the front-matter badness disabled (front_matter_eligible=False),
+    # the bare similarity DP isolates the front matter as chunk 0.
+    cum = np.concatenate(([0], np.cumsum(lengths)))
+    sim = _partition_similarities(matrix, chunklets, lengths)
+    bare = _dp_cuts(
+        cum,
+        sim,
+        2048,
+        len(chunklets),
+        front_matter_eligible=False,
+    )
+    assert bare[:2] == [0, 1]
+
+    # split_chunks (with the badness term) bundles it forward.
+    chunks = asyncio.run(
+        split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    )
+    assert "".join(_texts(chunks)) == "".join(chunklets)
+    assert all(len(c.text) <= 2048 for c in chunks)
+    # The first chunk is no longer front-matter-only: it carries the
+    # first body section with it.
+    assert "## Introduction" in chunks[0].text
+    # And no chunk is solely title/heading + abstract with no body.
+    assert chunks[0].text != front
+
+
+# SPEC-CHUNK-323 — a genuinely *tiny* body chunk is merged forward even
+# when it is a distinct topic (a ~20-char fragment is a poor retrieval
+# unit), but a moderately-short distinct section is kept. The cutoff is
+# not a fixed size: it scales with how distinct the neighbours are.
+def test_tiny_body_chunk_merges_but_short_section_kept() -> None:
+    # Three chunklets where isolating the lead chunk ([c0][c1+c2]) and
+    # merging it ([c0+c1][c2]) are *both* feasible single cuts, so the
+    # small-chunk badness — not cut-minimization — decides. The lead
+    # chunk is a distinct topic; c1 and c2 are the same topic.
+    body1 = "b" * 700
+    body2 = "b" * 700
+    max_size = 1410  # general badness ceiling = 0.2 * 1410 ≈ 282 chars
+    matrix = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]])
+
+    # A 20-char distinct lead chunk is below the ceiling -> merged
+    # forward even though it is a distinct topic.
+    tiny = ["t" * 20, body1, body2]
+    tiny_chunks = asyncio.run(
+        split_chunks(tiny, _FixedEmbedder(matrix), max_size=max_size)
+    )
+    assert "".join(_texts(tiny_chunks)) == "".join(tiny)
+    assert tiny_chunks[0].text != "t" * 20  # not left standalone
+
+    # A 400-char distinct lead chunk is above the ceiling -> kept as its
+    # own chunk (the semantic split is honoured).
+    short = ["s" * 400, body1, body2]
+    short_chunks = asyncio.run(
+        split_chunks(short, _FixedEmbedder(matrix), max_size=max_size)
+    )
+    assert "".join(_texts(short_chunks)) == "".join(short)
+    assert short_chunks[0].text == "s" * 400  # distinct short section kept
+
+
+# SPEC-CHUNK-322/-323 — the chunker does not emit a chunk that is only a
+# heading/title. This is guaranteed by SPEC-CHUNK-322 (the split-after-
+# heading cost is pinned to the maximum, so a heading is never
+# voluntarily isolated) with the general small-chunk term as backstop;
+# there is no dedicated heading-only rule.
+def test_no_chunk_is_heading_only() -> None:
+    chunklets = ["x" * 1000, "## Lonely Heading\n\n", "y" * 1000, "z" * 1000]
+    matrix = np.array(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 0.0]]
+    )
+    chunks = asyncio.run(
+        split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    )
+    assert "".join(_texts(chunks)) == "".join(chunklets)
+    for c in chunks:
+        assert not _is_heading_only_text(c.text), (
+            f"emitted a heading-only chunk: {c.text!r}"
+        )
+
+
+# SPEC-CHUNK-322 — a trailing heading rides along with the preceding
+# body rather than being split off into its own chunk.
+def test_trailing_heading_only_chunk_merges_backward() -> None:
+    chunklets = ["x" * 1000, "y" * 1000, "z" * 1000, "## Trailing Head\n"]
+    matrix = np.array(
+        [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+    )
+    chunks = asyncio.run(
+        split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048)
+    )
+    assert "".join(_texts(chunks)) == "".join(chunklets)
+    for c in chunks:
+        assert not _is_heading_only_text(c.text)
+    # The trailing heading rode along with preceding body.
+    assert chunks[-1].text.endswith("## Trailing Head\n")
+    assert len(chunks[-1].text) > len("## Trailing Head\n")
+
+
+# ---------------------------------------------------------------------------
 # Chunk metadata — start/end character offsets.
 # ---------------------------------------------------------------------------
 

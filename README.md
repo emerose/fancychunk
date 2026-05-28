@@ -189,20 +189,23 @@ cheap and triggers no network calls, and constructing an embedder
 cache under `~/.cache/huggingface/` so the download happens once
 per machine; subsequent process runs hit the cache.
 
-**Sentence segmenter — SaT.** The default is `sat-12l-sm` from
+**Sentence segmenter — SaT.** The default is `sat-9l-sm` from
 [Segment Any Text](https://arxiv.org/abs/2406.16678) (Frohmann et
-al., 2024) via `wtpsplit-lite`, shipped as ONNX. **~530 MB** download
-on first call. It is run with `weighting="hat"` inference (which
-de-weights low-context sliding-window edges); the larger checkpoint
-plus `hat` weighting segment scientific-prose constructs correctly —
-abbreviation references (`Tab. TABREF21`), years before a capitalised
-word (`SemEval-2014 Task`) — where lighter checkpoints mis-split.
-Multilingual, punctuation-agnostic, and exposes per-character boundary
-probabilities directly — exactly the SPEC-CHUNK-106 contract Stage 1
-wants. The lighter `sat-3l-sm` is ~4× faster per character at lower
-quality — pass `segmenter=SaTSegmenter(model_name="sat-3l-sm")` to
-trade quality for speed, or `segmenter=punctuation_segmenter` (a
-~50-line rule-based fallback) for a zero-download deployment.
+al., 2024) via `wtpsplit-lite`, shipped as ONNX, run with
+`weighting="hat"` inference (which de-weights low-context
+sliding-window edges). Multilingual, punctuation-agnostic, and exposes
+per-character boundary probabilities directly — exactly the
+SPEC-CHUNK-106 contract Stage 1 wants. Three checkpoints are bundled as
+factories in `fancychunk.segmenters`, trading speed for scientific-prose
+quality (see `benchmarks/sat-model-selection.md`):
+
+```python
+from fancychunk import segmenters
+split_sentences(doc, segmenter=segmenters.sat_3l())   # fastest; mis-splits "Tab. TABREF21", "SemEval-2014 Task"
+split_sentences(doc, segmenter=segmenters.sat_9l())   # default: artifact-free, ~1.3× faster than 12l
+split_sentences(doc, segmenter=segmenters.sat_12l())  # highest quality, slowest
+split_sentences(doc, segmenter=segmenters.punctuation())  # ~50-line rule-based fallback, no download
+```
 
 For corpora of many short documents (think BeIR scifact: ~5K
 abstracts at ~1.5K chars each), SaT can become the dominant cost

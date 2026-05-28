@@ -24,6 +24,37 @@ TYPICAL_CHUNKLET_UPPER_QUANTILE = 0.85
 HEADING_SPLIT_BEFORE_DIVISOR = 4.0
 HEADING_SPLIT_AFTER_FORBID = 1.0
 
+# SPEC-CHUNK-323 — small-chunk badness. The chunk-partition DP adds a
+# per-chunk badness term, graded ``penalty × max(0, 1 − size/(fraction ×
+# max_size))`` (relative to the [0, 1] partition-similarity cut cost), so
+# the optimizer extends an undersized chunk forward rather than emit it.
+# A chunk is merged only when its badness exceeds the *split-quality gap*
+# it would give up — so the effective size cutoff scales with how
+# distinct the neighbours are, rather than being a fixed number.
+#
+# Two terms, combined by taking the larger:
+#
+# * **Front matter** — the document's leading chunk when it is a title
+#   with no body of its own, only a subsection (e.g. ``# Title`` then
+#   ``## Abstract``). Such a preamble is worthless alone regardless of
+#   how distinct it is, so it gets a strong penalty over a wide size
+#   range (the abstract makes it too long for the general term below).
+# * **General** — any chunk gets a gentle penalty that only bites on a
+#   genuinely tiny chunk (a ~20-char fragment is a poor retrieval unit
+#   even when it is a distinct topic). It is deliberately weak and
+#   short-range so it does not merge legitimately short sections — chunk
+#   size alone cannot tell front matter from a short-but-coherent
+#   section, so the heavy lifting stays with the front-matter term.
+#
+# (A bare heading head needs no term of its own: SPEC-CHUNK-322 already
+# pins the split-after-heading cost to the maximum, so the DP never
+# voluntarily isolates a heading, and a tiny heading the general term
+# would catch anyway.)
+FRONT_MATTER_CHUNK_PENALTY = 3.0
+FRONT_MATTER_CHUNK_TARGET_FRACTION = 0.5
+SMALL_CHUNK_PENALTY = 1.5
+SMALL_CHUNK_TARGET_FRACTION = 0.2
+
 DEFAULT_PREAMBLE_FRACTION = 0.382
 
 MAX_HEADING_LEVELS = 6

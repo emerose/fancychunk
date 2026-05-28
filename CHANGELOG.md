@@ -4,6 +4,38 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Sentence splitting no longer breaks a sentence mid-phrase at a
+  numeral followed by a capitalized word (SPEC-CHUNK-118). The SaT
+  model assigns a spuriously high boundary probability to the last
+  digit of a year/number directly followed by whitespace and a capital
+  (e.g. ``"...SemEval-2014 Task 4..."``, ``"WMT 2016 Task"``,
+  ``"ICLR 2020 Workshop"``); that prediction is now forced to ``0``
+  before the heading override and merge. Genuine breaks where the
+  boundary sits on terminating punctuation (``"...in 2014. Later,
+  we..."``) are unaffected.
+- Semantic chunking no longer emits a chunk with no standalone
+  retrieval value (SPEC-CHUNK-323). The chunk-partition objective now
+  includes a per-chunk *badness* term, graded by how far below a target
+  the chunk falls, so the optimizer extends an undersized chunk forward
+  rather than emit it (the ``max_size`` covering constraint is honored
+  automatically since it is the same DP). It is the larger of two
+  terms: a strong **front-matter** penalty over a wide size range
+  (``FRONT_MATTER_CHUNK_PENALTY`` /
+  ``FRONT_MATTER_CHUNK_TARGET_FRACTION``) for the leading preamble (a
+  title with no body of its own, e.g. immediately followed by
+  ``## Abstract``); and a gentle, short-range **general** penalty
+  (``SMALL_CHUNK_PENALTY`` / ``SMALL_CHUNK_TARGET_FRACTION``) that bites
+  only on a genuinely tiny fragment. Two terms are needed because chunk
+  size alone cannot tell a preamble from a short-but-coherent section.
+  The effective size cutoff is not fixed: a chunk is merged only when
+  its badness exceeds the split-quality it would surrender, so a more
+  distinct chunk is allowed to be smaller before it is kept. (A bare
+  heading head needs no term: SPEC-CHUNK-322 already prevents the DP
+  from isolating a heading.)
+
 ## [0.5.0] - 2026-05-27
 
 ### Added

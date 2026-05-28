@@ -202,3 +202,68 @@ satisfying partition is optimal.
 **Expected output (property):** every chunk `≤ 2048` chars;
 round-trip holds. The implementation must NOT raise (which it would
 if it tried to normalize zero vectors).
+
+## TV-323a — Leading front-matter bundled forward (model-independent)
+
+Validates SPEC-CHUNK-323. Deterministic, model-free analogue of the
+qasper `1903.09588` repro.
+
+| Input | Value |
+|-------|-------|
+| `chunklets` | `["# Title\n\n## Abstract\n\n" + "a"*579, "## Introduction\n\n" + "b"*583, "c"*600, "d"*600]` |
+| `embeddings` | `[[1,0], [0,1], [0,1], [0,1]]` |
+| `max_size` | `2048` |
+
+The front matter (chunklet 0) is dissimilar from the body, which is
+internally uniform, so the *bare* similarity DP (badness disabled)
+isolates it as chunk 0 (`cuts == [0, 1, …]`). With the SPEC-CHUNK-323
+badness term, the optimizer extends the front matter forward into the
+first body section instead.
+
+**Expected output (property):** the first chunk is **not**
+front-matter-only — it contains `"## Introduction"` (the front matter
+bundled forward). Round-trip holds; every chunk `≤ 2048`.
+
+## TV-323b — No heading-only chunk emitted (model-independent)
+
+Validates that a heading is not split off into a chunk of its own. This
+is a consequence of SPEC-CHUNK-322 (the split-after-heading cost is the
+maximum, so the DP never voluntarily isolates a heading) rather than a
+dedicated SPEC-CHUNK-323 term.
+
+| Input | Value |
+|-------|-------|
+| `chunklets` | `["x"*1000, "## Lonely Heading\n\n", "y"*1000, "z"*1000]` |
+| `embeddings` | `[[1,0], [0,1], [1,0], [1,0]]` |
+| `max_size` | `2048` |
+
+**Expected output (property):** no emitted chunk consists solely of
+heading lines (every chunk has body content). Round-trip holds. The
+same holds for a heading at the very end of the document — it rides
+along with the preceding body rather than forming its own chunk.
+
+## TV-323c — Tiny chunk merges; short distinct section kept (model-independent)
+
+Validates the general small-chunk term of SPEC-CHUNK-323 and that the
+size cutoff scales with distinctness (it is not a fixed number). Three
+chunklets where isolating the lead chunk (`[c0][c1+c2]`) and merging it
+(`[c0+c1][c2]`) are *both* feasible single cuts, so the small-chunk
+badness — not cut minimization — decides. `c0` is a distinct topic;
+`c1` and `c2` are the same topic.
+
+| Input | Value |
+|-------|-------|
+| `chunklets` | `[lead, "b"*700, "b"*700]` |
+| `embeddings` | `[[1,0], [0,1], [0,1]]` (lead distinct; body uniform) |
+| `max_size` | `1410` (general badness ceiling ≈ `0.2 × 1410 ≈ 282`) |
+
+**Expected output (property):**
+
+- `lead = "t"*20` (below the ceiling): the first chunk is **not** the
+  bare 20-char fragment — it is merged forward, even though it is a
+  distinct topic.
+- `lead = "s"*400` (above the ceiling): the first chunk **is** the
+  400-char section — a distinct short section is kept, the semantic
+  split honoured.
+
+Round-trip holds and every chunk is `≤ max_size` in both cases.

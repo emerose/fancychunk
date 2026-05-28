@@ -293,6 +293,85 @@ forced splits, which conflicts with cases where a heading and its
 first paragraph genuinely belong together. Implementations may expose
 this as a parameter; default to `4`, valid range roughly `[2, 8]`.
 
+### SPEC-CHUNK-323 — Small-chunk badness
+
+The objective in SPEC-CHUNK-310 minimizes the cost of the *splits*
+(lower adjacent similarity = better split), but a globally cheap set of
+splits can still leave a chunk that is worthless on its own. The
+objective is therefore extended with a per-chunk **badness** term:
+
+```
+total cost = Σ_{i ∈ P} sim[i]  +  Σ_{chunks c} badness(c)
+```
+
+minimized over the same feasible region (SPEC-CHUNK-311). Each badness
+term is graded by how far the chunk's character length `size` falls
+below a target, `penalty × max(0, 1 − size / (fraction × max_size))`,
+and `badness(c)` is the larger of two such terms:
+
+* **Front matter** (`FRONT_MATTER_CHUNK_PENALTY`,
+  `FRONT_MATTER_CHUNK_TARGET_FRACTION`) — applied only to the *first*
+  chunk of a document that leads with a title immediately followed by
+  another heading (a title with no body of its own — e.g. `# Title`
+  then `## Abstract`). Such a chunk is the document preamble (title +
+  abstract) with no body section; alone it behaves as a generic
+  retrieval magnet — it matches many queries because it is a summary —
+  while contributing no content a body chunk would not. This is the
+  strong term, applied over a wide size range (the abstract makes the
+  preamble too long for the general term below to reach).
+
+* **General** (`SMALL_CHUNK_PENALTY`, `SMALL_CHUNK_TARGET_FRACTION`) —
+  applied to every chunk, but deliberately gentle and short-range so
+  it bites only on a *genuinely tiny* fragment (e.g. a ~20-character
+  chunk, a poor retrieval unit even when it is a distinct topic). It
+  is too weak to merge a legitimately short section.
+
+Two terms are needed because chunk size alone cannot distinguish a
+preamble from a short-but-coherent section: they overlap in length, so
+a single size curve strong enough to bundle front matter would also
+suppress valid semantic splits. The front-matter term carries the case
+where size is unreliable; the general term catches the residual tiny
+fragments.
+
+A bare *heading-only* chunk (every block is a heading) needs no term of
+its own. SPEC-CHUNK-322 already pins the split-after-heading cost to the
+maximum, so the optimizer never *voluntarily* isolates a heading; a
+heading forced alone between two near-`max_size` bodies cannot be helped
+by any term; and a tiny isolated heading the general term would catch
+anyway.
+
+The effective behaviour:
+
+* A chunk that has *grown past* its target carries no badness — so the
+  optimizer prefers to extend the chunk forward (the preamble into the
+  first body section, or a tiny fragment into its neighbour) rather than
+  emit it bare. Because the badness is part of the same DP, the `max_size`
+  covering constraint is honored automatically: the bundled span may
+  exceed `max_size`, in which case the optimizer places the split at
+  the next-cheapest feasible point within it (SPEC-CHUNK-301 always
+  holds; the objective is soft, never infeasible).
+
+* **The size cutoff is not fixed.** A chunk is merged forward only when
+  its badness exceeds the *split-quality gap* Δ it would surrender (how
+  much better the boundary at its edge is than the next-best feasible
+  split). With the graded badness above, the cutoff size works out to
+  `target × (1 − Δ / penalty)` — so the more distinct a chunk is from
+  its neighbour (larger Δ), the smaller it is allowed to be before it
+  is kept, and a barely-distinct chunk must be larger to justify the
+  split. A maximally-distinct chunk is kept down to
+  `target × (1 − 1/penalty)`.
+
+Both penalties are calibrated relative to the `[0, 1]` similarity
+range. This term is inert on the SPEC-CHUNK-340 short-circuit paths,
+which return a single chunk.
+
+| Named constant | Value | Role |
+|---|---|---|
+| `FRONT_MATTER_CHUNK_PENALTY` | `3.0` | Weight of the badness for a leading front-matter chunk (title with no body of its own). |
+| `FRONT_MATTER_CHUNK_TARGET_FRACTION` | `0.5` | A front-matter chunk below this fraction of `max_size` is penalized (graded); at or above it, `0`. |
+| `SMALL_CHUNK_PENALTY` | `1.5` | Weight of the gentle general badness applied to every chunk. |
+| `SMALL_CHUNK_TARGET_FRACTION` | `0.2` | Any chunk below this fraction of `max_size` gets the general badness (graded); at or above it, `0`. |
+
 ## Determinism and tie-breaking
 
 ### SPEC-CHUNK-330 — Deterministic given the solver

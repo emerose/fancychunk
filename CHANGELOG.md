@@ -4,6 +4,23 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - 2026-05-29
+
+### Fixed
+- Heading-aware split (stage 3, SPEC-CHUNK-322): the "encourage split
+  *before* a heading" discount now fires for the common case where stage
+  2 glues a section heading to its first sentences. It previously keyed on
+  `_is_heading` (a *standalone* heading chunklet), which almost never
+  occurs on real prose, so the discount was effectively dead and chunks
+  packed across section boundaries. A new `_starts_with_heading` predicate
+  drives the split-before discount, while the split-after forbid stays on
+  standalone headings (only a lone heading can be stranded at a chunk's
+  tail). On the Qasper coherence set this aligns more chunk starts with
+  section boundaries (e.g. 1908.05925: 9/12 → 13/14) and removes
+  glued-heading tails, without forcing extra cuts inside a section or
+  introducing tiny stubs — multi-sentence equations stay whole and short
+  but coherent sections are left intact.
+
 ## [0.6.1] - 2026-05-29
 
 ### Fixed

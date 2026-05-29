@@ -264,37 +264,70 @@ _MD_PARSER = MarkdownIt("commonmark")
 
 
 def _is_heading(chunklet: str) -> bool:
-    """SPEC-CHUNK-322 — chunklet is a heading iff its full block-level
-    structure consists of exactly one heading element.
+    """SPEC-CHUNK-322 — chunklet is a *standalone* heading iff its full
+    block-level structure consists of exactly one heading element.
 
     Delegates to ``markdown-it-py`` so ATX and Setext forms are both
     recognised through the same parser stages 1 and 2 already use.
     A chunklet whose block-level tokens contain anything other than a
     single ``heading_open`` (e.g., a heading followed by body text,
     leading paragraph text, or no headings at all) returns ``False``.
+
+    Used only for the *split-after* forbid: a lone heading must not be
+    stranded at a chunk's tail. The *split-before* discount keys on
+    :func:`_starts_with_heading` instead, so it still fires for the
+    common case where stage 2 groups the heading with its first
+    sentences (see SPEC-CHUNK-322).
     """
     block_opens = [t for t in _MD_PARSER.parse(chunklet) if t.type.endswith("_open")]
     return len(block_opens) == 1 and block_opens[0].type == "heading_open"
+
+
+def _starts_with_heading(chunklet: str) -> bool:
+    """SPEC-CHUNK-322 — chunklet *begins a section*: its first
+    block-level token is a ``heading_open``.
+
+    Unlike :func:`_is_heading` this is ``True`` even when body text
+    follows the heading — which is the usual shape on real documents,
+    because stage 2 (SPEC-CHUNK-221) groups a short heading with its
+    first sentences to hit the statement-count target. Keying the
+    split-before discount on this flag is what makes the heading-aware
+    preference actually fire on prose, rather than only on the rare
+    standalone-heading chunklet.
+    """
+    for t in _MD_PARSER.parse(chunklet):
+        if t.type.endswith("_open"):
+            return t.type == "heading_open"
+    return False
 
 
 def _apply_heading_modification_inplace(
     sim: Vector, chunklets: list[str], floor: float
 ) -> None:
     n = len(chunklets)
-    # Compute the heading flag once per chunklet; markdown-it parsing
-    # is reentrant but not free, and the loop below reads each value
-    # once.
+    # Compute the flags once per chunklet; markdown-it parsing is
+    # reentrant but not free, and the loop below reads each value once.
     is_heading_flags = [_is_heading(c) for c in chunklets]
-    previous_is_heading = False
+    starts_heading_flags = [_starts_with_heading(c) for c in chunklets]
+    previous_starts_heading = False
     for i in range(n):
-        if is_heading_flags[i]:
-            if i >= 1 and not previous_is_heading:
+        if starts_heading_flags[i]:
+            # Encourage splitting *before* a section start. Skip when the
+            # previous chunklet also started a section, so the boundary
+            # between two stacked headings (e.g. a title immediately
+            # followed by its abstract) is not discounted.
+            if i >= 1 and not previous_starts_heading:
                 sim[i - 1] = max(sim[i - 1] / C.HEADING_SPLIT_BEFORE_DIVISOR, floor)
-            if i <= n - 2:
-                sim[i] = C.HEADING_SPLIT_AFTER_FORBID
-            previous_is_heading = True
+            previous_starts_heading = True
         else:
-            previous_is_heading = False
+            previous_starts_heading = False
+        # Discourage splitting immediately *after* a standalone heading
+        # so a lone heading is never stranded at a chunk's tail. This
+        # stays keyed on _is_heading: a heading that carries body text
+        # is not at risk of being isolated, and sim[i] is then a real
+        # boundary the embedder should be free to use.
+        if is_heading_flags[i] and i <= n - 2:
+            sim[i] = C.HEADING_SPLIT_AFTER_FORBID
 
 
 def _ends_block(text: str) -> bool:

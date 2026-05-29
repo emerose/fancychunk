@@ -148,6 +148,44 @@ def test_split_before_heading() -> None:
     assert chunks[1].text.startswith("## Subhead")
 
 
+# SPEC-CHUNK-322 — the split-before discount keys on "starts a section",
+# not "is a standalone heading", so it fires for the common shape where
+# stage 2 glues a heading to its first sentences. Here chunklet 2 begins
+# with a heading but also carries body text. With a uniform similarity
+# signal the only thing that can break the cut tie is the discount on the
+# partition point *before* the section start; without the generalisation
+# the smallest-index feasible cut would win and chunk[1] would start with
+# the body chunklet "b"*900 instead.
+def test_split_before_glued_heading_with_body() -> None:
+    chunklets = ["a" * 900, "b" * 900, "## Section Two\n\nbody text here.\n\n", "c" * 900]
+    matrix = np.array(
+        [
+            [1.0, 1e-3],
+            [1.0, 1e-3],
+            [1.0, 1e-3],
+            [1.0, 1e-3],
+        ]
+    )
+    chunks = asyncio.run(split_chunks(chunklets, _FixedEmbedder(matrix), max_size=2048))
+    assert len(chunks) == 2
+    assert chunks[1].text.startswith("## Section Two")
+
+
+# SPEC-CHUNK-322 — the split-after forbid stays keyed on standalone
+# headings: a glued heading carrying body text is not at risk of being
+# stranded, so the partition point after it must remain a usable cut.
+def test_starts_with_heading_predicate() -> None:
+    from fancychunk.chunks import _is_heading, _starts_with_heading
+
+    glued = "## Section\n\nBody sentence follows the heading.\n"
+    assert _starts_with_heading(glued) is True
+    assert _is_heading(glued) is False
+
+    assert _starts_with_heading("Just a paragraph.\n") is False
+    assert _starts_with_heading("Text before\n# Heading\n") is False
+    assert _starts_with_heading("") is False
+
+
 # SPEC-CHUNK-342 — zero-norm embedding rejected.
 def test_zero_norm_rejected() -> None:
     # Need 3+ chunklets so we hit the multi-chunk path where the

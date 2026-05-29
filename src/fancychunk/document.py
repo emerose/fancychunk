@@ -6,14 +6,18 @@ Public entry points:
 * :func:`chunk_documents` — batch of documents, embedded
   concurrently against one shared embedder.
 
-Both compose the three stages plus late chunking under one
-signature, using a single caller-supplied embedder for both the
-partition decision and the storage embeddings.
+Both run structure-first chunking
+(:func:`fancychunk.structure_first.split_chunks_structure_first`)
+followed by a late-chunking embed pass, using a single
+caller-supplied embedder for both the fallback partition decision
+and the storage embeddings.
 
 For finer control (different embedders per stage, custom
-``max_size`` per stage, structural-only mode, etc.) compose the
+``max_size`` per stage, the older whole-document semantic split, or
+embedding chunks in isolation instead of late chunking) compose the
 underlying primitives directly:
 
+* :func:`split_chunks_structure_first` (structure-first chunking)
 * :func:`split_sentences`
 * :func:`split_chunklets`
 * :func:`split_chunks`
@@ -24,29 +28,18 @@ underlying primitives directly:
 from __future__ import annotations
 
 import asyncio
-from typing import Literal, Protocol
+from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 
-from ._segmenter import (
-    BatchSentenceSegmenter,
-    SentenceSegmenter,
-    make_segmenter,
-    precomputed_segmenter,
-)
+from ._segmenter import SentenceSegmenter
 from ._telemetry import get_tracer
 from ._typing import Matrix
-from .chunklets import split_chunklets
-from .chunks import Chunk, split_chunks
+from .chunks import Chunk
 from .errors import ValidationError
 from .late_chunking import embed_with_late_chunking
-from .sentences import split_sentences
-
-#: Default batch size when ``segmenter_batch_size="auto"`` resolves to
-#: "on". Sat-3l-sm saturates by ~16 on RTX 3090; 64 stays well in the
-#: plateau and matches the example in the README.
-_AUTO_BATCH_SIZE = 64
+from .structure_first import split_chunks_structure_first
 
 
 class Embedder(Protocol):
@@ -82,51 +75,63 @@ async def chunk_document(
     embedder: Embedder,
     max_size: int = 2048,
     *,
+    min_size: int | None = None,
     segmenter: SentenceSegmenter | None = None,
 ) -> tuple[list[Chunk], NDArray[np.float64]]:
     """Chunk ``document`` and return ``(chunks, vectors)``.
 
-    Composes the full pipeline:
+    Uses **structure-first** chunking (spec
+    [06-structural-chunking](../../docs/specs/06-structural-chunking.md)):
 
-    1. :func:`split_sentences(document, max_len=max_size)`
-    2. :func:`split_chunklets(sentences, max_size=max_size)`
-    3. :func:`split_chunks(chunklets, embedder, max_size=max_size)`
-       — semantic split, driven by ``embedder.embed_chunklets``.
-    4. :func:`embed_with_late_chunking(chunks, embedder)` — one
+    1. :func:`split_chunks_structure_first(document, embedder,
+       max_size=max_size, min_size=min_size, segmenter=segmenter)` —
+       the document's heading tree is the primary unit. A section whose
+       whole subtree already fits ``max_size`` is emitted directly, with
+       **no** SaT or embedder call; only an overflowing section falls
+       back to the semantic split (``split_sentences`` →
+       ``split_chunklets`` → ``split_chunks``) on that span alone. This
+       lands headings at chunk starts and skips the slow models on
+       already-fitting sections.
+    2. :func:`embed_with_late_chunking(chunks, embedder)` — one
        context-aware embedding per chunk; ``include_headings=True``
        (the default) prepends the in-scope Markdown heading stack to
        each segment so the embedding sees the document outline.
 
     .. note::
-       Step 4 uses **late chunking**, which is now considered
+       Step 2 uses **late chunking**, which is now considered
        experimental. Downstream RAG benchmarking found it did not beat
        plain isolated-chunk embedding, and it regressed on long
        documents with the bundled causal, last-token-pooled models
-       (Qwen3). For the recommended plain path, compose stages 1-3
-       directly and embed the final chunks in isolation::
+       (Qwen3). For the recommended plain path, run the structural
+       split and embed the final chunks in isolation::
 
-           sentences = split_sentences(document, max_len=max_size)
-           chunklets = split_chunklets(sentences, max_size=max_size)
-           chunks    = await split_chunks(chunklets, embedder, max_size=max_size)
-           vectors   = await embedder.embed_chunklets([c.text for c in chunks])
+           from fancychunk.structure_first import split_chunks_structure_first
+           chunks  = await split_chunks_structure_first(document, embedder, max_size=max_size)
+           vectors = await embedder.embed_chunklets([c.text for c in chunks])
 
-       ``chunk_document``'s behavior is unchanged — it remains the
-       one-call convenience for the late-chunking strategy.
+       To reach the older whole-document semantic split (no structural
+       pass), compose the primitives directly: ``split_sentences`` →
+       ``split_chunklets`` → ``split_chunks``.
 
     The returned chunks satisfy ``"".join(chunks) == document``
-    (SPEC-CHUNK-300). The returned vectors are L2-normalized; row
+    (SPEC-CHUNK-300/900). The returned vectors are L2-normalized; row
     ``i`` is the storage embedding for ``chunks[i]``.
 
-    The same ``embedder`` instance is used for both the partition
-    decision and the late-chunking pass, so its model loads exactly
-    once. Pick the embedder explicitly — ``fancychunk.embedders``
+    The same ``embedder`` instance is used for both the fallback
+    partition decision and the late-chunking pass, so its model loads
+    exactly once. Pick the embedder explicitly — ``fancychunk.embedders``
     has the bundled choices; ``qwen3_600m()`` is the recommended
     default for most uses.
+
+    ``min_size`` is the chunk-size floor below which a structural unit
+    is merged into a neighbor to avoid thin chunks (SPEC-CHUNK-630). It
+    defaults to ``0.35 * max_size``; pass ``0`` to disable merging.
 
     Pass ``segmenter=`` to override the SaT default (e.g. a CUDA-
     configured :class:`SaTSegmenter`, or
     :func:`punctuation_segmenter` for zero-dependency use). When
     ``segmenter`` is ``None`` the process-wide SaT singleton is used.
+    The segmenter is only invoked on the fallback path.
 
     For storage-time heading-breadcrumb decoration, apply
     :func:`enrich_with_headings` to the returned chunks. That step
@@ -134,9 +139,13 @@ async def chunk_document(
     headings in the document via its per-segment heading prepend
     (SPEC-CHUNK-470).
     """
-    sentences = split_sentences(document, max_len=max_size, segmenter=segmenter)
-    chunklets = split_chunklets(sentences, max_size=max_size)
-    chunks = await split_chunks(chunklets, embedder, max_size=max_size)
+    chunks = await split_chunks_structure_first(
+        document,
+        embedder,
+        max_size=max_size,
+        min_size=min_size,
+        segmenter=segmenter,
+    )
     vectors = await embed_with_late_chunking(chunks, embedder)
     return chunks, vectors
 
@@ -147,8 +156,8 @@ async def chunk_documents(
     max_size: int = 2048,
     max_concurrency: int | None = None,
     *,
+    min_size: int | None = None,
     segmenter: SentenceSegmenter | None = None,
-    segmenter_batch_size: int | None | Literal["auto"] = "auto",
 ) -> list[tuple[list[Chunk], NDArray[np.float64]]]:
     """Chunk a batch of documents concurrently against one embedder.
 
@@ -164,50 +173,20 @@ async def chunk_documents(
       embedder's internal lock serializes access to the local device,
       so increasing concurrency above ~2-4 buys little — extra
       coroutines just queue. The win is overlap between one
-      document's CPU work (sentence/chunklet/chunk DP) and another's
-      embedder call.
+      document's CPU work (structural planning, sentence/chunklet/chunk
+      DP on fallback spans) and another's embedder call.
     * With a remote / true-parallel embedder, scale up to the
       server's capacity; pass ``max_concurrency=N`` to cap fan-in if
       the server isn't ready for unbounded concurrent requests.
     * ``max_concurrency=None`` (the default) gathers all documents at
       once with no semaphore.
 
-    Segmenter batching (``segmenter_batch_size``):
-
-    * ``"auto"`` (the default) — turn batching on iff the resolved
-      segmenter wants it. The bundled ``SaTSegmenter`` reports
-      ``wants_batching() == True`` when a GPU execution provider is
-      available, ``False`` on CPU. With the default singleton
-      segmenter that means: install ``onnxruntime-gpu`` on a CUDA
-      box and batching happens; otherwise it doesn't. Batch size is
-      64 (well into the plateau on RTX 3090 + sat-3l-sm).
-    * ``None`` — never batch. Pre-existing semantics; useful if you
-      want to force per-doc segmentation even on a GPU.
-    * ``int`` — always batch with that size, regardless of device.
-
-    Under the hood: SaT runs in waves on a worker thread; each
-    wave's downstream chunking/embedding tasks fire immediately so
-    the next wave's forward pass overlaps with the current wave's
-    downstream work. Measured numbers on this layout (RTX 3090,
-    sat-3l-sm, 1,000 × 1,500-char docs, ``embedders.noop()``):
-    SaT-only batched vs serial on GPU is ~2.2× (0.67 ms/doc batched,
-    1.45 ms/doc serial); the full ``chunk_documents`` pipeline is
-    4.9× over CPU just from ``device="cuda"`` and 6.6× with batching
-    on top.
-
-    The segmenter must satisfy
-    :class:`~fancychunk._segmenter.BatchSentenceSegmenter` (i.e. expose
-    a ``predict_proba_batch`` method) — the bundled
-    :class:`SaTSegmenter` does. Passing an explicit
-    ``segmenter_batch_size`` with a non-batchable custom segmenter
-    raises :class:`ValidationError`; ``"auto"`` resolves to "no batch"
-    for those segmenters.
-
-    CPU-only callers see no benefit (forward FLOPs scale linearly
-    with batch size under ``CPUExecutionProvider``) — ``"auto"``
-    correctly stays off there; the streaming overlap can actually
-    make it slower because SaT waves serialise behind downstream
-    work that would otherwise overlap per-doc.
+    Because :func:`chunk_document` is structure-first, SaT runs only on
+    sections that overflow ``max_size``; a well-sectioned corpus skips
+    the segmenter on most of its text. The slow models are no longer the
+    dominant batch cost they were under whole-document segmentation, so
+    this no longer cross-document-batches the segmenter — each document
+    is segmented lazily on its own fallback spans.
 
     Errors propagate via ``asyncio.gather``'s default semantics: the
     first exception aborts the batch and cancels in-flight siblings.
@@ -216,27 +195,12 @@ async def chunk_documents(
     """
     if max_concurrency is not None and max_concurrency <= 0:
         raise ValidationError("max_concurrency must be positive when set")
-    if (
-        segmenter_batch_size != "auto"
-        and segmenter_batch_size is not None
-        and segmenter_batch_size <= 0
-    ):
-        raise ValidationError(
-            "segmenter_batch_size must be positive when set"
-        )
-
-    if segmenter_batch_size == "auto":
-        segmenter_batch_size = _resolve_auto_batch_size(segmenter)
 
     with get_tracer().start_as_current_span("fancychunk.chunk_documents") as span:
         span.set_attribute("fancychunk.documents.count", len(documents))
         span.set_attribute("fancychunk.max_size", max_size)
         if max_concurrency is not None:
             span.set_attribute("fancychunk.max_concurrency", max_concurrency)
-        if segmenter_batch_size is not None:
-            span.set_attribute(
-                "fancychunk.segmenter_batch_size", segmenter_batch_size
-            )
 
         if not documents:
             return []
@@ -249,86 +213,22 @@ async def chunk_documents(
 
         async def _one(
             doc: str,
-            seg: SentenceSegmenter | None,
         ) -> tuple[list[Chunk], NDArray[np.float64]]:
             if sem is None:
                 return await chunk_document(
-                    doc, embedder, max_size=max_size, segmenter=seg
+                    doc,
+                    embedder,
+                    max_size=max_size,
+                    min_size=min_size,
+                    segmenter=segmenter,
                 )
             async with sem:
                 return await chunk_document(
-                    doc, embedder, max_size=max_size, segmenter=seg
+                    doc,
+                    embedder,
+                    max_size=max_size,
+                    min_size=min_size,
+                    segmenter=segmenter,
                 )
 
-        if segmenter_batch_size is None:
-            return list(
-                await asyncio.gather(
-                    *(_one(doc, segmenter) for doc in documents)
-                )
-            )
-
-        # Batched path: stream SaT waves and fire each wave's
-        # chunk_document tasks immediately, so the next wave's
-        # ``asyncio.to_thread`` runs concurrently with downstream
-        # chunking/embedding for already-segmented docs.
-        resolved = make_segmenter(segmenter)
-        if not isinstance(resolved, BatchSentenceSegmenter):
-            raise ValidationError(
-                "segmenter_batch_size requires a segmenter that "
-                "implements predict_proba_batch (BatchSentenceSegmenter); "
-                "the bundled SaTSegmenter does. Got: "
-                + type(resolved).__name__
-            )
-        batch_fn = resolved.predict_proba_batch
-
-        tasks: list[asyncio.Task[tuple[list[Chunk], NDArray[np.float64]]]] = []
-        tracer = get_tracer()
-        with tracer.start_as_current_span(
-            "fancychunk.chunk_documents.presegment"
-        ) as ps_span:
-            ps_span.set_attribute(
-                "fancychunk.segmenter_batch_size", segmenter_batch_size
-            )
-            ps_span.set_attribute(
-                "fancychunk.documents.count", len(documents)
-            )
-            for start in range(0, len(documents), segmenter_batch_size):
-                slice_docs = documents[start : start + segmenter_batch_size]
-                vecs = await asyncio.to_thread(batch_fn, slice_docs)
-                # BatchSentenceSegmenter.predict_proba_batch returns one
-                # Vector per input — no Nones to filter.
-                for offset, vec in enumerate(vecs):
-                    i = start + offset
-                    tasks.append(
-                        asyncio.create_task(
-                            _one(documents[i], precomputed_segmenter(vec))
-                        )
-                    )
-        try:
-            results = await asyncio.gather(*tasks)
-        except BaseException:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            raise
-        return list(results)
-
-
-def _resolve_auto_batch_size(
-    segmenter: SentenceSegmenter | None,
-) -> int | None:
-    """Decide whether ``segmenter_batch_size="auto"`` means batch-on
-    or batch-off for the given (or default) segmenter.
-
-    Returns :data:`_AUTO_BATCH_SIZE` if the segmenter signals a batch
-    win via ``wants_batching()`` (the bundled :class:`SaTSegmenter`
-    does so when a GPU EP is available), ``None`` (no batching)
-    otherwise. Custom segmenters without that method get a
-    conservative ``None`` — callers who know their segmenter benefits
-    from batching can pass an explicit ``int``.
-    """
-    resolved = make_segmenter(segmenter)
-    wants = getattr(resolved, "wants_batching", None)
-    if callable(wants) and wants():
-        return _AUTO_BATCH_SIZE
-    return None
+        return list(await asyncio.gather(*(_one(doc) for doc in documents)))

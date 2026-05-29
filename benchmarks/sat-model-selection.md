@@ -15,7 +15,7 @@ problem, not something to patch with probability post-processing
 
 **Conclusion: default to `sat-9l-sm`.** It is artifact-free like 12l,
 tracks 12l's boundary placement far better than 3l, and is ~1.3× faster
-than 12l on the production (batched GPU) path. 3l is fastest but
+than 12l on a batched GPU path. 3l is fastest but
 mis-segments scientific prose; 12l is highest quality but slowest. All
 three remain selectable (`fancychunk.segmenters.sat_3l/9l/12l`).
 
@@ -50,8 +50,8 @@ boundaries.
 
 ## Throughput — GPU (production path)
 
-173 docs, mean 12.1K chars, RTX 3090, **batched** (the `chunk_documents`
-production path), `hat`/128/256:
+173 docs, mean 12.1K chars, RTX 3090, **batched** (a batched
+SaT path), `hat`/128/256:
 
 | model | Kchar/s (batched) | ms/doc | vs 12l |
 |---|---|---|---|

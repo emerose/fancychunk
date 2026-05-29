@@ -4,6 +4,36 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-05-29
+
+### Changed
+- **`chunk_document` / `chunk_documents` are now structure-first.** They
+  parse the Markdown heading tree and emit each section that fits
+  `max_size` whole, with no model call; only overflowing sections fall
+  back to the semantic chain (`split_sentences → split_chunklets →
+  split_chunks`) on that span alone. Sections below a size floor
+  (`min_size`, default `0.35 × max_size`) are merged into a neighbor.
+  This is a behavior change: the previous whole-document semantic split
+  is no longer the default. To recover it, compose the primitives
+  yourself (`split_sentences` / `split_chunklets` / `split_chunks`),
+  which remain public. See [spec 06](docs/specs/06-structural-chunking.md)
+  (SPEC-CHUNK-600..640).
+
+### Added
+- `fancychunk.split_chunks_structure_first(document, embedder, max_size,
+  *, min_size=None, segmenter=None)` — the structure-first engine,
+  exported for direct use.
+- `chunk_document` / `chunk_documents` gained a `min_size` parameter
+  (chunk-size floor below which a structural unit is merged into a
+  neighbor; `0` disables merging).
+
+### Removed
+- `chunk_documents(..., segmenter_batch_size=N)` cross-document SaT
+  batching. It is fundamentally incompatible with per-section fallback
+  (a precomputed/batched segmenter ignores the per-span document), so
+  the integration was removed. `SaTSegmenter.wants_batching()` /
+  `predict_proba_batch()` remain as a segmenter-level capability.
+
 ## [0.7.0] - 2026-05-29
 
 ### Added

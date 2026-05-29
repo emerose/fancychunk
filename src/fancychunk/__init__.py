@@ -35,11 +35,13 @@ from ._segmenter import (
     punctuation_segmenter,
 )
 from .sentences import split_sentences
+from .structure_first import split_chunks_structure_first
 
 __all__ = [
     "split_sentences",
     "split_chunklets",
     "split_chunks",
+    "split_chunks_structure_first",
     "Chunk",
     "ChunkletEmbedder",
     "embed_with_late_chunking",

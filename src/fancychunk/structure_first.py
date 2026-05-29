@@ -1,14 +1,13 @@
-"""Spike: structure-first chunking (experimental).
+"""Structure-first chunking — the engine behind :func:`chunk_document`.
 
-An additive, opt-in alternative to the default semantic pipeline
-(:func:`fancychunk.chunk_document` / :func:`fancychunk.split_chunks`).
-It is **not** wired into any default; import it explicitly.
+Honors a document's heading structure before reaching for the slow
+models. For documents *with* headings this is both faster and produces
+better boundaries than letting the O(N^2) similarity DP decide every
+cut: the slow models (SaT sentence segmentation, the chunklet embedder)
+only run on a section that overflows ``max_size``.
 
-Hypothesis (see the spike PR): for documents *with* headings, honoring
-the heading structure first is better for both latency and boundary
-quality than letting the O(N^2) similarity DP decide every cut. The
-slow models (SaT sentence segmentation, the chunklet embedder) only
-need to run on the rare section that overflows ``max_size``.
+Implements spec [06-structural-chunking](../../docs/specs/06-structural-chunking.md)
+(SPEC-CHUNK-600 through SPEC-CHUNK-640).
 
 Pipeline
 --------
@@ -18,29 +17,31 @@ Pipeline
    *entire subtree* already fits in ``max_size``, emit it directly as
    one chunk — **no SaT, no embedding call**. This is the latency win
    and the boundary win: the section becomes the primary unit, so a
-   heading always lands at a chunk start (fixes "Observation C", where
-   a whole-section-that-fits left the heading mid-chunk).
+   heading always lands at a chunk start.
 3. Only a section whose own heading+body still overflows ``max_size``
-   falls back to the existing semantic split
+   falls back to the semantic split
    (``split_sentences`` → ``split_chunklets`` → ``split_chunks``) on
    *that span alone*.
 4. A *bare* heading unit (a container/front-matter heading with no
    body of its own, e.g. ``# Title`` before ``## Abstract``) is merged
    forward into the following unit so a lone heading is never stranded.
-   This is the only structural merge — genuinely short standalone
-   sections are kept as-is (small chunks are not inherently bad).
+5. A unit below ``min_size`` is merged into a neighbor so the partition
+   has no thin, fragmented chunks — see :func:`_merge_small_units`.
+   Genuinely short standalone sections that clear the floor are kept
+   as-is (small chunks are not inherently bad).
 
 Heading levels
 --------------
 ``level(heading)`` = (count of leading ``#``) + (count of ``" ::: "``
-separators in the heading text). This unifies two corpora:
+separators in the heading text). This unifies two heading conventions:
 
 * **Real Markdown** — hierarchy is the ``#`` count (``#`` → 1,
   ``##`` → 2, …), no ``:::`` present.
-* **Qasper** — every section heading is rendered flat as ``##`` and the
-  hierarchy is encoded in the *text* as a ``:::`` path
-  (``## Methodology ::: Sub ::: Step``). The ``:::`` count recovers the
-  real depth.
+* **Flat ``##`` with a ``:::`` path** — every section heading is
+  rendered flat as ``##`` and the hierarchy is encoded in the *text*
+  as a ``:::`` path (``## Methodology ::: Sub ::: Step``). The ``:::``
+  count recovers the real depth. (This is how the Qasper corpus
+  renders section hierarchy.)
 
 Invariants (same as the default pipeline)
 -----------------------------------------
@@ -51,10 +52,11 @@ Invariants (same as the default pipeline)
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 from . import _constants as C
 from ._segmenter import SentenceSegmenter
+from ._telemetry import get_tracer
 from .chunks import Chunk, ChunkletEmbedder, split_chunks
 from .chunklets import split_chunklets
 from .errors import ValidationError
@@ -70,28 +72,6 @@ _SEP = " ::: "
 # than this is merged into a neighbor (forward first) to avoid thin,
 # fragmented chunks — see ``_merge_small_units``.
 _MIN_CHUNK_FRACTION = 0.35
-
-
-@dataclass
-class StructureFirstStats:
-    """Optional instrumentation for the benchmark harness.
-
-    Populated in place when passed to
-    :func:`split_chunks_structure_first`. ``chars_direct`` /
-    ``chars_fallback`` partition the document; their ratio is the
-    fraction of work that skipped the slow models.
-    """
-
-    units_direct: int = 0
-    units_fallback: int = 0
-    chars_direct: int = 0
-    chars_fallback: int = 0
-    fallback_spans: list[tuple[int, int]] = field(default_factory=list)
-
-    @property
-    def direct_fraction(self) -> float:
-        total = self.chars_direct + self.chars_fallback
-        return self.chars_direct / total if total else 1.0
 
 
 @dataclass(frozen=True)
@@ -345,9 +325,8 @@ async def split_chunks_structure_first(
     *,
     min_size: int | None = None,
     segmenter: SentenceSegmenter | None = None,
-    stats: StructureFirstStats | None = None,
 ) -> list[Chunk]:
-    """Structure-first chunking of ``document`` (experimental).
+    """Structure-first chunking of ``document``.
 
     Sections that already fit ``max_size`` are emitted directly with no
     model calls; only an overflowing section falls back to the semantic
@@ -366,38 +345,55 @@ async def split_chunks_structure_first(
     if not document:
         return []
 
-    units = plan_units(document, max_size, min_size=min_size)
+    with get_tracer().start_as_current_span(
+        "fancychunk.split_chunks_structure_first"
+    ) as span:
+        span.set_attribute("fancychunk.document.chars", len(document))
+        span.set_attribute("fancychunk.max_size", max_size)
 
-    bare: list[Chunk] = []
-    for unit in units:
-        span = document[unit.start : unit.end]
-        if not unit.needs_model:
-            if stats is not None:
-                stats.units_direct += 1
-                stats.chars_direct += len(span)
-            bare.append(Chunk(text=span, start=unit.start, end=unit.end))
-            continue
+        units = plan_units(document, max_size, min_size=min_size)
 
-        # Fallback: run the slow semantic split on this span alone, then
-        # rebase offsets back into the full document.
-        if stats is not None:
-            stats.units_fallback += 1
-            stats.chars_fallback += len(span)
-            stats.fallback_spans.append((unit.start, unit.end))
-        sentences = split_sentences(span, max_len=max_size, segmenter=segmenter)
-        chunklets = split_chunklets(sentences, max_size=max_size)
-        sub_chunks = await split_chunks(chunklets, embedder, max_size=max_size)
-        for sc in sub_chunks:
-            bare.append(
-                Chunk(
-                    text=sc.text,
-                    start=unit.start + (sc.start or 0),
-                    end=unit.start + (sc.end or len(sc.text)),
+        units_direct = units_fallback = 0
+        chars_direct = chars_fallback = 0
+
+        bare: list[Chunk] = []
+        for unit in units:
+            span_text = document[unit.start : unit.end]
+            if not unit.needs_model:
+                units_direct += 1
+                chars_direct += len(span_text)
+                bare.append(
+                    Chunk(text=span_text, start=unit.start, end=unit.end)
                 )
+                continue
+
+            # Fallback: run the semantic split on this span alone, then
+            # rebase offsets back into the full document.
+            units_fallback += 1
+            chars_fallback += len(span_text)
+            sentences = split_sentences(
+                span_text, max_len=max_size, segmenter=segmenter
             )
+            chunklets = split_chunklets(sentences, max_size=max_size)
+            sub_chunks = await split_chunks(
+                chunklets, embedder, max_size=max_size
+            )
+            for sc in sub_chunks:
+                bare.append(
+                    Chunk(
+                        text=sc.text,
+                        start=unit.start + (sc.start or 0),
+                        end=unit.start + (sc.end or len(sc.text)),
+                    )
+                )
 
-    # Populate heading_path with the same scan the default pipeline uses.
-    from .headings import heading_paths
+        span.set_attribute("fancychunk.units.direct", units_direct)
+        span.set_attribute("fancychunk.units.fallback", units_fallback)
+        span.set_attribute("fancychunk.chars.direct", chars_direct)
+        span.set_attribute("fancychunk.chars.fallback", chars_fallback)
 
-    paths = heading_paths(bare)
-    return [replace(c, heading_path=p) for c, p in zip(bare, paths)]
+        # Populate heading_path with the same scan the default pipeline uses.
+        from .headings import heading_paths
+
+        paths = heading_paths(bare)
+        return [replace(c, heading_path=p) for c, p in zip(bare, paths)]

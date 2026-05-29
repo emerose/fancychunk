@@ -114,6 +114,30 @@ def test_chunk_document_with_noop_embedder_works() -> None:
         assert np.allclose(vectors[0], vectors[1])
 
 
+def test_chunk_document_is_structure_first() -> None:
+    """chunk_document is structure-first: a multi-section doc whose
+    sections each fit is split on heading boundaries, so each section
+    chunk starts at its heading — and a constant (noop) embedder never
+    gets to influence the partition."""
+    # Bodies are large enough to clear the default min_size floor
+    # (0.35 * 2048 ≈ 716) so sections aren't merged, but each still fits
+    # max_size, so each is emitted whole at its heading.
+    body = ("Sentence of section body. " * 35).strip()  # ~900 chars
+    doc = (
+        "# Title\n\n"
+        f"## Abstract\n\n{body}\n\n"
+        f"## Methods\n\n{body}\n\n"
+        f"## Results\n\n{body}\n"
+    )
+    chunks, _ = asyncio.run(chunk_document(doc, noop()))
+    assert "".join(c.text for c in chunks) == doc
+    # More than one chunk (sections are honored, not packed to the cap).
+    assert len(chunks) > 1
+    # Every chunk begins at a heading line.
+    for c in chunks:
+        assert c.text.lstrip().startswith("#")
+
+
 def test_chunk_document_respects_max_size() -> None:
     """Every chunk in the output is at most ``max_size`` characters."""
     doc = (

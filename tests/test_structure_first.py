@@ -1,10 +1,10 @@
-"""Tests for the experimental structure-first spike.
+"""Tests for structure-first chunking.
 
-These cover the invariants the spike must not regress: covering,
+These cover the invariants the partitioner must hold: covering,
 round-trip, fitting sections emitted with no model call, oversized
-sections falling back to the semantic split, and bare/front-matter
-headings never stranded. The fallback path uses ``punctuation_segmenter``
-so no SaT model loads in CI.
+sections falling back to the semantic split, bare/front-matter
+headings never stranded, and the minimum-size merge. The fallback
+path uses ``punctuation_segmenter`` so no SaT model loads in CI.
 """
 
 from __future__ import annotations

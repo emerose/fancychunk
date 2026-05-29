@@ -78,6 +78,23 @@ content doesn't carry.
 
 See [05-contextual-headings.md](05-contextual-headings.md).
 
+## Composition: structure-first chunking
+
+The `chunk_document` convenience entry point does not run stages 1-3
+over the whole document. It runs **structure-first chunking**: the
+document's heading tree is the primary unit, and a section whose whole
+subtree already fits `max_size` is emitted as a chunk directly — with
+no sentence segmenter and no embedder call. Only a section that
+overflows `max_size` falls back to stages 1-3 (`split_sentences` →
+`split_chunklets` → `split_chunks`) on that span alone. This lands
+headings at chunk starts and skips the slow models on already-fitting
+sections.
+
+Stages 1-3 remain the required, independently testable primitives;
+structure-first is a composition layer over them, and the fallback
+*is* the stage 1-3 pipeline. See
+[06-structural-chunking.md](06-structural-chunking.md).
+
 ## Cross-stage invariants
 
 ### SPEC-CHUNK-900 — Concatenation round-trip
@@ -163,12 +180,13 @@ All three stages share a single notion of "maximum unit size" in
 characters, defaulting to `2048`. This is the `max_size` parameter
 on the chunklet and chunk stage.
 
-The pipeline has no top-level "do everything" function; callers wire
-the three stages themselves. When doing so, the caller should pass
-`max_len = max_size` to `split_sentences` so that no sentence exceeds
-the downstream size limit, satisfying stage 2's precondition
-(SPEC-CHUNK-263). `split_sentences`'s own default is `max_len = None`
-because the function is also useful standalone.
+The required pipeline is the three stages; an implementation may also
+offer a top-level convenience (`chunk_document`) that composes them via
+structure-first chunking. When wiring the three stages directly, the
+caller should pass `max_len = max_size` to `split_sentences` so that no
+sentence exceeds the downstream size limit, satisfying stage 2's
+precondition (SPEC-CHUNK-263). `split_sentences`'s own default is
+`max_len = None` because the function is also useful standalone.
 
 Implementations are free to expose stage-specific size limits if they
 have a use case requiring different limits per stage. The recommended

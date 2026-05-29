@@ -286,145 +286,15 @@ def test_precomputed_segmenter_round_trips_in_split_sentences() -> None:
 
 
 # ---------------------------------------------------------------------------
-# chunk_documents + segmenter_batch_size.
+# chunk_document / chunk_documents segmenter wiring.
 # ---------------------------------------------------------------------------
 
 
-def test_chunk_documents_uses_batched_segmenter_when_requested() -> None:
-    """When segmenter_batch_size is set, the segmenter's
-    predict_proba_batch is invoked instead of the per-doc __call__."""
-    calls: dict[str, int] = {"single": 0, "batch": 0}
-
-    class CountingSeg:
-        def __call__(self, document: str) -> np.ndarray:
-            calls["single"] += 1
-            return np.zeros(len(document), dtype=np.float64)
-
-        def predict_proba_batch(
-            self, documents: list[str]
-        ) -> list[np.ndarray]:
-            calls["batch"] += 1
-            return [np.zeros(len(d), dtype=np.float64) for d in documents]
-
-    docs = [
-        "First doc. With sentence.",
-        "Second one here. Two sentences.",
-        "Third short.",
-    ]
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    asyncio.run(
-        chunk_documents(
-            docs,
-            embedder,
-            segmenter=CountingSeg(),
-            segmenter_batch_size=2,
-        )
-    )
-    # 3 docs at batch size 2 → 2 batched calls; zero per-doc calls.
-    assert calls["batch"] == 2
-    assert calls["single"] == 0
-
-
-def test_chunk_documents_batched_matches_serial_output() -> None:
-    """Batched chunk_documents must produce identical chunks to the
-    serial path (modulo unrelated nondeterminism)."""
-
-    class CountingSeg:
-        """Wraps punctuation_segmenter so we can use the same logic
-        in both __call__ and predict_proba_batch paths."""
-
-        def __init__(self) -> None:
-            from fancychunk import punctuation_segmenter
-
-            self._impl = punctuation_segmenter
-
-        def __call__(self, document: str) -> np.ndarray:
-            return self._impl(document)
-
-        def predict_proba_batch(
-            self, documents: list[str]
-        ) -> list[np.ndarray]:
-            return [self._impl(d) for d in documents]
-
-    docs = [
-        "# Heading\n\nFirst doc. With body content here. And more.\n",
-        "Second doc with multiple sentences. Two. Three.\n",
-        "Short third.\n",
-    ]
-    seg = CountingSeg()
-
-    embedder_a = FakeEmbedder(dim=8, n_ctx=512)
-    serial = asyncio.run(
-        chunk_documents(docs, embedder_a, segmenter=seg)
-    )
-    embedder_b = FakeEmbedder(dim=8, n_ctx=512)
-    batched = asyncio.run(
-        chunk_documents(
-            docs, embedder_b, segmenter=seg, segmenter_batch_size=2
-        )
-    )
-    assert len(serial) == len(batched)
-    for (cs, vs), (cb, vb) in zip(serial, batched):
-        assert cs == cb
-        assert np.array_equal(vs, vb)
-
-
-def test_chunk_documents_rejects_batch_size_with_non_batchable_segmenter() -> None:
-    """A custom segmenter without predict_proba_batch can't use
-    segmenter_batch_size — raise ValidationError early, not silently
-    fall back."""
-    from fancychunk import punctuation_segmenter
-
-    with pytest.raises(ValidationError, match="predict_proba_batch"):
-        asyncio.run(
-            chunk_documents(
-                ["doc."],
-                FakeEmbedder(dim=8, n_ctx=512),
-                segmenter=punctuation_segmenter,
-                segmenter_batch_size=4,
-            )
-        )
-
-
-def test_chunk_documents_rejects_invalid_segmenter_batch_size() -> None:
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    with pytest.raises(ValidationError, match="segmenter_batch_size"):
-        asyncio.run(
-            chunk_documents(["a."], embedder, segmenter_batch_size=0)
-        )
-    with pytest.raises(ValidationError, match="segmenter_batch_size"):
-        asyncio.run(
-            chunk_documents(["a."], embedder, segmenter_batch_size=-1)
-        )
-
-
-def test_chunk_documents_empty_with_batch_size_is_noop() -> None:
-    """Empty input + batch size → no error, no segmenter calls."""
-    calls: dict[str, int] = {"batch": 0}
-
-    class CountingSeg:
-        def __call__(self, document: str) -> np.ndarray:
-            return np.zeros(len(document), dtype=np.float64)
-
-        def predict_proba_batch(
-            self, documents: list[str]
-        ) -> list[np.ndarray]:
-            calls["batch"] += 1
-            return [np.zeros(len(d), dtype=np.float64) for d in documents]
-
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    results = asyncio.run(
-        chunk_documents(
-            [], embedder, segmenter=CountingSeg(), segmenter_batch_size=4
-        )
-    )
-    assert results == []
-    assert calls["batch"] == 0
-
-
 def test_chunk_document_accepts_segmenter_override() -> None:
-    """Per-doc chunk_document also takes segmenter= so per-call
-    callers can use a custom-configured (e.g. GPU) SaTSegmenter."""
+    """Per-doc chunk_document takes segmenter= so per-call callers can
+    use a custom-configured (e.g. GPU) SaTSegmenter. Structure-first
+    only invokes the segmenter on the fallback path, so the document
+    here is built to overflow ``max_size`` and force that path."""
     seen: list[str] = []
 
     def recording_seg(document: str) -> np.ndarray:
@@ -434,49 +304,58 @@ def test_chunk_document_accepts_segmenter_override() -> None:
 
         return punctuation_segmenter(document)
 
-    doc = "First sentence. Second sentence.\n"
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    # No headings + over max_size → a single fallback unit covering the
+    # whole document, so the segmenter sees exactly the full text. Use a
+    # small max_size and a roomy n_ctx so the fallback chunks fit late
+    # chunking's per-segment context budget.
+    doc = "First sentence here. Second sentence here. " * 40
+    embedder = FakeEmbedder(dim=8, n_ctx=4096)
     chunks, vectors = asyncio.run(
-        chunk_document(doc, embedder, segmenter=recording_seg)
+        chunk_document(doc, embedder, max_size=512, segmenter=recording_seg)
     )
     assert "".join(c.text for c in chunks) == doc
     assert seen == [doc]
 
 
-def test_chunk_documents_batched_with_max_concurrency() -> None:
-    """Batched + concurrent are independent dials — both can be set."""
+def test_chunk_document_fitting_doc_skips_segmenter() -> None:
+    """A document that fits ``max_size`` is emitted structurally with no
+    segmenter call at all."""
+    calls: list[str] = []
 
-    class CountingSeg:
-        def __init__(self) -> None:
-            from fancychunk import punctuation_segmenter
+    def recording_seg(document: str) -> np.ndarray:
+        calls.append(document)
+        return np.zeros(len(document), dtype=np.float64)
 
-            self._impl = punctuation_segmenter
-            self.batch_calls = 0
+    doc = "# Title\n\nShort body that comfortably fits.\n"
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    chunks, _ = asyncio.run(
+        chunk_document(doc, embedder, segmenter=recording_seg)
+    )
+    assert "".join(c.text for c in chunks) == doc
+    assert calls == []
 
-        def __call__(self, document: str) -> np.ndarray:
-            return self._impl(document)
 
-        def predict_proba_batch(
-            self, documents: list[str]
-        ) -> list[np.ndarray]:
-            self.batch_calls += 1
-            return [self._impl(d) for d in documents]
+def test_chunk_documents_empty_is_noop() -> None:
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    assert asyncio.run(chunk_documents([], embedder)) == []
 
-    docs = [f"Doc number {i}. Body here.\n" for i in range(5)]
-    seg = CountingSeg()
+
+def test_chunk_documents_with_max_concurrency() -> None:
+    """max_concurrency caps fan-in without changing per-doc output."""
+    docs = [f"# Doc {i}\n\nBody number {i}. More body.\n" for i in range(5)]
     embedder = FakeEmbedder(dim=8, n_ctx=512)
     results = asyncio.run(
-        chunk_documents(
-            docs,
-            embedder,
-            segmenter=seg,
-            segmenter_batch_size=2,
-            max_concurrency=2,
-        )
+        chunk_documents(docs, embedder, max_concurrency=2)
     )
     assert len(results) == 5
-    # ceil(5/2) = 3 batched segmenter calls.
-    assert seg.batch_calls == 3
+    for doc, (chunks, _) in zip(docs, results):
+        assert "".join(c.text for c in chunks) == doc
+
+
+def test_chunk_documents_rejects_invalid_max_concurrency() -> None:
+    embedder = FakeEmbedder(dim=8, n_ctx=512)
+    with pytest.raises(ValidationError, match="max_concurrency"):
+        asyncio.run(chunk_documents(["a."], embedder, max_concurrency=0))
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +477,7 @@ def test_install_fast_postprocess_respects_env_kill_switch(
 
 
 # ---------------------------------------------------------------------------
-# wants_batching() + segmenter_batch_size="auto".
+# wants_batching() — SaTSegmenter capability hint.
 # ---------------------------------------------------------------------------
 
 
@@ -642,146 +521,3 @@ def test_wants_batching_auto_peeks_at_available_providers(
         lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
     assert seg.wants_batching() is True
-
-
-def test_chunk_documents_auto_batches_when_segmenter_wants_it() -> None:
-    """``segmenter_batch_size="auto"`` (the default) hits the batched
-    path when the segmenter reports wants_batching()."""
-    calls: dict[str, int] = {"single": 0, "batch": 0}
-
-    class WantingSeg:
-        def __call__(self, document: str) -> np.ndarray:
-            calls["single"] += 1
-            return np.zeros(len(document), dtype=np.float64)
-
-        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
-            calls["batch"] += 1
-            return [np.zeros(len(d), dtype=np.float64) for d in documents]
-
-        def wants_batching(self) -> bool:
-            return True
-
-    docs = [f"Doc {i}. Body.\n" for i in range(5)]
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    asyncio.run(chunk_documents(docs, embedder, segmenter=WantingSeg()))
-    assert calls["batch"] >= 1
-    assert calls["single"] == 0
-
-
-def test_chunk_documents_auto_skips_batch_when_segmenter_declines() -> None:
-    """A SaTSegmenter-on-CPU declines batching; auto-mode honors that."""
-    calls: dict[str, int] = {"single": 0, "batch": 0}
-
-    class DecliningSeg:
-        def __call__(self, document: str) -> np.ndarray:
-            calls["single"] += 1
-            return np.zeros(len(document), dtype=np.float64)
-
-        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
-            calls["batch"] += 1
-            return [np.zeros(len(d), dtype=np.float64) for d in documents]
-
-        def wants_batching(self) -> bool:
-            return False
-
-    docs = [f"Doc {i}. Body.\n" for i in range(5)]
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    asyncio.run(chunk_documents(docs, embedder, segmenter=DecliningSeg()))
-    assert calls["batch"] == 0
-    # No-batch path goes through the per-doc segmenter inside chunk_document.
-    assert calls["single"] == 5
-
-
-def test_chunk_documents_explicit_none_overrides_auto() -> None:
-    """Explicit ``segmenter_batch_size=None`` forces no batching even
-    when the segmenter wants it — preserves pre-v0.5 semantics."""
-    calls: dict[str, int] = {"single": 0, "batch": 0}
-
-    class WantingSeg:
-        def __call__(self, document: str) -> np.ndarray:
-            calls["single"] += 1
-            return np.zeros(len(document), dtype=np.float64)
-
-        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
-            calls["batch"] += 1
-            return [np.zeros(len(d), dtype=np.float64) for d in documents]
-
-        def wants_batching(self) -> bool:
-            return True
-
-    docs = [f"Doc {i}. Body.\n" for i in range(5)]
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    asyncio.run(
-        chunk_documents(
-            docs, embedder, segmenter=WantingSeg(), segmenter_batch_size=None
-        )
-    )
-    assert calls["batch"] == 0
-    assert calls["single"] == 5
-
-
-def test_chunk_documents_explicit_int_overrides_auto() -> None:
-    """Explicit ``segmenter_batch_size=N`` always batches, even for a
-    segmenter that says wants_batching() is False (the caller knows
-    something we don't)."""
-    calls: dict[str, int] = {"single": 0, "batch": 0}
-
-    class DecliningSeg:
-        def __call__(self, document: str) -> np.ndarray:
-            calls["single"] += 1
-            return np.zeros(len(document), dtype=np.float64)
-
-        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
-            calls["batch"] += 1
-            return [np.zeros(len(d), dtype=np.float64) for d in documents]
-
-        def wants_batching(self) -> bool:
-            return False
-
-    docs = [f"Doc {i}. Body.\n" for i in range(5)]
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    asyncio.run(
-        chunk_documents(
-            docs, embedder, segmenter=DecliningSeg(), segmenter_batch_size=2
-        )
-    )
-    assert calls["batch"] == 3  # ceil(5/2)
-    assert calls["single"] == 0
-
-
-def test_chunk_documents_auto_for_segmenter_without_wants_batching() -> None:
-    """A custom segmenter that doesn't implement wants_batching() — e.g.
-    a plain callable, or a BatchSentenceSegmenter from before the
-    protocol existed — defaults to no batching under auto-mode."""
-    calls: dict[str, int] = {"single": 0, "batch": 0}
-
-    class LegacyBatchSeg:
-        def __call__(self, document: str) -> np.ndarray:
-            calls["single"] += 1
-            return np.zeros(len(document), dtype=np.float64)
-
-        def predict_proba_batch(self, documents: list[str]) -> list[np.ndarray]:
-            calls["batch"] += 1
-            return [np.zeros(len(d), dtype=np.float64) for d in documents]
-
-    docs = [f"Doc {i}. Body.\n" for i in range(5)]
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    asyncio.run(chunk_documents(docs, embedder, segmenter=LegacyBatchSeg()))
-    # auto-mode is conservative for segmenters without the hint.
-    assert calls["batch"] == 0
-    assert calls["single"] == 5
-
-
-def test_chunk_documents_auto_with_plain_callable_segmenter() -> None:
-    """A plain SentenceSegmenter callable goes through the no-batch
-    path under auto-mode — no ValidationError because we never tried
-    to batch."""
-    from fancychunk import punctuation_segmenter
-
-    docs = [f"Doc {i}. Body.\n" for i in range(3)]
-    embedder = FakeEmbedder(dim=8, n_ctx=512)
-    # Should not raise; auto-mode resolves to no batch for a callable.
-    results = asyncio.run(
-        chunk_documents(docs, embedder, segmenter=punctuation_segmenter)
-    )
-    assert len(results) == 3

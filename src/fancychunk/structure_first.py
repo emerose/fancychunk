@@ -25,7 +25,12 @@ Pipeline
 4. A *bare* heading unit (a container/front-matter heading with no
    body of its own, e.g. ``# Title`` before ``## Abstract``) is merged
    forward into the following unit so a lone heading is never stranded.
-5. A unit below ``min_size`` is merged into a neighbor so the partition
+5. A *small* parent-section intro (an overflowing parent's own
+   heading+lead-in prose, emitted before its child subsections) is
+   folded forward into its first child so a section lead-in is never
+   severed from the section it introduces — see
+   :func:`_fold_parent_intros`.
+6. A unit below ``min_size`` is merged into a neighbor so the partition
    has no thin, fragmented chunks — see :func:`_merge_small_units`.
    Genuinely short standalone sections that clear the floor are kept
    as-is (small chunks are not inherently bad).
@@ -85,11 +90,18 @@ class _Segment:
 
 @dataclass(frozen=True)
 class _Unit:
-    """A planned output span and whether it needs the slow models."""
+    """A planned output span and whether it needs the slow models.
+
+    ``fold_forward`` marks a unit emitted by :func:`_plan_range` for an
+    overflowing parent's own heading+lead-in prose, when that parent has
+    child subsections following it. A *small* such unit is folded into
+    its first child by :func:`_fold_parent_intros` so a section lead-in
+    is never stranded as a thin chunk."""
 
     start: int
     end: int
     needs_model: bool
+    fold_forward: bool = False
 
 
 def _heading_level(line: str) -> int:
@@ -164,12 +176,19 @@ def _plan_range(
             out.append(_Unit(subtree_start, subtree_end, needs_model=False))
         else:
             # Node's own heading+body (the prose before its first child).
-            own_end = segs[i + 1].start if (i + 1) < j else subtree_end
+            has_children = (i + 1) < j
+            own_end = segs[i + 1].start if has_children else subtree_end
             own_len = own_end - subtree_start
-            if own_len <= max_size:
-                out.append(_Unit(subtree_start, own_end, needs_model=False))
-            else:
-                out.append(_Unit(subtree_start, own_end, needs_model=True))
+            # The own-head+body unit can fold into its first child only
+            # when there *is* a child (the unit it precedes in ``out``).
+            out.append(
+                _Unit(
+                    subtree_start,
+                    own_end,
+                    needs_model=own_len > max_size,
+                    fold_forward=has_children,
+                )
+            )
             # Recurse into the children, bounded by this subtree's end.
             _plan_range(segs, i + 1, j, subtree_end, max_size, out)
         i = j
@@ -209,6 +228,7 @@ def _merge_bare_headings(
                 carry.start,
                 unit.end,
                 carry.needs_model or unit.needs_model or overflow,
+                fold_forward=unit.fold_forward,
             )
             carry = None
         if _is_bare_heading(document, unit) and (unit.end - unit.start) < max_size:
@@ -227,6 +247,68 @@ def _merge_bare_headings(
             )
         else:
             merged.append(carry)
+    return merged
+
+
+def _fold_parent_intros(
+    units: list[_Unit], max_size: int, min_size: int
+) -> list[_Unit]:
+    """Fold a small parent-section intro forward into its first child.
+
+    SPEC-CHUNK-632. When an overflowing parent section emits its own
+    heading + lead-in prose as a unit before recursing into its child
+    subsections, :func:`_plan_range` flags that unit ``fold_forward``.
+    A *short* such intro (below ``min_size``) sitting before an oversized
+    first child would otherwise strand as a thin standalone chunk:
+    :func:`_merge_small_units` cannot absorb it forward (the oversized
+    child would push the combined span past ``max_size``), and gluing it
+    backward into the previous sibling is topically wrong (a different
+    section). The intro is the natural lead-in to the first subsection
+    and shares the parent's heading context, so it belongs with it.
+
+    This pass merges each ``fold_forward`` intro shorter than ``min_size``
+    into the immediately-following unit (its first child) by extending
+    that unit's start back to the intro's start. ``needs_model`` becomes
+    ``True`` when the combined span overflows ``max_size`` (so the
+    fallback splitter keeps the intro with the first child's first chunk)
+    or the child already needed a model. The merge target keeps its own
+    ``fold_forward`` flag, so a chain of nested overflowing parents folds
+    correctly down to the first leaf.
+
+    Args:
+        units: The contiguous unit tiling, after :func:`_merge_bare_headings`.
+        max_size: Hard upper bound on a unit's character span.
+        min_size: Floor below which a ``fold_forward`` intro is folded.
+
+    Returns:
+        A new contiguous tiling with small parent intros folded into
+        their first child. Intros at or above ``min_size`` are left as
+        standalone chunks; non-``fold_forward`` units are untouched.
+        Covering is preserved (only adjacent spans are joined).
+    """
+    if min_size <= 0 or not units:
+        return units
+    merged: list[_Unit] = []
+    pending: _Unit | None = None  # a small parent intro awaiting its child
+    for unit in units:
+        if pending is not None:
+            unit = _Unit(
+                pending.start,
+                unit.end,
+                pending.needs_model
+                or unit.needs_model
+                or (unit.end - pending.start) > max_size,
+                fold_forward=unit.fold_forward,
+            )
+            pending = None
+        if unit.fold_forward and (unit.end - unit.start) < min_size:
+            pending = unit
+            continue
+        merged.append(unit)
+    if pending is not None:
+        # A fold_forward unit always precedes its first child, so this is
+        # unreachable; keep the span rather than drop it if it ever isn't.
+        merged.append(pending)
     return merged
 
 
@@ -315,6 +397,7 @@ def plan_units(
         _plan_range(segs, 0, len(segs), n, max_size, units)
 
     units = _merge_bare_headings(document, units, max_size)
+    units = _fold_parent_intros(units, max_size, min_size)
     return _merge_small_units(units, max_size, min_size)
 
 

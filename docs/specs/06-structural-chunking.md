@@ -105,6 +105,37 @@ only joins adjacent spans). A genuine leftover tail (the last unit, or
 a section wedged against an oversized neighbor it cannot legally merge
 into) may remain below the floor.
 
+### SPEC-CHUNK-632 — Parent-intro fold
+
+When an overflowing parent section emits its own heading + lead-in prose
+(the text before its first child subheading) as a unit before recursing
+into its children (SPEC-CHUNK-620), and that intro is shorter than
+`min_size`, it is folded **forward** into its first child: the first
+child's unit is extended back to the intro's start so the two are
+emitted — or semantically split — together.
+
+This is strictly a parent → own-first-child fold. It never reaches
+across into an unrelated sibling section (which would mix distinct
+topics, e.g. gluing an abstract into the introduction). It exists
+because the minimum-size merge (SPEC-CHUNK-631) cannot rescue this case:
+when the first child is itself oversized, the combined intro+child span
+exceeds `max_size`, so the floor merge cannot absorb the intro forward,
+and gluing it backward into the previous sibling is topically wrong. The
+intro is the natural lead-in to the first subsection and shares the
+parent's heading context, so folding it forward dissolves the strand at
+its source.
+
+When the folded span overflows `max_size` it goes to the fallback split
+(SPEC-CHUNK-621). The leading chunk's small-chunk badness
+(SPEC-CHUNK-323) outweighs the heading-aware split-before discount at
+the child heading, so the splitter carries the intro into the first
+child's first chunk rather than re-severing it.
+
+The fold runs after the bare-heading merge (SPEC-CHUNK-630) and before
+the minimum-size merge (SPEC-CHUNK-631): a *bare* parent heading (no
+lead-in prose) is already merged forward by SPEC-CHUNK-630 and so is not
+handled here.
+
 ## Rationale
 
 For a well-sectioned document, most text lives in sections that already

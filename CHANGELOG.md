@@ -26,6 +26,14 @@ the project follows [Semantic Versioning](https://semver.org/).
 - `chunk_document` / `chunk_documents` gained a `min_size` parameter
   (chunk-size floor below which a structural unit is merged into a
   neighbor; `0` disables merging).
+- **Parent-intro fold** (SPEC-CHUNK-632) in the structure-first planner.
+  When an overflowing parent section's own heading + lead-in prose is
+  shorter than `min_size` and its first child subsection is itself
+  oversized, the intro is folded forward into that first child instead of
+  stranding as a thin standalone chunk (the minimum-size merge cannot
+  rescue this case, since the combined span overflows `max_size`). The
+  fold is strictly parent → own-first-child; sibling sections are never
+  merged.
 
 ### Removed
 - `chunk_documents(..., segmenter_batch_size=N)` cross-document SaT

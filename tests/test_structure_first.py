@@ -15,6 +15,7 @@ import re
 from fancychunk import punctuation_segmenter
 from fancychunk.embedders import noop
 from fancychunk.structure_first import (
+    _fold_parent_intros,
     _heading_level,
     _merge_small_units,
     _Unit,
@@ -219,3 +220,118 @@ def test_merge_disabled_with_zero_min_size() -> None:
         _Unit(50, 100, needs_model=False),
     ]
     assert _merge_small_units(units, max_size=2048, min_size=0) == units
+
+
+# --- SPEC-CHUNK-632 — parent-intro fold ---------------------------------
+
+
+def test_small_parent_intro_folds_into_oversized_first_child() -> None:
+    # A short section lead-in sitting before an oversized first
+    # subsection must not strand as a thin chunk; it folds into the
+    # first child and rides with that child's first chunk.
+    intro = (
+        "In this section, we first discuss our experiments on the "
+        "word recognition systems."
+    )
+    assert len(intro) < 716  # below the default floor
+    child1 = ("Word recognition sentence here. " * 80).strip()  # oversized
+    child2 = ("Recaser sentence here too. " * 90).strip()  # oversized
+    doc = (
+        f"## Experiments\n\n{intro}\n\n"
+        f"### Word Recognition\n\n{child1}\n\n"
+        f"### Recaser\n\n{child2}\n"
+    )
+    intro_span_end = doc.index("### Word Recognition")
+    units = plan_units(doc, max_size=2048)
+    # The intro is no longer a standalone unit ending at the child heading.
+    assert not any(
+        u.start == 0 and u.end == intro_span_end for u in units
+    ), "parent intro stranded as its own unit"
+    # The first unit folds the intro into the first child.
+    first = units[0]
+    assert first.start == 0
+    assert "### Word Recognition" in doc[first.start : first.end]
+
+    chunks = _run(doc, noop(), max_size=2048, segmenter=punctuation_segmenter)
+    assert "".join(c.text for c in chunks) == doc
+    intro_chunks = [c for c in chunks if intro in c.text]
+    assert len(intro_chunks) == 1, "intro split across chunks"
+    # It rides with the first child's first chunk (carries its heading).
+    assert "### Word Recognition" in intro_chunks[0].text
+
+
+def test_small_parent_intro_folds_into_fitting_first_child() -> None:
+    # Small parent intro + a first child that fits → one combined direct
+    # unit (no model call), within max_size.
+    intro = "Brief lead-in to the section."
+    child1 = ("First child body sentence. " * 15).strip()  # fits
+    child2 = ("Second child sentence here. " * 120).strip()  # oversized
+    doc = (
+        f"## Parent\n\n{intro}\n\n"
+        f"### First\n\n{child1}\n\n"
+        f"### Second\n\n{child2}\n"
+    )
+    units = plan_units(doc, max_size=2048, min_size=300)
+    combined = units[0]
+    assert combined.start == 0
+    assert combined.needs_model is False
+    assert (combined.end - combined.start) <= 2048
+    text = doc[combined.start : combined.end]
+    assert intro in text
+    assert "### First" in text
+    assert "### Second" not in text
+
+
+def test_large_parent_intro_stays_standalone() -> None:
+    # A parent intro that already clears the floor is a fine standalone
+    # chunk — it must NOT be folded into the child.
+    intro = ("This intro is long enough to stand on its own here. " * 16).strip()
+    assert len(intro) >= 716
+    child = ("Child body sentence here. " * 120).strip()  # oversized
+    doc = f"## Parent\n\n{intro}\n\n### Child\n\n{child}\n"
+    intro_end = doc.index("### Child")
+    units = plan_units(doc, max_size=2048)
+    assert any(
+        u.start == 0 and u.end == intro_end for u in units
+    ), "large parent intro was folded but should stay standalone"
+
+
+def test_bare_parent_heading_handled_by_bare_merge_not_fold() -> None:
+    # A bare parent heading (no lead-in prose) before an oversized child
+    # is handled by the bare-heading merge, not the intro fold — and not
+    # double-handled.
+    child = ("Child sentence here now. " * 130).strip()  # oversized
+    doc = f"## Parent\n\n### Child\n\n{child}\n"
+    chunks = _run(doc, noop(), max_size=2048, segmenter=punctuation_segmenter)
+    assert "".join(c.text for c in chunks) == doc
+    heading_re = re.compile(r"#{1,6}(\s|$)")
+    for c in chunks:
+        nonblank = [ln for ln in c.text.splitlines() if ln.strip()]
+        only_headings = all(heading_re.match(ln) for ln in nonblank)
+        assert not only_headings, f"stranded heading chunk: {c.text!r}"
+    assert chunks[0].text.lstrip().startswith("## Parent")
+    assert "### Child" in chunks[0].text
+
+
+def test_sibling_sections_are_not_folded() -> None:
+    # The fold is strictly parent → own-first-child. Two sibling
+    # top-level sections (no fold_forward flag) are left untouched even
+    # when the first is tiny.
+    abstract = _Unit(0, 100, needs_model=False, fold_forward=False)
+    intro = _Unit(100, 5000, needs_model=True, fold_forward=False)
+    assert _fold_parent_intros(
+        [abstract, intro], max_size=2048, min_size=716
+    ) == [abstract, intro]
+
+    # End-to-end: an abstract that clears the floor stays its own chunk,
+    # never folded into the following oversized introduction.
+    abstract_body = ("Abstract sentence here. " * 45).strip()  # >= 716, fits
+    intro_body = ("Introduction sentence here. " * 120).strip()  # oversized
+    doc = (
+        f"## Abstract\n\n{abstract_body}\n\n"
+        f"## Introduction\n\n{intro_body}\n"
+    )
+    chunks = _run(doc, noop(), max_size=2048, segmenter=punctuation_segmenter)
+    abstract_chunks = [c for c in chunks if "## Abstract" in c.text]
+    assert len(abstract_chunks) == 1
+    assert "## Introduction" not in abstract_chunks[0].text

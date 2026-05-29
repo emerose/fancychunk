@@ -76,6 +76,14 @@ class PooledSegmentEmbedder:
         picks ``"mlx"`` on Apple Silicon when ``mlx_embeddings`` is
         importable AND ``model_id`` is recognized as an MLX build
         (i.e. the namespace starts with ``mlx-community/``).
+    trust_remote_code:
+        Pass ``trust_remote_code=True`` to the HuggingFace
+        ``from_pretrained`` calls (torch backend only). Required by
+        models that ship a custom architecture in their repo (e.g.
+        ``jinaai/jina-embeddings-v3``). Defaults to ``False`` — only
+        the factories for such models opt in. Enabling it executes
+        code downloaded from the model repo, so keep it off for
+        models that don't need it.
     """
 
     def __init__(
@@ -86,12 +94,14 @@ class PooledSegmentEmbedder:
         device: str = "auto",
         batch_size: int = 32,
         backend: Backend = "auto",
+        trust_remote_code: bool = False,
     ) -> None:
         self.model_id = model_id
         self.pooling: PoolingMethod = pooling
         self.output_dim = output_dim
         self._device_pref = device
         self.batch_size = batch_size
+        self.trust_remote_code = trust_remote_code
         self._backend_pref: Backend = backend
         self._backend: Literal["torch", "mlx"] | None = None
         self._model: Any = None
@@ -166,8 +176,14 @@ class PooledSegmentEmbedder:
             ) from e
 
         self._device = self._pick_torch_device()
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-        self._model = AutoModel.from_pretrained(self.model_id, dtype=torch.float16)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            self.model_id, trust_remote_code=self.trust_remote_code
+        )
+        self._model = AutoModel.from_pretrained(
+            self.model_id,
+            dtype=torch.float16,
+            trust_remote_code=self.trust_remote_code,
+        )
         self._model.eval()
         if self._device != "cpu":
             self._model = self._model.to(self._device)

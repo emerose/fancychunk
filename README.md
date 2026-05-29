@@ -40,22 +40,36 @@ NDCG@10/Recall@10/MRR@10 stats from ragkit.  compare:
 fancychunk is async-first — the entry points that touch an embedder
 are `async def`. Sync callers wrap with `asyncio.run(...)`.
 
+The recommended pipeline is **split, then embed each chunk in
+isolation**: `split_sentences → split_chunklets → split_chunks`,
+then `embed_chunklets` on the final chunks for your storage vectors.
+
 ```python
 import asyncio
-from fancychunk import chunk_document
+from fancychunk import split_sentences, split_chunklets, split_chunks
 from fancychunk.embedders import qwen3_600m
 
 async def main():
     embedder = qwen3_600m()                                 # probably the right pick
-    chunks, vectors = await chunk_document(
-        open("my-document.md").read(), embedder
-    )
+    doc = open("my-document.md").read()
+
+    sentences = split_sentences(doc, max_len=2048)
+    chunklets = split_chunklets(sentences, max_size=2048)
+    chunks    = await split_chunks(chunklets, embedder, max_size=2048)
+    vectors   = await embedder.embed_chunklets([c.text for c in chunks])
     # chunks[i].text is the chunk content; chunks[i].start / .end are
     # character offsets into the original document; vectors[i] is the
-    # storage embedding for chunks[i]. Drop straight into your store.
+    # isolated storage embedding for chunks[i]. Drop straight into your
+    # store.
 
 asyncio.run(main())
 ```
+
+Prefer one call? `chunk_document(doc, embedder)` composes the same
+three stages, but its final embedding pass uses **late chunking**
+(see [Late chunking](#late-chunking)) — an enrichment that
+benchmarked *below* this plain isolated-chunk path, so reach for it
+only if you want to experiment.
 
 Each chunk is a `Chunk` — a frozen dataclass with `text` (always
 present) plus optional metadata:
@@ -73,14 +87,17 @@ existing code.
 
 ### Building blocks
 
-`chunk_document` is sugar over the four primitives. Compose them
-directly when you want more control — different embedders per
-stage, different `max_size` per stage, a structural-only split, or
-storage-time heading breadcrumbs.
+The primitives compose directly — that's the plain pipeline shown in
+[Quick start](#quick-start). Reach for them when you want more
+control: different embedders per stage, different `max_size` per
+stage, a structural-only split, storage-time heading breadcrumbs, or
+to swap the final embedding pass for the experimental late-chunking
+enrichment.
 
 `split_sentences` and `split_chunklets` are sync (no await points);
-`split_chunks` and `embed_with_late_chunking` are async (they call
-the embedder):
+`split_chunks`, `embed_chunklets`, and `embed_with_late_chunking` are
+async (they call the embedder). To add storage-time heading
+breadcrumbs and embed each chunk in isolation:
 
 ```python
 import asyncio
@@ -88,7 +105,6 @@ from fancychunk import (
     split_sentences,
     split_chunklets,
     split_chunks,
-    embed_with_late_chunking,
     enrich_with_headings,
 )
 from fancychunk.embedders import qwen3_600m
@@ -100,10 +116,15 @@ async def main():
     sentences = split_sentences(doc, max_len=2048)
     chunklets = split_chunklets(sentences, max_size=2048)
     chunks    = await split_chunks(chunklets, embedder, max_size=2048)
-    vectors   = await embed_with_late_chunking(chunks, embedder)
+    chunks    = enrich_with_headings(chunks)               # optional breadcrumbs
+    vectors   = await embedder.embed_chunklets([c.text for c in chunks])
 
 asyncio.run(main())
 ```
+
+To experiment with late chunking instead, swap the last line for
+`vectors = await embed_with_late_chunking(chunks, embedder)` — but
+see the [caveat](#late-chunking) first.
 
 ## What it does
 
@@ -146,12 +167,28 @@ taxonomy), subject to a hard max-size covering constraint.
 
 ## Enrichment
 
-The pipeline includes two enrichment steps that pull document
-context into each chunk's output. **Both are baked into
-`chunk_document`** with sensible defaults; the building-blocks form
-exposes them as separate primitives.
+fancychunk exposes two enrichment steps that pull document context
+into each chunk's output: heading-path enrichment (recommended) and
+late chunking (experimental). `chunk_document` applies both; the
+plain pipeline applies neither unless you ask for it.
 
-### Late chunking
+### Late chunking (experimental)
+
+> **Heads up.** Late chunking is kept for experimentation, not as a
+> recommended default. In downstream RAG benchmarking it did **not**
+> beat plain isolated-chunk embedding: on BEIR/scifact (short
+> abstracts) it gave only ~+2.85% NDCG@10 with a 0.6B embedder and
+> *hurt* the 8B model (−1.91%); on Qasper (long papers) it lost to
+> isolated embedding at 0.6B and collapsed at 8B, roughly halving
+> chunk-level evidence recall. The cause is vector homogenization —
+> pooling each chunk's tokens out of one shared forward pass pushes
+> every chunk vector to point the same way (within-paper median
+> cosine reached 0.96 vs 0.67 for the healthy isolated baseline), so
+> cosine ranking degrades to noise. The effect is worst on the
+> bundled **causal, last-token-pooled** Qwen3 models; late chunking
+> was designed for *bidirectional, mean-pooled* encoders, which is
+> why `jina_v3()` is now bundled as the fair test. Until that holds
+> up, prefer the plain `embed_chunklets` path.
 
 `embed_with_late_chunking(chunks, embedder)` produces one
 context-aware vector per chunk. Instead of embedding each chunk in
@@ -159,8 +196,9 @@ isolation, the embedder sees windows of adjacent chunks together so
 attention can resolve anaphora ("the algorithm" picks up its real
 referent), and the in-scope Markdown heading stack is **prepended
 once per segment** as additional preamble (controlled by
-`include_headings=True`, on by default). Typical retrieval-quality
-win is 4–8 MTEB points (Jina AI's paper has the numbers).
+`include_headings=True`, on by default). Jina AI's paper reports an
+MTEB win on bidirectional mean-pooled encoders; the caveat above is
+when *and on which architectures* that win failed to reproduce.
 
 Because the heading stack is already in the embedder's input, **the
 embedding already incorporates heading context** — there's no need
@@ -256,13 +294,23 @@ rest sat in a per-document Python loop in `wtpsplit-lite`'s
 a vectorised replacement on first load. Set
 `FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1` to opt out.
 
-**Embedders.** Four bundled models trade quality for latency. You
+**Embedders.** Five bundled models trade quality for latency. You
 pick one explicitly — there's no hidden default — and pass it
 through to `chunk_document` (or to the individual primitives). The
 recommended choice for most workloads is **`qwen3_600m()`**: good
 quality (MTEB Multilingual 64.33, the sub-1B leader), modest
 memory (~0.5 GB on MLX-mxfp8, ~1 GB on torch), and fast enough to
 keep interactive workflows responsive.
+
+`jina_v3()` is the one **bidirectional, mean-pooled** option —
+jina-embeddings-v3 (570M, 8192 context, native 1024-dim). The other
+four are causal, last-token- or CLS-pooled. If you want to
+experiment with late chunking (see the
+[Late chunking](#late-chunking) caveat), this is the architecture it
+was designed for. Two strings attached: the weights are **CC BY-NC
+4.0** (non-commercial — the others are Apache-2.0 / MIT), and the
+model ships custom architecture code, so the factory sets
+`trust_remote_code=True` and runs on torch only (no MLX build).
 
 The factories live in `fancychunk.embedders` and require one of
 the install extras above (`[torch]` or `[mlx]`). Calling
@@ -296,6 +344,7 @@ Apple Silicon, MLX path (M2 MacBook Air):
 | `qwen3_600m()` | MLX¹ / torch | Qwen3-Embedding-0.6B | 596M | 1024 | ~0.5 GB | 79 ms | 1,186 | **64.33** | **70.70** |
 | `qwen3_4b()` | MLX¹ / torch | Qwen3-Embedding-4B | 3.6B | 2560 | ~4 GB | 516 ms | 182 | **69.45** | **74.60** |
 | `qwen3_8b()` | MLX¹ / torch | Qwen3-Embedding-8B | 7.6B | 4096 | ~7 GB | 950 ms | 99 | **70.58** | **75.22** |
+| `jina_v3()` | torch³ | jina-embeddings-v3 (mean pooling) | 570M | 1024 | ~1 GB | —³ | —³ | 64.44 | 65.52 |
 
 Linux, torch + CUDA path (RTX 3090)²:
 
@@ -305,6 +354,7 @@ Linux, torch + CUDA path (RTX 3090)²:
 | `qwen3_600m()` | torch | 32 ms | 2,974 |
 | `qwen3_4b()` | torch | 39 ms | 2,426 |
 | `qwen3_8b()` | torch | 44 ms | 2,162 |
+| `jina_v3()` | torch | —³ | —³ |
 
 `qwen3_4b` and `qwen3_8b` accept a `dim=N` argument to truncate via
 Matryoshka Representation Learning and re-L2-normalize; the compute
@@ -326,10 +376,22 @@ on Linux 6.17 with PyTorch 2.12.0 + bundled CUDA 13.0 wheels (Python
 weights live on VRAM. Same 3-chunklet `bench_factories.py` batch as
 the Mac measurements.
 
+³ `jina_v3()` was added without re-running the throughput suite — the
+ms/tokens-per-second cells (—) are not yet measured on this hardware;
+run `python bench_factories.py` to fill them in. Resident is the
+fp16-weights estimate (570M params). MTEB figures are from the model
+card: 64.44 is MMTEB (multilingual), 65.52 is the classic MTEB
+English average — different MTEB vintages than the Qwen3 / BGE-M3
+rows, so read across rows with care. `jina-embeddings-v3` has no
+`mlx-community` build the bundled MLX loader recognizes, so it runs
+on the torch backend everywhere (MPS on Apple Silicon, CUDA / CPU
+elsewhere); its weights are CC BY-NC 4.0 (non-commercial) and the
+factory enables `trust_remote_code=True`.
+
 
 ### Bring your own embedder
 
-fancychunk ships four bundled embedders (see [Models](#models)).
+fancychunk ships five bundled embedders (see [Models](#models)).
 If you need your own — different backend, custom model, remote
 service — implement the protocol. All three methods are **async**:
 

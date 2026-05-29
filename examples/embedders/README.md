@@ -1,7 +1,7 @@
 # Reference Embedder adapters
 
 fancychunk ships its own bundled embedders (`qwen3_600m`,
-`bge_m3`, `qwen3_4b`, `qwen3_8b`, `noop`) — see the main
+`bge_m3`, `qwen3_4b`, `qwen3_8b`, `jina_v3`, `noop`) — see the main
 [Models](../../README.md#models) section. These adapters are for
 when you need to wire in a different backend: a model the library
 doesn't ship, a custom inference stack, or a remote service.

@@ -59,8 +59,8 @@ class Embedder(Protocol):
     model loads exactly once.
 
     All bundled embedders (``fancychunk.embedders.bge_m3``,
-    ``qwen3_600m``, ``qwen3_4b``, ``qwen3_8b``, ``noop``) satisfy
-    this protocol. BYO embedders that previously implemented only
+    ``qwen3_600m``, ``qwen3_4b``, ``qwen3_8b``, ``jina_v3``,
+    ``noop``) satisfy this protocol. BYO embedders that previously implemented only
     the late-chunking ``SegmentEmbedder`` contract need to also
     expose ``async embed_chunklets(chunklets) -> Matrix[N, D]`` —
     typically a thin batch loop over their pooled-output mode.
@@ -96,6 +96,22 @@ async def chunk_document(
        context-aware embedding per chunk; ``include_headings=True``
        (the default) prepends the in-scope Markdown heading stack to
        each segment so the embedding sees the document outline.
+
+    .. note::
+       Step 4 uses **late chunking**, which is now considered
+       experimental. Downstream RAG benchmarking found it did not beat
+       plain isolated-chunk embedding, and it regressed on long
+       documents with the bundled causal, last-token-pooled models
+       (Qwen3). For the recommended plain path, compose stages 1-3
+       directly and embed the final chunks in isolation::
+
+           sentences = split_sentences(document, max_len=max_size)
+           chunklets = split_chunklets(sentences, max_size=max_size)
+           chunks    = await split_chunks(chunklets, embedder, max_size=max_size)
+           vectors   = await embedder.embed_chunklets([c.text for c in chunks])
+
+       ``chunk_document``'s behavior is unchanged — it remains the
+       one-call convenience for the late-chunking strategy.
 
     The returned chunks satisfy ``"".join(chunks) == document``
     (SPEC-CHUNK-300). The returned vectors are L2-normalized; row

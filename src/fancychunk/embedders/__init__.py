@@ -1,6 +1,6 @@
 """Bundled embedders for fancychunk.
 
-Five factories, each returning a fresh embedder instance. Pick the
+Six factories, each returning a fresh embedder instance. Pick the
 one you want; pass it to ``split_chunks``,
 ``embed_with_late_chunking``, or ``chunk_document``.
 
@@ -13,6 +13,11 @@ one you want; pass it to ``split_chunks``,
   Pass ``dim=N`` to truncate via Matryoshka Representation Learning.
 * :func:`qwen3_8b` — Qwen3-Embedding-8B. 7.6B params, native 4096-dim.
   Pass ``dim=N`` for MRL truncation. Tight on a 24 GB Mac.
+* :func:`jina_v3` — jina-embeddings-v3 (mean pooling). 570M params,
+  native 1024-dim, 8192 context. The only bundled **bidirectional,
+  mean-pooled** encoder — the architecture late chunking was designed
+  for (Jina AI authored both the model and the technique). CC BY-NC
+  4.0 (non-commercial); needs ``trust_remote_code=True``.
 * :func:`noop` — :class:`NoopSegmentEmbedder`. Returns constant
   per-chunklet vectors. Use ``split_chunks(chunklets, noop())`` for a
   no-model-download structural-only split.
@@ -141,6 +146,39 @@ def qwen3_8b(dim: int | None = None) -> PooledSegmentEmbedder:
     )
 
 
+def jina_v3() -> PooledSegmentEmbedder:
+    """jina-embeddings-v3 (mean pooling).
+
+    ~570M parameters, native 1024-dim, 8192 context. MTEB English
+    65.52 / Multilingual (MMTEB) 64.44. Built on Jina-XLM-RoBERTa — a
+    **bidirectional, mean-pooled** encoder, in contrast to the causal
+    last-token-pooled Qwen3 tiers. That makes it the on-architecture
+    choice for :func:`fancychunk.embed_with_late_chunking`: late
+    chunking pools each chunk's token span out of a shared forward
+    pass, an operation that is far better posed on a bidirectional
+    encoder (Jina AI authored both this model and the late-chunking
+    technique) than on a causal model whose pooled vector is a single
+    end-of-sequence token. It is equally usable on the plain
+    :meth:`embed_chunklets` path.
+
+    Two caveats versus the other bundled factories:
+
+    * **License:** the weights are CC BY-NC 4.0 (non-commercial). The
+      Qwen3 and BGE-M3 factories are Apache-2.0 / MIT.
+    * **Custom code:** the model ships its architecture in its repo, so
+      this factory sets ``trust_remote_code=True`` — loading it
+      executes code downloaded from HuggingFace. There is no MLX build
+      compatible with the bundled MLX loader, so this factory always
+      runs on the torch backend (MPS / CUDA / CPU); install the
+      ``[torch]`` extra.
+    """
+    return PooledSegmentEmbedder(
+        model_id="jinaai/jina-embeddings-v3",
+        pooling="mean",
+        trust_remote_code=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Constant-output factory.
 # ---------------------------------------------------------------------------
@@ -169,5 +207,6 @@ __all__ = [
     "qwen3_600m",
     "qwen3_4b",
     "qwen3_8b",
+    "jina_v3",
     "noop",
 ]

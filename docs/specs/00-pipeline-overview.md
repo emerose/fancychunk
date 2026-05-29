@@ -61,6 +61,13 @@ chunklet-embedding matrix into stage 3.
 
 See [04-late-chunking.md](04-late-chunking.md).
 
+> Status note: late chunking is experimental, not a recommended
+> default. Downstream RAG benchmarking did not see it beat plain
+> isolated-chunk embedding (and it regressed on long documents with
+> causal, last-token-pooled models). The behavior specified here is
+> unchanged; see the README "Late chunking (experimental)" section
+> for the benchmark detail.
+
 ## Optional: Contextual chunk headings
 
 A small helper that consumes stage 3's output and produces, for each

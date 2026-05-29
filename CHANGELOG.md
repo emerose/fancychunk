@@ -4,6 +4,44 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-05-29
+
+### Added
+- `fancychunk.embedders.jina_v3()` — a sixth bundled embedder:
+  jina-embeddings-v3 (~570M params, native 1024-dim, 8192 context),
+  the first **bidirectional, mean-pooled** option (the other tiers are
+  causal last-token / CLS pooled). It is the architecture late chunking
+  was designed for — Jina AI authored both the model and the technique
+  — so it doubles as the fair test for the late-chunking caveat below,
+  and works on the plain `embed_chunklets` path. Two strings attached,
+  both documented on the factory: the weights are CC BY-NC 4.0
+  (non-commercial, vs Apache-2.0 / MIT for the others), and the model
+  ships custom architecture code, so the factory enables
+  `trust_remote_code=True` and runs on the torch backend everywhere
+  (no MLX build). MTEB English 65.52 / MMTEB 64.44 (model card).
+- `PooledSegmentEmbedder(trust_remote_code=...)` — new constructor flag
+  (default `False`, torch backend only) threaded into the HuggingFace
+  `from_pretrained` calls, for models that ship a custom architecture.
+
+### Changed
+- **Late chunking is now framed as experimental, not the recommended
+  default.** Downstream RAG benchmarking found it did not beat plain
+  isolated-chunk embedding: on BEIR/scifact (short abstracts) only
+  ~+2.85% NDCG@10 at 0.6B and −1.91% at 8B; on Qasper (long papers) it
+  lost to isolated embedding at 0.6B and collapsed at 8B (chunk-level
+  evidence recall roughly halved). Root cause is vector homogenization
+  — pooling each chunk's tokens out of one shared forward pass drives
+  chunk vectors to point the same way (within-paper median cosine 0.96
+  vs 0.67 for the healthy isolated baseline), so cosine ranking degrades
+  to noise; the effect is worst on the bundled causal, last-token-pooled
+  models. The README, examples, pipeline-overview spec, and
+  `chunk_document` docstring now lead with the plain pipeline
+  (`split_sentences → split_chunklets → split_chunks` + `embed_chunklets`)
+  and document the caveat. **No behavior or signature changed:**
+  `embed_with_late_chunking` and `chunk_document` (which still applies
+  late chunking) work exactly as before — only the recommended default
+  and framing moved.
+
 ## [0.6.2] - 2026-05-29
 
 ### Fixed

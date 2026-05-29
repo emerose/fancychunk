@@ -28,9 +28,9 @@ the primary unit, so headings land at chunk starts.
 
 | File | Purpose |
 |------|---------|
-| `src/fancychunk/structure_first.py` | The prototype. `plan_units()` is the pure structure-only planner (no models); `split_chunks_structure_first()` is the async splitter. |
-| `tests/test_structure_first.py` | Invariants: covering, round-trip, fitting-sections-skip-the-embedder, oversized-fallback, bare-heading merge. |
-| `benchmarks/structure_first_spike.py` | `measure` (fit-fraction) and `compare` (both pipelines head to head) over `NomaDamas/qasper`. |
+| `src/fancychunk/structure_first.py` | The prototype. `plan_units()` is the pure structure-only planner (no models); `split_chunks_structure_first()` is the async splitter. Both take a tunable `min_size` floor (`_merge_small_units`). |
+| `tests/test_structure_first.py` | Invariants: covering, round-trip, fitting-sections-skip-the-embedder, oversized-fallback, bare-heading merge, and the minimum-size merge (forward/backward glue, floor not packed to cap, no heading-only chunk). |
+| `benchmarks/structure_first_spike.py` | `measure` (fit-fraction), `compare` (both pipelines head to head), and `histogram` (min-size merge off vs on, no models) over `NomaDamas/qasper`. |
 
 Heading levels are unified across corpora:
 `level = (# count) + (count of " ::: " in the heading text)`. Real
@@ -65,16 +65,19 @@ sections, hence "only" 42% rather than higher.)
 SaT = `sat-9l-sm` (CPU — no `onnxruntime-gpu` on this box, so SaT is
 char-proportional and is the dominant cost), `max_size=2048`.
 
+All structure-first numbers below include the minimum-size merge
+(Measurement 3); `min_size = 0.35 × max_size = 716`.
+
 | paper | pipeline | latency | speedup | chunks | heading@start | heading mid-chunk | covering | round-trip |
 |-------|----------|--------:|--------:|-------:|--------------:|------------------:|:--------:|:----------:|
-| 1909.13375 | current | 5483 ms | — | 19 | 17/19 | 12 | ✓ | ✓ |
-| (80.5% direct) | structure-first | 792 ms | **6.9×** | 28 | 26/28 | **3** | ✓ | ✓ |
-| 1910.07601 | current | 4616 ms | — | 16 | 9/16 | 7 | ✓ | ✓ |
-| (30.6% direct) | structure-first | 2319 ms | **2.0×** | 20 | 13/20 | **3** | ✓ | ✓ |
-| 1908.05925 | current | 3433 ms | — | 14 | 13/14 | 17 | ✓ | ✓ |
-| (86.1% direct) | structure-first | 355 ms | **9.7×** | 26 | 25/26 | **5** | ✓ | ✓ |
+| 1909.13375 | current | 6834 ms | — | 19 | 17/19 | 12 | ✓ | ✓ |
+| (80.5% direct) | structure-first | 1066 ms | **6.4×** | 21 | 19/21 | 10 | ✓ | ✓ |
+| 1910.07601 | current | 5798 ms | — | 16 | 9/16 | 7 | ✓ | ✓ |
+| (30.6% direct) | structure-first | 3126 ms | **1.9×** | 20 | 13/20 | **3** | ✓ | ✓ |
+| 1908.05925 | current | 4310 ms | — | 14 | 13/14 | 17 | ✓ | ✓ |
+| (86.1% direct) | structure-first | 476 ms | **9.0×** | 17 | 16/17 | 14 | ✓ | ✓ |
 
-**Aggregate: 13.5 s → 3.5 s, ~3.9× overall.** Speedup tracks the
+**Aggregate: 16.9 s → 4.7 s, ~3.6× overall.** Speedup tracks the
 direct fraction (which tracks how well-sectioned the paper is), because
 SaT cost is char-proportional here and SaT is the dominant stage
 (e.g. 1909: SaT-on-whole-doc 6.2 s vs. split_chunks 0.3 s).
@@ -108,6 +111,41 @@ SaT cost is char-proportional here and SaT is the dominant stage
 - **Covering + round-trip invariants** — `"".join(chunks) == document`
   and every chunk `≤ max_size` (tested + verified on all three papers).
 
+## Measurement 3 — minimum-size merge (thin-chunk fix)
+
+The first cut respected every heading boundary, which over-fragmented
+papers with many short sections (a stub `## Acknowledgments`, a one-line
+`## Methodology` pointer, etc.): ~30% of structure-first chunks landed
+under 700 chars, some as small as 128.
+
+The fix is a model-free **minimum-size merge** (`_merge_small_units`):
+a unit below a floor (`min_size`, default `0.35 × max_size = 716`)
+absorbs the *next* unit (the sibling/child it introduces) until it
+clears the floor, as long as the combined span stays `≤ max_size`. A
+thin unit that can't grow forward (next would overflow) glues *backward*
+into its predecessor. It fires **only** to clear the floor — it stops
+the moment a unit reaches `min_size`, so distinct sections are never
+packed up to the cap (honoring "small chunks are fine; just not stubs").
+
+`histogram` (structure-only, no models) over the three cited papers:
+
+| paper | units before→after | under-floor (716) before→after | min size before→after |
+|-------|:------------------:|:------------------------------:|:---------------------:|
+| 1909.13375 | 26 → 21 | 10 → **0** | 219 → 752 |
+| 1906.01502 | 18 → 12 |  9 → **1** | 128 → ~720 |
+| 1908.05925 | 25 → 16 | 15 → **1** | 128 → 578 |
+
+The one residual under-floor unit per paper is a genuine leftover tail
+(the last unit, or a section wedged against an oversized neighbor it
+can't legally merge into) — not a stub with mergeable content beside it.
+
+Tradeoff: merging a thin heading-led section forward moves *its* heading
+to mid-chunk, so the raw "heading mid-chunk" count ticks up versus the
+un-merged cut (e.g. 1908 5 → 14). The *parent* heading still leads each
+chunk; what's interior is the absorbed thin subsection's heading. That's
+the intended exchange — fewer, more substantial chunks instead of stubs.
+Covering and round-trip still hold on all three papers with the merge on.
+
 ## Verdict
 
 **Worth pursuing.** On well-sectioned documents the latency win is large
@@ -133,6 +171,8 @@ Caveats / follow-ups before this is more than a spike:
 
 ```
 uv run --with datasets python -m benchmarks.structure_first_spike measure --num-papers 400
+uv run --with datasets python -m benchmarks.structure_first_spike histogram \
+    --paper 1908.05925 --paper 1909.13375 --paper 1906.01502
 uv run --with datasets python -m benchmarks.structure_first_spike compare \
     --paper 1908.05925 --paper 1909.13375 --paper 1910.07601 --embedder qwen3
 ```

@@ -66,6 +66,11 @@ from .sentences import split_sentences
 _HEADING_RE = re.compile(r"(#{1,6})(?:\s|$)")
 _SEP = " ::: "
 
+# Default chunk-size floor as a fraction of ``max_size``. A unit smaller
+# than this is merged into a neighbor (forward first) to avoid thin,
+# fragmented chunks — see ``_merge_small_units``.
+_MIN_CHUNK_FRACTION = 0.35
+
 
 @dataclass
 class StructureFirstStats:
@@ -245,13 +250,74 @@ def _merge_bare_headings(
     return merged
 
 
-def plan_units(document: str, max_size: int = C.DEFAULT_MAX_SIZE_CHARS) -> list[_Unit]:
+def _merge_small_units(
+    units: list[_Unit], max_size: int, min_size: int
+) -> list[_Unit]:
+    """Merge sub-``min_size`` units into a neighbor to avoid thin chunks.
+
+    Greedy forward pass: a unit below the floor absorbs the following
+    unit(s) — the next sibling/child it introduces — until it clears
+    ``min_size``, as long as the combined span stays within ``max_size``.
+    A thin unit that cannot grow forward (the next unit would overflow)
+    falls back to gluing *backward* into its predecessor when that fits.
+
+    The merge only ever fires to clear the floor: it stops absorbing the
+    moment a unit reaches ``min_size``, so distinct sections are never
+    packed together up to the cap. ``needs_model`` is OR-ed across a
+    merge. Covering is preserved because units are a contiguous tiling
+    and a merge only joins adjacent spans."""
+    if min_size <= 0 or not units:
+        return units
+
+    def _glue_back(merged: list[_Unit], unit: _Unit) -> None:
+        """Append ``unit``, gluing it backward if it is thin and fits."""
+        if (
+            merged
+            and (unit.end - unit.start) < min_size
+            and (unit.end - merged[-1].start) <= max_size
+        ):
+            prev = merged[-1]
+            merged[-1] = _Unit(
+                prev.start, unit.end, prev.needs_model or unit.needs_model
+            )
+        else:
+            merged.append(unit)
+
+    merged: list[_Unit] = []
+    cur: _Unit | None = None
+    for unit in units:
+        if cur is None:
+            cur = unit
+            continue
+        if (cur.end - cur.start) < min_size and (unit.end - cur.start) <= max_size:
+            # Absorb forward to clear the floor.
+            cur = _Unit(cur.start, unit.end, cur.needs_model or unit.needs_model)
+            continue
+        _glue_back(merged, cur)
+        cur = unit
+    if cur is not None:
+        _glue_back(merged, cur)
+    return merged
+
+
+def plan_units(
+    document: str,
+    max_size: int = C.DEFAULT_MAX_SIZE_CHARS,
+    *,
+    min_size: int | None = None,
+) -> list[_Unit]:
     """Pure structure-only plan: the output spans and which need models.
 
     Shared by the measurement script and the splitter so both agree on
-    what "already fits" means. No SaT, no embedding."""
+    what "already fits" means. No SaT, no embedding.
+
+    ``min_size`` is the chunk-size floor below which a unit is merged into
+    a neighbor (see :func:`_merge_small_units`); it defaults to
+    ``_MIN_CHUNK_FRACTION * max_size``."""
     if max_size <= 0:
         raise ValidationError("max_size must be positive")
+    if min_size is None:
+        min_size = int(_MIN_CHUNK_FRACTION * max_size)
     n = len(document)
     if n == 0:
         return []
@@ -268,7 +334,8 @@ def plan_units(document: str, max_size: int = C.DEFAULT_MAX_SIZE_CHARS) -> list[
     if segs:
         _plan_range(segs, 0, len(segs), n, max_size, units)
 
-    return _merge_bare_headings(document, units, max_size)
+    units = _merge_bare_headings(document, units, max_size)
+    return _merge_small_units(units, max_size, min_size)
 
 
 async def split_chunks_structure_first(
@@ -276,6 +343,7 @@ async def split_chunks_structure_first(
     embedder: ChunkletEmbedder,
     max_size: int = C.DEFAULT_MAX_SIZE_CHARS,
     *,
+    min_size: int | None = None,
     segmenter: SentenceSegmenter | None = None,
     stats: StructureFirstStats | None = None,
 ) -> list[Chunk]:
@@ -284,6 +352,9 @@ async def split_chunks_structure_first(
     Sections that already fit ``max_size`` are emitted directly with no
     model calls; only an overflowing section falls back to the semantic
     pipeline (``split_sentences`` → ``split_chunklets`` → ``split_chunks``).
+
+    Units smaller than ``min_size`` (default ``_MIN_CHUNK_FRACTION *
+    max_size``) are merged into a neighbor to avoid thin chunks.
 
     ``embedder`` and ``segmenter`` are only used on the fallback path.
     Returns :class:`Chunk` objects with ``start`` / ``end`` offsets into
@@ -295,7 +366,7 @@ async def split_chunks_structure_first(
     if not document:
         return []
 
-    units = plan_units(document, max_size)
+    units = plan_units(document, max_size, min_size=min_size)
 
     bare: list[Chunk] = []
     for unit in units:

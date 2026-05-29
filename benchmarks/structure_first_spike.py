@@ -124,6 +124,58 @@ def cmd_measure(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# histogram — min-size merge off vs on (structure-only, no models)
+# ---------------------------------------------------------------------------
+
+
+def _size_buckets(sizes: list[int], max_size: int) -> list[tuple[str, int]]:
+    edges = [0, 200, 400, 700, 1000, 1500, max_size + 1]
+    labels = [
+        f"{lo:>4}-{hi - 1:<4}" for lo, hi in zip(edges, edges[1:])
+    ]
+    counts = [0] * (len(edges) - 1)
+    for s in sizes:
+        for k in range(len(edges) - 1):
+            if edges[k] <= s < edges[k + 1]:
+                counts[k] += 1
+                break
+    return list(zip(labels, counts))
+
+
+def cmd_histogram(args: argparse.Namespace) -> None:
+    """Before/after chunk-size histogram for the min-size merge.
+
+    Uses ``plan_units`` only (no SaT, no embedder). Thin chunks come from
+    *direct* (already-fitting) units, which ``plan_units`` determines
+    fully, so unit-span lengths are a faithful proxy for the chunk-size
+    distribution where fragmentation lives."""
+    from fancychunk.structure_first import plan_units
+
+    only = set(args.paper) if args.paper else None
+    papers = load_papers(args.num_papers if not only else None, only_ids=only)
+    floor = int(0.35 * MAX_SIZE) if args.min_size is None else args.min_size
+    print(f"histogram over {len(papers)} paper(s); max_size={MAX_SIZE}; "
+          f"min_size floor (after) = {floor}\n")
+
+    for pid, md in papers:
+        before = [u.end - u.start for u in plan_units(md, MAX_SIZE, min_size=0)]
+        after = [
+            u.end - u.start for u in plan_units(md, MAX_SIZE, min_size=floor)
+        ]
+        thin_before = sum(1 for s in before if s < floor)
+        thin_after = sum(1 for s in after if s < floor)
+        print(f"=== {pid}  ({len(md)} chars) ===")
+        print(f"  units            before {len(before):>3d}   after {len(after):>3d}")
+        print(f"  under floor({floor:>4}) before {thin_before:>3d}   after {thin_after:>3d}")
+        bb = dict(_size_buckets(before, MAX_SIZE))
+        ab = dict(_size_buckets(after, MAX_SIZE))
+        print(f"  {'size bucket':<12}{'before':>8}{'after':>8}")
+        for label in bb:
+            print(f"  {label:<12}{bb[label]:>8d}{ab[label]:>8d}")
+        print()
+
+
+# ---------------------------------------------------------------------------
 # compare — both pipelines head to head
 # ---------------------------------------------------------------------------
 
@@ -294,6 +346,12 @@ def main() -> None:
     m = sub.add_parser("measure", help="structure-only fit fraction")
     m.add_argument("--num-papers", type=int, default=200)
     m.set_defaults(func=cmd_measure)
+
+    h = sub.add_parser("histogram", help="min-size merge off vs on (no models)")
+    h.add_argument("--paper", action="append", help="restrict to these paper id(s)")
+    h.add_argument("--num-papers", type=int, default=10)
+    h.add_argument("--min-size", type=int, default=None, help="floor (default 0.35*max)")
+    h.set_defaults(func=cmd_histogram)
 
     c = sub.add_parser("compare", help="run both pipelines head to head")
     c.add_argument("--paper", action="append", help="restrict to these paper id(s)")

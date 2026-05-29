@@ -150,20 +150,25 @@ def chunk_document(
     document: str,
     embedder: Embedder,
     max_size: int = 2048,
+    min_size: int | None = None,
 ) -> tuple[list[str], Matrix]
 ```
 
-Optional convenience composed entirely from the four required
-operations above plus late chunking. Implementations may omit it.
+Optional convenience that composes the required operations via
+**structure-first chunking** ([spec 06](../06-structural-chunking.md))
+plus late chunking. Implementations may omit it.
 
 | Parameter | Default | Contract |
 |-----------|---------|----------|
 | `document` | — | UTF-8 string. |
-| `embedder` | — | An object satisfying both the `ChunkletEmbedder` (`embed_chunklets`) and `SegmentEmbedder` (`n_ctx`, `count_tokens`, `embed_segment`) contracts. The same instance is used for the partition decision and for late chunking, so model weights load exactly once. |
-| `max_size` | `2048` | Hard upper bound shared by stages 1-3 (passed as `max_len` to `split_sentences` and as `max_size` to `split_chunklets` / `split_chunks`). |
+| `embedder` | — | An object satisfying both the `ChunkletEmbedder` (`embed_chunklets`) and `SegmentEmbedder` (`n_ctx`, `count_tokens`, `embed_segment`) contracts. The same instance is used for the fallback partition decision and for late chunking, so model weights load exactly once. |
+| `max_size` | `2048` | Hard upper bound on chunk length in characters (SPEC-CHUNK-601). On the fallback path it is passed as `max_len` to `split_sentences` and as `max_size` to `split_chunklets` / `split_chunks`. |
+| `min_size` | `0.35 × max_size` | Chunk-size floor below which a structural unit is merged into a neighbor (SPEC-CHUNK-631). `0` disables merging. |
 
 Returns `(chunks, vectors)` where:
-- `chunks` is the result of `split_chunks` (satisfying SPEC-CHUNK-300, -301).
+- `chunks` is the structure-first partition (satisfying SPEC-CHUNK-600,
+  -601). Sections that fit `max_size` are emitted whole with no model
+  call; only overflowing sections invoke the embedder/segmenter.
 - `vectors` is `embed_with_late_chunking(chunks, embedder)` — one
   L2-normalized context-aware embedding per chunk, with the heading
   stack prepended once per segment (SPEC-CHUNK-470, default on).

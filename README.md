@@ -65,11 +65,14 @@ async def main():
 asyncio.run(main())
 ```
 
-Prefer one call? `chunk_document(doc, embedder)` composes the same
-three stages, but its final embedding pass uses **late chunking**
-(see [Late chunking](#late-chunking)) — an enrichment that
-benchmarked *below* this plain isolated-chunk path, so reach for it
-only if you want to experiment.
+Prefer one call? `chunk_document(doc, embedder)` runs **structure-first
+chunking** (see [Structure-first chunking](#structure-first-chunking)):
+it splits on the document's heading structure, only reaching for the
+slow models on sections too big to emit whole. Its final embedding pass
+uses **late chunking** (see [Late chunking](#late-chunking)) — an
+enrichment that benchmarked *below* the plain isolated-chunk path, so
+if you want isolated embeddings, run the structural split and embed the
+chunks yourself (shown in [Building blocks](#building-blocks)).
 
 Each chunk is a `Chunk` — a frozen dataclass with `text` (always
 present) plus optional metadata:
@@ -165,6 +168,50 @@ chunklets are *least* similar (this is "level 4" in Greg Kamradt's
 [5 Levels of Text Splitting](https://www.youtube.com/watch?v=8OJC21T2SL4&t=1930s)
 taxonomy), subject to a hard max-size covering constraint.
 
+## Structure-first chunking
+
+`chunk_document` doesn't run the three stages over the whole document.
+It runs **structure-first chunking** (`split_chunks_structure_first`):
+the document's heading tree is the primary unit, and a section whose
+whole subtree already fits `max_size` is emitted as one chunk
+*directly* — no sentence segmenter, no embedder call. Only a section
+that overflows `max_size` falls back to the three-stage semantic split
+(`split_sentences → split_chunklets → split_chunks`) on that span
+alone.
+
+Two payoffs:
+
+- **Headings land at chunk starts.** Because the section is the primary
+  unit, a whole-section-that-fits keeps its heading at the top of the
+  chunk instead of leaving it stranded mid-chunk.
+- **The slow models skip already-fitting sections.** On a well-
+  sectioned document most text never touches SaT or the embedder, so
+  latency tracks the fraction of the document that overflows.
+
+Tunables beyond `max_size`:
+
+- `min_size` (default `0.35 × max_size`) — a chunk-size floor. A unit
+  below it is merged into a neighbor so the partition has no thin
+  stubs; the merge fires *only* to clear the floor, so distinct
+  sections above it are never packed up to the cap. Pass `min_size=0`
+  to keep every heading boundary.
+
+For an isolated-embedding (non-late-chunking) pipeline, run the
+structural split and embed the chunks yourself:
+
+```python
+from fancychunk import split_chunks_structure_first
+from fancychunk.embedders import qwen3_600m
+
+embedder = qwen3_600m()
+chunks   = await split_chunks_structure_first(doc, embedder, max_size=2048)
+vectors  = await embedder.embed_chunklets([c.text for c in chunks])
+```
+
+To reach the older whole-document semantic split (no structural pass at
+all), compose the primitives directly — that's the
+[Quick start](#quick-start) pipeline.
+
 ## Enrichment
 
 fancychunk exposes two enrichment steps that pull document context
@@ -245,54 +292,30 @@ split_sentences(doc, segmenter=segmenters.sat_12l())  # highest quality, slowest
 split_sentences(doc, segmenter=segmenters.punctuation())  # ~50-line rule-based fallback, no download
 ```
 
-For corpora of many short documents (think BeIR scifact: ~5K
-abstracts at ~1.5K chars each), SaT can become the dominant cost
-in the pipeline. **Install `onnxruntime-gpu` on a CUDA box and the
-defaults do the right thing** — no code changes:
+SaT only runs on a section that overflows `max_size` (see
+[Structure-first chunking](#structure-first-chunking)), so a
+well-sectioned corpus skips it on most of its text. The sections that
+*do* fall back still pay for segmentation, and for corpora of many
+long sections SaT can dominate. **Install `onnxruntime-gpu` on a CUDA
+box and the defaults do the right thing** — no code changes:
 
 ```python
 from fancychunk import chunk_documents
 from fancychunk.embedders import qwen3_600m
 
 # Picks CUDAExecutionProvider automatically if onnxruntime-gpu is
-# installed (else falls back to CPU). Batches the SaT forward
-# passes when running on a GPU; skips batching on CPU (where it
-# wouldn't help).
+# installed (else falls back to CPU).
 await chunk_documents(docs, qwen3_600m())
 ```
 
 Under the hood:
 * `SaTSegmenter()` defaults to `device="auto"`, which defers to
-  wtpsplit-lite's GPU-first provider auto-detect.
-* `chunk_documents(..., segmenter_batch_size="auto")` (the default)
-  asks the resolved segmenter whether batching will help via
-  `wants_batching()`. The bundled `SaTSegmenter` says yes on any
-  GPU EP, no on CPU.
-* Power-user overrides still available: pass an explicit
-  `SaTSegmenter(device="cuda"/"cpu")`, set
-  `segmenter_batch_size=None` to force per-doc segmentation, or
-  pass an int to force a specific batch size.
-
-Verify the win on your hardware with `python bench_sat_batching.py
---device cuda --n-docs 1000`. Measured on a 1,000-doc / 1,500-char
-corpus (RTX 3090, sat-3l-sm, `embedders.noop()`):
-
-| `chunk_documents` config | ms/doc | vs CPU baseline |
-|---|---:|---:|
-| CPU, no batch (baseline) | 33.27 | 1.00× |
-| CUDA, no batch | 6.77 | **4.91×** |
-| **CUDA, default (`"auto"` → batch=64)** | **5.06** | **6.57×** |
-| CUDA, `segmenter_batch_size=128` | 5.05 | 6.58× |
-| CPU, `segmenter_batch_size=64` | 58.55 | 0.57× (slower — auto skips this) |
-
-The headline number is the e2e CUDA win. The SaT-only batched-vs-
-serial ratio on the same GPU is ~2.2× (raw segmenter throughput
-goes from ~1.45 ms/doc serial to ~0.67 ms/doc batched). About half
-the post-`device="cuda"` wall is the actual ORT forward pass; the
-rest sat in a per-document Python loop in `wtpsplit-lite`'s
-`token_to_char_probs`, which `SaTSegmenter` now monkey-patches with
-a vectorised replacement on first load. Set
-`FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1` to opt out.
+  wtpsplit-lite's GPU-first provider auto-detect. Pass an explicit
+  `SaTSegmenter(device="cuda"/"cpu")` to override.
+* About half the SaT wall on GPU was a per-document Python loop in
+  `wtpsplit-lite`'s `token_to_char_probs`, which `SaTSegmenter` now
+  monkey-patches with a vectorised replacement on first load. Set
+  `FANCYCHUNK_DISABLE_SAT_FAST_POSTPROCESS=1` to opt out.
 
 **Embedders.** Five bundled models trade quality for latency. You
 pick one explicitly — there's no hidden default — and pass it

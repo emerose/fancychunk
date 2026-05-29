@@ -62,11 +62,10 @@ class BatchSentenceSegmenter(SentenceSegmenter, Protocol):
     vector per input, in input order. Implementations may exploit
     cross-document batching (shared model forward passes, GPU
     utilisation) for substantially better throughput than calling the
-    single-document ``__call__`` N times.
-
-    ``chunk_documents`` opts into the batched path when its
-    ``segmenter_batch_size`` argument is set and the resolved segmenter
-    satisfies this protocol.
+    single-document ``__call__`` N times. Callers segmenting many
+    documents at once can invoke it directly; ``wants_batching()`` is a
+    hint for whether batching is expected to pay off on the resolved
+    execution provider.
     """
 
     def predict_proba_batch(self, documents: list[str]) -> list[Vector]: ...

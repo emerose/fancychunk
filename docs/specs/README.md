@@ -47,7 +47,9 @@ Concrete input/output test vectors are referenced as `TV-NNN`.
    [`03-semantic-chunking.md`](03-semantic-chunking.md),
    [`04-late-chunking.md`](04-late-chunking.md) (optional component),
    [`05-contextual-headings.md`](05-contextual-headings.md) (optional
-   helper).
+   helper),
+   [`06-structural-chunking.md`](06-structural-chunking.md) (the
+   composition behind `chunk_document`).
 3. [`contracts/public-api.md`](contracts/public-api.md) — the
    external surface of the library.
 4. [`test-vectors/`](test-vectors/) — concrete input/expected-output

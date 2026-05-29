@@ -197,18 +197,40 @@ discourse vectors.
 After computing the base partition similarities, modify them based on
 which chunklets are Markdown headings.
 
-A chunklet is a *heading* if its full Markdown block-level structure
-consists of exactly one heading element — equivalently, parsing the
-chunklet yields exactly one `heading_open` token and no other
-block-opening tokens. Both ATX-style (`^#{1,6}(\s|$)`, matching
-SPEC-CHUNK-512) and Setext-style (a heading text followed by a line
-of `=` or `-` characters) qualify, recognized through whatever
-CommonMark-conforming parser the implementation uses elsewhere. A
-chunklet that *begins* with a heading line but also contains body
-text afterwards is not a heading for the purposes of this section
-(its parse contains additional block tokens beyond the heading).
-A line beginning with seven or more `#` characters is not an ATX
-heading (no parser will emit `heading_open` for it).
+This step uses two related but distinct heading predicates, because
+the two adjustments it makes have different goals:
+
+* A chunklet is a *standalone heading* if its full Markdown
+  block-level structure consists of exactly one heading element —
+  equivalently, parsing the chunklet yields exactly one `heading_open`
+  token and no other block-opening tokens.
+* A chunklet *starts a section* if its **first** block-opening token
+  is a `heading_open`, regardless of whatever body text follows. Every
+  standalone heading also starts a section, but not vice versa: a
+  chunklet that begins with a heading line and then carries body text
+  starts a section without being a standalone heading.
+
+Both ATX-style (`^#{1,6}(\s|$)`, matching SPEC-CHUNK-512) and
+Setext-style (a heading text followed by a line of `=` or `-`
+characters) qualify, recognized through whatever CommonMark-conforming
+parser the implementation uses elsewhere. A line beginning with seven
+or more `#` characters is not an ATX heading (no parser will emit
+`heading_open` for it).
+
+The distinction is load-bearing. Stage 2 (SPEC-CHUNK-221) groups a
+short heading with its first sentences to hit the statement-count
+target, so on real prose a section heading is almost never a
+standalone chunklet — it is the head of a chunklet that also contains
+body text. Keying the *split-before* discount on "starts a section"
+(rather than "standalone heading") is therefore what makes the
+heading-aware preference actually fire on documents: the optimizer is
+encouraged to end the previous chunk *before* a chunklet that opens a
+new section, so chunks begin at section boundaries instead of packing
+across them. The *split-after* forbid, by contrast, stays keyed on
+"standalone heading": its only job is to keep a lone heading from
+being stranded at a chunk's tail, and a heading that already carries
+body text is in no such danger — `sim[i]` after it is a genuine
+boundary the embedder should remain free to use.
 
 The choice to use the parser rather than a hand-rolled regex matters
 for cross-stage consistency: stage 1 (SPEC-CHUNK-108) and stage 2
@@ -219,44 +241,46 @@ only — it operates on chunk text without re-parsing the full
 chunk — and is the only place where the two heading-detection
 strategies diverge.
 
-Apply the following procedure. The `previous_is_heading` flag tracks
-whether the immediately preceding chunklet was itself a heading, so
-that two adjacent headings don't trigger a redundant boost at the
-boundary between them. The initial value is irrelevant — the loop's
-first iteration overwrites it before any guard reads it — but `False`
-matches the natural "no chunklet has been seen yet" reading.
+Apply the following procedure. The `previous_starts_section` flag
+tracks whether the immediately preceding chunklet started a section,
+so that two stacked section starts (e.g. a title chunklet immediately
+followed by its abstract chunklet) don't trigger a redundant boost at
+the boundary between them. The initial value is irrelevant — the
+loop's first iteration overwrites it before any guard reads it — but
+`False` matches the natural "no chunklet has been seen yet" reading.
 
 ```
 # i is a CHUNKLET index in [0, N).
 # sim is indexed by PARTITION POINT — sim[k] sits between
 # chunklets k and k+1 — so sim has length N-1 and valid indices
 # are [0, N-2]. The bounds guards below enforce that.
-previous_is_heading = False
+previous_starts_section = False
 for i in range(N):           # i = 0, 1, ..., N-1 inclusive
-    if is_heading(chunklets[i]):
-        # Encourage splitting before this heading
+    if starts_section(chunklets[i]):
+        # Encourage splitting before this section start
         # (only if there is a partition point at i-1, and the
-        # previous chunklet was not itself a heading).
-        if i >= 1 and not previous_is_heading:
+        # previous chunklet did not itself start a section).
+        if i >= 1 and not previous_starts_section:
             sim[i - 1] = max(
                 sim[i - 1] / HEADING_SPLIT_BEFORE_DIVISOR,
                 MIN_PARTITION_SIMILARITY,
             )
-
-        # Discourage splitting immediately after this heading
-        # (only if there is a partition point at i; the heading
-        # belongs with the next chunk's intro, not as a standalone
-        # chunk). The last chunklet has no partition point after it.
-        if i <= N - 2:
-            sim[i] = HEADING_SPLIT_AFTER_FORBID
-
-        previous_is_heading = True
+        previous_starts_section = True
     else:
-        previous_is_heading = False
+        previous_starts_section = False
+
+    # Discourage splitting immediately after a STANDALONE heading
+    # (only if there is a partition point at i; the heading belongs
+    # with the next chunk's intro, not as a standalone chunk). The
+    # last chunklet has no partition point after it. A heading that
+    # already carries body text is not at risk of being stranded, so
+    # this forbid keys on standalone headings only.
+    if is_standalone_heading(chunklets[i]) and i <= N - 2:
+        sim[i] = HEADING_SPLIT_AFTER_FORBID
 ```
 
 The iteration covers every chunklet (indices `0` through `N-1`
-inclusive) so that a heading at the *end* of the document still
+inclusive) so that a section start at the *end* of the document still
 triggers the "encourage split before" boost on `sim[N-2]`. The
 bounds guards prevent indexing into nonexistent partition points at
 either end. The `max(..., MIN_PARTITION_SIMILARITY)` re-application
@@ -268,7 +292,7 @@ The two constants play different roles:
 
 | Named constant | Value | Role |
 |---|---|---|
-| `HEADING_SPLIT_BEFORE_DIVISOR` | `4` | Attractiveness boost for splitting before a heading. |
+| `HEADING_SPLIT_BEFORE_DIVISOR` | `4` | Attractiveness boost for splitting before a chunklet that starts a section. |
 | `HEADING_SPLIT_AFTER_FORBID` | `1.0` | The maximum possible post-rescaling similarity (see SPEC-CHUNK-320 step 3), so a split immediately after a heading carries maximum cost — effectively forbidden. |
 
 `HEADING_SPLIT_AFTER_FORBID = 1.0` is structural: it equals the

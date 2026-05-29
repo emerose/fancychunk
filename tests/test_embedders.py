@@ -28,6 +28,7 @@ from fancychunk.embedders import (
     NoopSegmentEmbedder,
     PooledSegmentEmbedder,
     bge_m3,
+    jina_v3,
     noop,
     qwen3_4b,
     qwen3_8b,
@@ -55,6 +56,7 @@ def test_model_named_factories_return_pooled_segment_embedder() -> None:
     assert isinstance(qwen3_600m(), PooledSegmentEmbedder)
     assert isinstance(qwen3_4b(), PooledSegmentEmbedder)
     assert isinstance(qwen3_8b(), PooledSegmentEmbedder)
+    assert isinstance(jina_v3(), PooledSegmentEmbedder)
 
 
 def test_factories_pick_correct_pooling() -> None:
@@ -62,6 +64,20 @@ def test_factories_pick_correct_pooling() -> None:
     assert qwen3_600m().pooling == "last_token"
     assert qwen3_4b().pooling == "last_token"
     assert qwen3_8b().pooling == "last_token"
+    assert jina_v3().pooling == "mean"
+
+
+def test_jina_v3_factory_config() -> None:
+    """jina-embeddings-v3 is bidirectional + mean-pooled, ships custom
+    architecture code (so trust_remote_code is on), and has no MLX
+    build — it always resolves to the canonical torch model id."""
+    e = jina_v3()
+    assert e.model_id == "jinaai/jina-embeddings-v3"
+    assert e.pooling == "mean"
+    assert e.trust_remote_code is True
+    assert e.output_dim is None  # native 1024
+    # No mlx-community build: never selects the MLX backend.
+    assert not e.model_id.startswith("mlx-community/")
 
 
 def test_model_factories_pick_mlx_on_apple_silicon() -> None:
@@ -202,6 +218,7 @@ SAMPLE_SENTENCES = [
         (lambda: qwen3_4b(dim=512), 512),
         (qwen3_8b, 4096),
         (lambda: qwen3_8b(dim=1024), 1024),
+        (jina_v3, 1024),
     ],
 )
 def test_embed_chunklets_shape_and_norm(factory, expected_dim: int) -> None:
@@ -219,7 +236,7 @@ def test_embed_chunklets_handles_empty_list() -> None:
 
 
 @_requires_models
-@pytest.mark.parametrize("factory", [bge_m3, qwen3_600m, qwen3_4b])
+@pytest.mark.parametrize("factory", [bge_m3, qwen3_600m, qwen3_4b, jina_v3])
 def test_embedders_implement_segment_embedder_protocol(factory) -> None:
     embedder = factory()
     counts = asyncio.run(embedder.count_tokens(SAMPLE_SENTENCES))

@@ -174,6 +174,40 @@ makes sentence 1 a chunklet boundary while folding sentence 2 into
 the same chunklet as sentence 1 (or the next one) is conforming and
 preferred.
 
+## TV-209 — Interior sentences of a one-line paragraph score zero
+
+Validates the block-opener guard in SPEC-CHUNK-240.
+
+A whole paragraph is frequently a single unwrapped source line that
+the sentence splitter divides into several sentences. Only the
+sentence that *opens* the block earns the structural strength; the
+later sentences are interior to the block and score `0.00`.
+
+| Input | Value |
+|-------|-------|
+| `sentences` | `["First para only sentence.\n\n", "Second para one. ", "Second para two. ", "Second para three.\n\n", "## Heading\n\n", "Body.\n"]` |
+| `max_size` | `2048` |
+
+Sentences 1-3 all live on the *same* source line (the second
+paragraph, unwrapped). Their first non-whitespace characters share
+one line, but only sentence 1 opens the block.
+
+Per-sentence boundary probabilities *before* SPEC-CHUNK-241 cleanup:
+- Sentence 0: opens paragraph → `0.5`
+- Sentence 1: opens the second paragraph → `0.5`
+- Sentence 2: interior (text precedes it on the line) → `0.0`
+- Sentence 3: interior → `0.0`
+- Sentence 4: opens heading → `1.0`
+- Sentence 5: opens paragraph → `0.5`
+
+**Expected output (property):** sentences 2 and 3 score `0.00`
+*before* suppression — the block-opener guard, not SPEC-CHUNK-241, is
+what zeroes them. Because zeros separate the blocks, SPEC-CHUNK-241
+leaves the heading's `1.00` and the paragraph `0.5` cues intact rather
+than collapsing the document to one surviving boundary. After
+suppression the heading at sentence 4 retains `1.00` and remains a
+viable chunklet boundary.
+
 ## TV-210 — Custom cost functions (model-independent)
 
 If the implementation supports custom `boundary_cost` and

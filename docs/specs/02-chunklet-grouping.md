@@ -181,7 +181,19 @@ length equal to the number of sentences.
 
 **Matching rule.** For each sentence `i`, gather every token (of
 the table's listed types) that opens on the line containing sentence
-`i`'s first non-whitespace character. Apply these rules in order:
+`i`'s first non-whitespace character — but *only if sentence `i`
+opens that block*, i.e. only whitespace precedes sentence `i`'s first
+non-whitespace character on that line. A block opener begins at the
+first non-whitespace character of its line, so a sentence whose start
+is preceded by other text on the same line is *interior* to the block
+and scores `0.00`. This case is common when a whole paragraph is a
+single unwrapped line holding several sentences: only the first earns
+`paragraph_open` strength; the rest are interior. (Without this guard
+every sentence in a one-line paragraph would inherit `paragraph_open`,
+leaving no `0.00` separators between blocks, so SPEC-CHUNK-241
+suppression would collapse the document to a single surviving boundary
+and discard every structural cue after the first.) Apply these rules
+in order:
 
 1. If any of `heading_open`, `blockquote_open` opens on the line,
    take the **strongest** of those that apply per the table below

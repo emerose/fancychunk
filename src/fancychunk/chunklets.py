@@ -139,8 +139,20 @@ def _per_sentence_boundary_probas(sentences: list[str]) -> Vector:
             # All-whitespace sentence — fall back to its start position.
             offset = pos
         line = line_of_offset(line_starts, offset)
-        types = openers.get(line, set())
-        probas[i] = _strength_for_openers(types)
+        # A block opener (paragraph/heading/list/blockquote) starts at
+        # the first non-whitespace character of its line. Only the
+        # sentence that *opens* the block gets the structural strength;
+        # later sentences sharing the same source line (common when a
+        # whole paragraph is a single unwrapped line) are interior and
+        # score 0. Without this guard every sentence in a one-line
+        # paragraph inherits ``paragraph_open``, leaving no zeros
+        # between blocks — so SPEC-CHUNK-241 suppression collapses the
+        # entire document into a single surviving boundary and discards
+        # every heading/paragraph cue after the first.
+        line_start = line_starts[line]
+        opens_block = not document[line_start:offset].strip()
+        if opens_block:
+            probas[i] = _strength_for_openers(openers.get(line, set()))
         pos += len(s)
 
     # SPEC-CHUNK-241 — suppress consecutive non-zero values.

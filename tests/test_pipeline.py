@@ -86,6 +86,72 @@ def test_trivial_input_short_circuits() -> None:
     assert split_chunks([], noop()) == []
 
 
+def _para(tag: str, n: int) -> str:
+    body = " ".join(
+        f"{tag} sentence number {i} carries a fair amount of real textual content here."
+        for i in range(n)
+    )
+    return body + "\n\n"
+
+
+# Regression — a chunk's last non-whitespace line is never a Markdown
+# heading (Issues 3 + 4). A one-line multi-sentence paragraph immediately
+# followed by a heading is the structure that used to strand the heading
+# at a chunk's tail: before the SPEC-CHUNK-240 block-opener guard, every
+# interior sentence of a one-line paragraph inherited paragraph strength,
+# SPEC-CHUNK-241 collapsed the document to a single surviving boundary,
+# and the heading got swallowed into the preceding body chunklet's tail.
+def test_heading_never_stranded_at_chunk_tail() -> None:
+    from fancychunk.chunks import _is_heading
+
+    document = (
+        _para("Intro", 10)
+        + "## Section A\n\n"
+        + _para("A", 12)
+        + "## Section B\n\n"
+        + _para("B", 12)
+        + "## Section C\n\n"
+        + _para("C", 12)
+    )
+    sentences = split_sentences(document, max_len=2048)
+    chunklets = split_chunklets(sentences, max_size=500)
+    # The partition is driven by structural boundaries, not embedding
+    # values, so the invariant must hold for every embedding seed.
+    for seed in range(8):
+        rng = np.random.default_rng(seed)
+        emb = rng.normal(size=(len(chunklets), 8)) + 0.05
+        chunks = split_chunks(chunklets, _PreCookedEmbedder(emb), max_size=500)
+        for c in chunks:
+            last_line = c.text.rstrip().split("\n")[-1]
+            assert not _is_heading(last_line + "\n"), (seed, repr(c.text[-50:]))
+        # Issue 4 — no undersized stub chunk (< 40% of target).
+        assert all(len(c.text) >= 0.4 * 500 for c in chunks), [
+            len(c.text) for c in chunks
+        ]
+
+
+# Regression — the abstract is kept whole and the break lands at the
+# ``## Introduction`` heading rather than mid-abstract-paragraph
+# (Issue 2). Uses the deterministic no-embeddings structural path so the
+# outcome depends only on size + heading-aware boundary preference.
+def test_abstract_kept_whole_break_at_introduction() -> None:
+    abstract = " ".join(
+        f"Abstract sentence {i} states a finding clearly." for i in range(8)
+    )
+    intro = " ".join(
+        f"Introduction sentence {i} gives background detail." for i in range(8)
+    )
+    document = f"## Abstract\n\n{abstract}\n\n## Introduction\n\n{intro}\n"
+    sentences = split_sentences(document, max_len=2048)
+    chunklets = split_chunklets(sentences, max_size=480)
+    chunks = split_chunks(chunklets, noop(), max_size=480)
+    texts = [c.text for c in chunks]
+    # The whole abstract body lives in one chunk (no mid-paragraph cut).
+    assert any(abstract in t for t in texts)
+    # A chunk begins exactly at the Introduction heading.
+    assert any(t.lstrip().startswith("## Introduction") for t in texts)
+
+
 def test_heading_paths_consistent_with_pipeline() -> None:
     document = (
         "# Top\n\nIntro.\n\n## Sub\n\nDetails. More details.\n\n# Other\n\nFinal.\n"

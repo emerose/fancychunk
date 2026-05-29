@@ -4,6 +4,24 @@ All notable changes to fancychunk are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-05-29
+
+### Fixed
+- Boundary placement (stage 2, SPEC-CHUNK-240): a one-line paragraph
+  holding several sentences no longer leaks `paragraph_open` strength to
+  its interior sentences. Previously every sentence sharing the line
+  inherited the paragraph cue, leaving no zero-probability separators
+  between blocks, so SPEC-CHUNK-241 suppression collapsed the whole
+  document to a single surviving boundary and discarded every
+  heading/paragraph cue after the first. A block-opener guard in
+  `_per_sentence_boundary_probas` now gives only the sentence that opens
+  a block the structural strength. This restores the stage-2 boundary
+  cues that SPEC-CHUNK-324 (mid-paragraph penalty) and SPEC-CHUNK-322
+  (heading-aware split) rely on: paragraph-aligned splits, abstracts kept
+  whole with the break at `## Introduction`, and headings never stranded
+  at a chunk's tail. SPEC-CHUNK-240 and test-vector TV-209 document the
+  guard.
+
 ## [0.6.0] - 2026-05-28
 
 ### Changed
@@ -190,6 +208,20 @@ the project follows [Semantic Versioning](https://semver.org/).
   otherwise. Lets standalone consumers of ``embed_with_late_chunking``
   / ``enrich_with_headings`` work whether or not the chunks carry
   pre-computed metadata.
+
+### Fixed
+- Boundary placement (stage 2): a one-line paragraph holding several
+  sentences no longer leaks ``paragraph_open`` strength to its interior
+  sentences. Previously every sentence on such a line inherited the
+  paragraph cue, leaving no zero-probability separators between blocks,
+  so SPEC-CHUNK-241 suppression collapsed the whole document to a single
+  surviving boundary and discarded every heading/paragraph cue after the
+  first. The fix adds a block-opener guard in ``_per_sentence_boundary_probas``
+  so only the sentence that opens a block earns the structural strength.
+  Restores paragraph-aligned splits (no mid-paragraph cuts when a ``\n\n``
+  boundary is within budget), keeps abstracts whole with the break landing
+  at ``## Introduction``, and prevents headings from being stranded at a
+  chunk's tail. SPEC-CHUNK-240 and test-vector TV-209 document the guard.
 
 ### Changed (breaking — pre-1.0)
 - ``heading_paths(chunks: list[Chunk]) -> list[tuple[str, ...]]`` —

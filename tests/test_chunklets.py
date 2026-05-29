@@ -92,6 +92,57 @@ def test_tv_208_consecutive_suppression() -> None:
     assert probas[1] == 0.75
 
 
+# TV-209 / SPEC-CHUNK-240 — interior sentences of a one-line paragraph
+# score zero. Only the sentence that *opens* a block gets the structural
+# strength; sentences sharing the same source line are interior.
+def test_tv_209_interior_sentences_score_zero() -> None:
+    from fancychunk.chunklets import _per_sentence_boundary_probas
+
+    sentences = [
+        "First para only sentence.\n\n",
+        "Second para one. ",
+        "Second para two. ",
+        "Second para three.\n\n",
+        "## Heading\n\n",
+        "Body.\n",
+    ]
+    probas = _per_sentence_boundary_probas(sentences)
+    # Sentences 1-3 share the second paragraph's single source line.
+    # Only sentence 1 opens the block; 2 and 3 are interior -> 0.0.
+    # The guard (not SPEC-CHUNK-241 suppression) is what zeroes them,
+    # so the heading at index 4 keeps its 1.0 instead of the whole
+    # document collapsing to a single surviving boundary.
+    assert probas[2] == 0.0
+    assert probas[3] == 0.0
+    assert probas[4] == 1.0
+
+
+# Regression (Issue 1) — a forced split lands at the paragraph boundary,
+# not mid-paragraph. Two one-line paragraphs whose combined length
+# exceeds max_size must split at the `\n\n` between them: the first
+# paragraph stays whole and the second opens a new chunklet. Before the
+# SPEC-CHUNK-240 block-opener guard, the second paragraph's opening
+# sentence scored 0.0 (its paragraph cue was suppressed along with the
+# interior sentences), so boundary cost gave no reason to start there and
+# the split fell mid-paragraph, orphaning a continuation.
+def test_forced_split_prefers_paragraph_boundary() -> None:
+    p1 = " ".join(
+        f"First para sentence {i} has a moderate amount of text content."
+        for i in range(6)
+    )
+    p2 = " ".join(
+        f"Second para sentence {i} also has a moderate amount of text."
+        for i in range(6)
+    )
+    from fancychunk import split_sentences
+
+    # Each paragraph is a single source line split into several sentences.
+    sentences = split_sentences(p1 + "\n\n" + p2 + "\n", max_len=2048)
+    out = split_chunklets(sentences, max_size=len(p1) + 40)
+    assert any(p1 in c for c in out)  # first paragraph kept whole
+    assert any(c.lstrip().startswith("Second para sentence 0") for c in out)
+
+
 # TV-210 / SPEC-CHUNK-251 — constant-zero costs yield a single chunklet.
 def test_tv_210_constant_zero_costs() -> None:
     s = ["Identical sentence content."] * 6
